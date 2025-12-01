@@ -16,45 +16,94 @@ MQTT_BASE_TOPIC = "zigbee2mqtt"
 
 # Dictionary of all thermostats
 THERMOSTATS = {
-    "living_room": {
-        "day_hour": "07:00",
-        "day_temperature": 22,
-        "night_hour": "22:00", 
-        "night_temperature": 18,
-        "type": "honeywell"
-    },
-    "bedroom": {
-        "day_hour": "08:00",
-        "day_temperature": 20,
-        "night_hour": "23:00",
-        "night_temperature": 16,
-        "type": "nest"
-    },
-    "office": {
-        "day_hour": "06:30",
+    "Arbeitszimmer": {
+        "day_hour": "05:00",
         "day_temperature": 21,
-        "night_hour": "18:00",
+        "night_hour": "23:00", 
         "night_temperature": 19,
-        "type": "ecobee"
+        "type": "ME168_1"
+    },
+    "Bad OG": {
+        "day_hour": "05:00",
+        "day_temperature": 21,
+        "night_hour": "23:00",
+        "night_temperature": 19,
+        "type": "VNTH-T2_v2"
+    },
+    "Caros": {
+        "day_hour": "05:00",
+        "day_temperature": 21,
+        "night_hour": "23:00",
+        "night_temperature": 19,
+        "type": "VNTH-T2_v2"
+    },
+    "Dusche": {
+        "day_hour": "05:00",
+        "day_temperature": 21,
+        "night_hour": "23:00",
+        "night_temperature": 19,
+        "type": "ME168_1"
+    },
+    "Esszimmer": {
+        "day_hour": "05:00",
+        "day_temperature": 21,
+        "night_hour": "23:00",
+        "night_temperature": 19,
+        "type": "VNTH-T2_v2"
+    },
+    "Julians": {
+        "day_hour": "05:00",
+        "day_temperature": 21,
+        "night_hour": "23:00",
+        "night_temperature": 19,
+        "type": "VNTH-T2_v2"
+    },
+    "Schlafzimmer": {
+        "day_hour": "05:00",
+        "day_temperature": 21,
+        "night_hour": "23:00",
+        "night_temperature": 19,
+        "type": "VNTH-T2_v2"
+    },
+    "Waschküche": {
+        "day_hour": "05:00",
+        "day_temperature": 21,
+        "night_hour": "23:00",
+        "night_temperature": 19,
+        "type": "TR-M3Z"
+    },
+    "WC OG": {
+        "day_hour": "05:00",
+        "day_temperature": 21,
+        "night_hour": "23:00",
+        "night_temperature": 19,
+        "type": "VNTH-T2_v2"
+    },
+    "Wohnzimmer": {
+        "day_hour": "05:00",
+        "day_temperature": 21,
+        "night_hour": "23:00",
+        "night_temperature": 19,
+        "type": "VNTH-T2_v2"
     }
 }
 
 # Dictionary of thermostat types with their specific keys and values for schedule mode
 THERMOSTAT_TYPES = {
-    "honeywell": {
-        "mode": "schedule",
-        "system_mode": "auto",
-        "schedule_enabled": True
+    "VNTH-T2_v2": {
+        "temperature_sensitivity": 0.5,
+        "system_mode": "heat",
+        "preset": "schedule"
     },
-    "nest": {
-        "hvac_mode": "heat_cool",
-        "schedule_mode": "on",
-        "auto_schedule": True
+    "TR-M3Z": {
+        "system_mode": "heat",
+        "preset": "schedule"
     },
-    "ecobee": {
-        "thermostat_mode": "auto",
-        "hold_type": "schedule",
-        "schedule_active": True
+    "ME168_1": {
+        "system_mode": "auto"
+    },
+    "ME167": {
+        "system_mode": "auto"
     }
 }
 
@@ -77,34 +126,31 @@ def generate_schedule_string(day_hour, day_temp, night_hour, night_temp):
     """
     day_minutes = time_to_minutes(day_hour)
     night_minutes = time_to_minutes(night_hour)
-    
-    # If night hour is before day hour (crosses midnight), adjust
-    if night_minutes < day_minutes:
-        night_minutes += 24 * 60  # Add 24 hours
-    
-    # Calculate intervals
-    night_to_day_interval = day_minutes // 2  # 2 equal intervals from 00:00 to day
-    day_to_night_interval = (night_minutes - day_minutes) // 4  # 4 equal intervals from day to night
-    
+    DAY_MINUTES = 24 * 60
+
+    def mod_diff(a, b):
+        # Minutes from a to b going forward in time, wrapping past midnight
+        return (b - a) % DAY_MINUTES
+
+    night_to_day_dur = mod_diff(night_minutes, day_minutes)
+    day_to_night_dur = mod_diff(day_minutes, night_minutes)
+
+    # Compute step sizes (may be fractional); we'll round to nearest minute
+    step_night_to_day = (night_to_day_dur / 2.0) if night_to_day_dur != 0 else 0.0
+    step_day_to_night = (day_to_night_dur / 4.0) if day_to_night_dur != 0 else 0.0
+
     schedule_pairs = []
-    
-    # 2 pairs from night to day (00:00 to day_hour)
+
+    # 2 pairs from night to day (use night_temp)
     for i in range(2):
-        time_point = i * night_to_day_interval
-        # Gradual temperature increase from night to day
-        temp = night_temp + (day_temp - night_temp) * (i / 1)
-        schedule_pairs.append(f"{minutes_to_time(time_point)}/{int(temp)}")
-    
-    # 4 pairs from day to night
+        t = int(round((night_minutes + i * step_night_to_day) % DAY_MINUTES))
+        schedule_pairs.append(f"{minutes_to_time(t)}/{int(night_temp)}")
+
+    # 4 pairs from day to night (use day_temp)
     for i in range(4):
-        time_point = day_minutes + i * day_to_night_interval
-        # Gradual temperature decrease from day to night
-        temp = day_temp - (day_temp - night_temp) * (i / 3)
-        # Handle time overflow (past midnight)
-        if time_point >= 24 * 60:
-            time_point -= 24 * 60
-        schedule_pairs.append(f"{minutes_to_time(time_point)}/{int(temp)}")
-    
+        t = int(round((day_minutes + i * step_day_to_night) % DAY_MINUTES))
+        schedule_pairs.append(f"{minutes_to_time(t)}/{int(day_temp)}")
+
     return " ".join(schedule_pairs)
 
 def on_connect(client, userdata, flags, rc):
@@ -136,8 +182,6 @@ def configure_thermostat(client, thermostat_name, thermostat_config):
         thermostat_config["night_hour"],
         thermostat_config["night_temperature"]
     )
-    
-    print(f"Generated schedule for {thermostat_name}: {schedule_string}")
     
     # Construct payload
     payload = type_config.copy()  # Start with thermostat type configuration
@@ -196,7 +240,7 @@ def main():
         
         # Configure each thermostat
         for thermostat_name, config in THERMOSTATS.items():
-            configure_thermostat(client, thermostat_name, config)
+            configure_thermostat(client, f"{thermostat_name} Thermostat", config)
             time.sleep(0.5)  # Small delay between configurations
         
         # Wait for all messages to be sent
