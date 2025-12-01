@@ -13,6 +13,7 @@ import paho.mqtt.client as mqtt
 MQTT_BROKER = "192.168.1.4"  # Change to your MQTT broker IP/hostname
 MQTT_PORT = 1883
 MQTT_BASE_TOPIC = "zigbee2mqtt"
+MQTT_DELAY_BETWEEN_MESSAGES = 5  # seconds
 
 # Dictionary of all thermostats
 THERMOSTATS = {
@@ -157,6 +158,8 @@ def on_connect(client, userdata, flags, rc):
     """Callback for MQTT connection"""
     if rc == 0:
         print("Connected to MQTT broker successfully")
+        global connected
+        connected = True
     else:
         print(f"Failed to connect to MQTT broker. Return code: {rc}")
 
@@ -230,22 +233,22 @@ def main():
     try:
         # Connect to MQTT broker
         print(f"Connecting to MQTT broker at {MQTT_BROKER}:{MQTT_PORT}...")
+        global connected
+        connected = False
         client.connect(MQTT_BROKER, MQTT_PORT, 60)
         
         # Start the network loop
         client.loop_start()
         
         # Wait for connection
-        time.sleep(1)
+        while not connected:
+            time.sleep(0.2)
         
         # Configure each thermostat
         for thermostat_name, config in THERMOSTATS.items():
             configure_thermostat(client, f"{thermostat_name} Thermostat", config)
-            time.sleep(0.5)  # Small delay between configurations
-        
-        # Wait for all messages to be sent
-        time.sleep(2)
-        
+            time.sleep(MQTT_DELAY_BETWEEN_MESSAGES)  # Delay to ensure message processing
+
         print("\n=== Configuration Complete ===")
         print("All thermostats have been configured with their schedules.")
         
