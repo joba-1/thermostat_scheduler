@@ -154,8 +154,8 @@ def generate_schedule_string(day_hour, day_temp, night_hour, night_temp):
 
     return " ".join(schedule_pairs)
 
-def on_connect(client, userdata, flags, rc):
-    """Callback for MQTT connection"""
+def on_connect(client, userdata, flags, rc, properties=None):
+    """Callback for MQTT connection """
     if rc == 0:
         print("Connected to MQTT broker successfully")
         global connected
@@ -163,8 +163,8 @@ def on_connect(client, userdata, flags, rc):
     else:
         print(f"Failed to connect to MQTT broker. Return code: {rc}")
 
-def on_publish(client, userdata, mid):
-    """Callback for successful message publish"""
+def on_publish(client, userdata, mid, rc, properties=None):
+    """Callback for successful message publish """
     print(f"Message published successfully (Message ID: {mid})")
 
 def configure_thermostat(client, thermostat_name, thermostat_config, index):
@@ -205,13 +205,17 @@ def configure_thermostat(client, thermostat_name, thermostat_config, index):
     print(f"Topic: {topic}")
     print(f"Payload: {payload_json}")
     
-    # Publish to MQTT
-    # result = client.publish(topic, payload_json, qos=1, retain=False)
-    
-    # if result.rc == mqtt.MQTT_ERR_SUCCESS:
-    #     print(f"✓ Successfully sent configuration to {thermostat_name}")
-    # else:
-    #     print(f"✗ Failed to send configuration to {thermostat_name}")
+    # Publish to MQTT using the newer synchronous API (returns MQTTMessageInfo)
+    info = client.publish(topic, payload_json, qos=1, retain=False)
+    try:
+        info.wait_for_publish(timeout=10)
+    except Exception:
+        pass
+
+    if getattr(info, "is_published", lambda: False)():
+        print(f"✓ Successfully sent configuration to {thermostat_name}")
+    else:
+        print(f"✗ Failed to send configuration to {thermostat_name} (info: {info})")
     
     return
 
@@ -224,7 +228,7 @@ def main():
     print(f"Configuring {len(THERMOSTATS)} thermostats...\n")
     
     # Create MQTT client
-    client = mqtt.Client()
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
     client.on_connect = on_connect
     client.on_publish = on_publish
     
