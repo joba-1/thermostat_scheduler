@@ -40,42 +40,42 @@ THERMOSTATS = {
     },
     "Dusche": {
         "day_hour": "05:00",
-        "day_temperature": 21,
+        "day_temperature": 19,
         "night_hour": "23:00",
-        "night_temperature": 19,
+        "night_temperature": 18,
         "type": "ME168_1"
     },
     "Esszimmer": {
         "day_hour": "05:00",
         "day_temperature": 21,
         "night_hour": "23:00",
-        "night_temperature": 19,
+        "night_temperature": 20,
         "type": "VNTH-T2_v2"
     },
     "Julians": {
         "day_hour": "05:00",
         "day_temperature": 21,
         "night_hour": "23:00",
-        "night_temperature": 19,
+        "night_temperature": 20,
         "type": "VNTH-T2_v2"
     },
     "Schlafzimmer": {
         "day_hour": "05:00",
-        "day_temperature": 21,
+        "day_temperature": 19,
         "night_hour": "23:00",
         "night_temperature": 19,
         "type": "VNTH-T2_v2"
     },
     "Waschküche": {
         "day_hour": "05:00",
-        "day_temperature": 21,
+        "day_temperature": 20,
         "night_hour": "23:00",
         "night_temperature": 19,
         "type": "TR-M3Z"
     },
     "WC OG": {
         "day_hour": "05:00",
-        "day_temperature": 21,
+        "day_temperature": 20,
         "night_hour": "23:00",
         "night_temperature": 19,
         "type": "VNTH-T2_v2"
@@ -84,7 +84,7 @@ THERMOSTATS = {
         "day_hour": "05:00",
         "day_temperature": 21,
         "night_hour": "23:00",
-        "night_temperature": 19,
+        "night_temperature": 20,
         "type": "VNTH-T2_v2"
     }
 }
@@ -167,9 +167,11 @@ def on_publish(client, userdata, mid):
     """Callback for successful message publish"""
     print(f"Message published successfully (Message ID: {mid})")
 
-def configure_thermostat(client, thermostat_name, thermostat_config):
+def configure_thermostat(client, thermostat_name, thermostat_config, index):
     """Configure a single thermostat with schedule"""
-    
+
+    print(f"\nConfiguring thermostat {index}: {thermostat_name}")
+
     # Get thermostat type configuration
     thermostat_type = thermostat_config["type"]
     type_config = THERMOSTAT_TYPES.get(thermostat_type)
@@ -200,7 +202,6 @@ def configure_thermostat(client, thermostat_name, thermostat_config):
     # Convert payload to JSON
     payload_json = json.dumps(payload, indent=2)
     
-    print(f"\nConfiguring thermostat: {thermostat_name}")
     print(f"Topic: {topic}")
     print(f"Payload: {payload_json}")
     
@@ -242,11 +243,11 @@ def main():
         
         # Wait for connection
         while not connected:
-            time.sleep(0.2)
+            time.sleep(0.1)
         
         # Configure each thermostat
-        for thermostat_name, config in THERMOSTATS.items():
-            configure_thermostat(client, f"{thermostat_name} Thermostat", config)
+        for i, (thermostat_name, config) in enumerate(THERMOSTATS.items()):
+            configure_thermostat(client, f"{thermostat_name} Thermostat", config, i+1)
             time.sleep(MQTT_DELAY_BETWEEN_MESSAGES)  # Delay to ensure message processing
 
         print("\n=== Configuration Complete ===")
