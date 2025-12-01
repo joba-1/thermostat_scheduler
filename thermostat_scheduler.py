@@ -152,6 +152,9 @@ def generate_schedule_string(day_hour, day_temp, night_hour, night_temp):
         t = int(round((day_minutes + i * step_day_to_night) % DAY_MINUTES))
         schedule_pairs.append(f"{minutes_to_time(t)}/{int(day_temp)}")
 
+    # Sort pairs by time (HH:MM) ascending
+    schedule_pairs.sort(key=lambda pair: time_to_minutes(pair.split('/')[0]))
+
     return " ".join(schedule_pairs)
 
 def on_connect(client, userdata, flags, rc, properties=None):
