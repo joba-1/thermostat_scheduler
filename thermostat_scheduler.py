@@ -6,7 +6,6 @@ Publishes daily temperature schedules to different thermostat types via MQTT
 
 import json
 import time
-from datetime import datetime, timedelta
 import paho.mqtt.client as mqtt
 
 # Configuration
