@@ -53,16 +53,16 @@ THERMOSTATS = {
     },
     "Julians": {
         "day_hour": "05:00",
-        "day_temperature": 21,
+        "day_temperature": 22.5,
         "night_hour": "23:00",
         "night_temperature": 20,
         "type": "VNTH-T2_v2"
     },
     "Schlafzimmer": {
         "day_hour": "05:00",
-        "day_temperature": 19,
+        "day_temperature": 20,
         "night_hour": "23:00",
-        "night_temperature": 19,
+        "night_temperature": 19.5,
         "type": "VNTH-T2_v2"
     },
     "Waschküche": {
