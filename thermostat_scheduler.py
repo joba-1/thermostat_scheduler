@@ -17,7 +17,7 @@ MQTT_DELAY_BETWEEN_MESSAGES = 5  # seconds
 # Dictionary of all thermostats
 THERMOSTATS = {
     "Arbeitszimmer": {
-        "day_hour": "05:00",
+        "day_hour": "09:00",
         "day_temperature": 21,
         "night_hour": "23:00", 
         "night_temperature": 19,
@@ -52,7 +52,7 @@ THERMOSTATS = {
         "type": "VNTH-T2_v2"
     },
     "Julians": {
-        "day_hour": "05:00",
+        "day_hour": "06:00",
         "day_temperature": 22.5,
         "night_hour": "23:00",
         "night_temperature": 20,
