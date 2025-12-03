@@ -221,6 +221,36 @@ def configure_thermostat(client, thermostat_name, thermostat_config, index):
     
     return
 
+def print_thermostat_table():
+    """Print a table of all thermostat settings (name, type, day/night hours and temps)."""
+    headers = ["Name", "Day Hour", "Day Temp", "Night Hour", "Night Temp", "Type"]
+    rows = []
+    for name, cfg in THERMOSTATS.items():
+        rows.append([
+            name,
+            cfg.get("day_hour", ""),
+            str(cfg.get("day_temperature", "")),
+            cfg.get("night_hour", ""),
+            str(cfg.get("night_temperature", "")),
+            cfg.get("type", "")
+        ])
+
+    # compute column widths
+    cols = list(zip(*([headers] + rows)))
+    widths = [max(len(str(cell)) for cell in col) for col in cols]
+
+    # format strings
+    sep = " | "
+    header_line = sep.join(h.ljust(w) for h, w in zip(headers, widths))
+    divider = "-+-".join("-" * w for w in widths)
+
+    print("\nThermostat settings:")
+    print(header_line)
+    print(divider)
+    for row in rows:
+        print(sep.join(str(cell).ljust(w) for cell, w in zip(row, widths)))
+    print()
+
 def main():
     """Main function to configure all thermostats"""
     
@@ -267,6 +297,8 @@ def main():
         client.loop_stop()
         client.disconnect()
         print("Disconnected from MQTT broker.")
+        # Print table of settings at the end
+        print_thermostat_table()
 
 if __name__ == "__main__":
     main()
