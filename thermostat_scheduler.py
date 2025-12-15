@@ -53,7 +53,7 @@ THERMOSTATS = {
     },
     "Julians": {
         "day_hour": "06:00",
-        "day_temperature": 22.5,
+        "day_temperature": 23.5,
         "night_hour": "23:00",
         "night_temperature": 20,
         "type": "VNTH-T2_v2"
@@ -81,7 +81,7 @@ THERMOSTATS = {
     },
     "Wohnzimmer": {
         "day_hour": "05:00",
-        "day_temperature": 21,
+        "day_temperature": 22,
         "night_hour": "23:00",
         "night_temperature": 20,
         "type": "VNTH-T2_v2"
@@ -144,12 +144,12 @@ def generate_schedule_string(day_hour, day_temp, night_hour, night_temp):
     # 2 pairs from night to day (use night_temp)
     for i in range(2):
         t = int(round((night_minutes + i * step_night_to_day) % DAY_MINUTES))
-        schedule_pairs.append(f"{minutes_to_time(t)}/{int(night_temp)}")
+        schedule_pairs.append(f"{minutes_to_time(t)}/{night_temp}")
 
     # 4 pairs from day to night (use day_temp)
     for i in range(4):
         t = int(round((day_minutes + i * step_day_to_night) % DAY_MINUTES))
-        schedule_pairs.append(f"{minutes_to_time(t)}/{int(day_temp)}")
+        schedule_pairs.append(f"{minutes_to_time(t)}/{day_temp}")
 
     # Sort pairs by time (HH:MM) ascending
     schedule_pairs.sort(key=lambda pair: time_to_minutes(pair.split('/')[0]))
