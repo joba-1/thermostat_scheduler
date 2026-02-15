@@ -35,7 +35,7 @@ THERMOSTATS = {
         "day_temperature": 21,
         "night_hour": "23:00",
         "night_temperature": 19,
-        "type": "VNTH-T2_v2"
+        "type": "TRVZB"
     },
     "Dusche": {
         "day_hour": "05:00",
@@ -63,7 +63,7 @@ THERMOSTATS = {
         "day_temperature": 20,
         "night_hour": "23:00",
         "night_temperature": 19.5,
-        "type": "VNTH-T2_v2"
+        "type": "TRVZB"
     },
     "Waschküche": {
         "day_hour": "05:00",
@@ -104,6 +104,10 @@ THERMOSTAT_TYPES = {
     },
     "ME167": {
         "system_mode": "auto"
+    },
+    "TRVZB": {
+        "system_mode": "auto",
+        "temperature_accuracy": -0.6
     }
 }
 
@@ -195,8 +199,11 @@ def configure_thermostat(client, thermostat_name, thermostat_config, index):
     
     # Add schedule for each weekday
     weekdays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+    prefix = "schedule"
+    if thermostat_type = "TRVZB":
+        prefix = "weekly_schedule"
     for weekday in weekdays:
-        payload[f"schedule_{weekday}"] = schedule_string
+        payload[f"{prefix}_{weekday}"] = schedule_string
     
     # Construct topic
     topic = f"{MQTT_BASE_TOPIC}/{thermostat_name}/set"
