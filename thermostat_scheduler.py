@@ -18,72 +18,72 @@ MQTT_DELAY_BETWEEN_MESSAGES = 5  # seconds
 THERMOSTATS = {
     "Arbeitszimmer": {
         "day_hour": "09:00",
-        "day_temperature": 21,
+        "day_temperature": 21.5,
         "night_hour": "23:00", 
-        "night_temperature": 19,
+        "night_temperature": 19.5,
         "type": "ME168_1"
     },
     "Bad OG": {
         "day_hour": "05:00",
-        "day_temperature": 21,
+        "day_temperature": 21.5,
         "night_hour": "23:00",
-        "night_temperature": 19,
+        "night_temperature": 19.5,
         "type": "VNTH-T2_v2"
     },
     "Caros": {
         "day_hour": "05:00",
-        "day_temperature": 21,
-        "night_hour": "23:00",
-        "night_temperature": 19,
-        "type": "TRVZB"
-    },
-    "Dusche": {
-        "day_hour": "05:00",
-        "day_temperature": 19,
-        "night_hour": "23:00",
-        "night_temperature": 18,
-        "type": "ME168_1"
-    },
-    "Esszimmer": {
-        "day_hour": "05:00",
-        "day_temperature": 21,
-        "night_hour": "23:00",
-        "night_temperature": 20,
-        "type": "VNTH-T2_v2"
-    },
-    "Julians": {
-        "day_hour": "06:00",
-        "day_temperature": 23.5,
-        "night_hour": "23:00",
-        "night_temperature": 20,
-        "type": "VNTH-T2_v2"
-    },
-    "Schlafzimmer": {
-        "day_hour": "05:00",
-        "day_temperature": 20,
+        "day_temperature": 21.5,
         "night_hour": "23:00",
         "night_temperature": 19.5,
         "type": "TRVZB"
     },
+    "Dusche": {
+        "day_hour": "05:00",
+        "day_temperature": 19.5,
+        "night_hour": "23:00",
+        "night_temperature": 18.5,
+        "type": "ME168_1"
+    },
+    "Esszimmer": {
+        "day_hour": "05:00",
+        "day_temperature": 21.5,
+        "night_hour": "23:00",
+        "night_temperature": 20.5,
+        "type": "VNTH-T2_v2"
+    },
+    "Julians": {
+        "day_hour": "06:00",
+        "day_temperature": 24,
+        "night_hour": "23:00",
+        "night_temperature": 20.5,
+        "type": "VNTH-T2_v2"
+    },
+    "Schlafzimmer": {
+        "day_hour": "05:00",
+        "day_temperature": 20.5,
+        "night_hour": "23:00",
+        "night_temperature": 20,
+        "type": "TRVZB"
+    },
     "Waschküche": {
         "day_hour": "05:00",
-        "day_temperature": 20,
+        "day_temperature": 20.5,
         "night_hour": "23:00",
-        "night_temperature": 19,
+        "night_temperature": 19.5,
         "type": "TR-M3Z"
     },
     "WC OG": {
         "day_hour": "05:00",
-        "day_temperature": 20,
+        "day_temperature": 20.5,
         "night_hour": "23:00",
-        "night_temperature": 19,
+        "night_temperature": 19.5,
         "type": "VNTH-T2_v2"
     },
     "Wohnzimmer": {
         "day_hour": "05:00",
-        "day_temperature": 22,
+        "day_temperature": 22.5,
         "night_hour": "23:00",
-        "night_temperature": 20,
+        "night_temperature": 20.5,
         "type": "VNTH-T2_v2"
     }
 }
