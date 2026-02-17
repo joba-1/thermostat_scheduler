@@ -33,7 +33,7 @@ THERMOSTATS = {
     "Caros": {
         "day_hour": "05:00",
         "day_temperature": 21.5,
-        "night_hour": "23:00",
+        "night_hour": "00:00",
         "night_temperature": 19.5,
         "type": "TRVZB"
     },
@@ -61,7 +61,7 @@ THERMOSTATS = {
     "Schlafzimmer": {
         "day_hour": "05:00",
         "day_temperature": 20.5,
-        "night_hour": "23:00",
+        "night_hour": "00:00",
         "night_temperature": 20,
         "type": "TRVZB"
     },
@@ -200,7 +200,7 @@ def configure_thermostat(client, thermostat_name, thermostat_config, index):
     # Add schedule for each weekday
     weekdays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
     prefix = "schedule"
-    if thermostat_type = "TRVZB":
+    if thermostat_type == "TRVZB":
         prefix = "weekly_schedule"
     for weekday in weekdays:
         payload[f"{prefix}_{weekday}"] = schedule_string
