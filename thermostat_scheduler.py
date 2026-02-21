@@ -9,94 +9,37 @@ import time
 import argparse
 import os
 import sys
-
 import yaml
 import re
 import threading
 
-# No module-level config — pass config dicts around
-
 
 def load_config(path):
-        """Load configuration from a YAML file and apply to module globals.
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Config file not found: {path}")
+    with open(path, 'r') as f:
+        cfg = yaml.safe_load(f) or {}
 
-        Expected YAML structure:
-            mqtt:
-                broker: host
-                port: 1883
-                base_topic: zigbee2mqtt
-                delay_between_messages: 5
-                username: user  # optional
-                password: pass  # optional
-            thermostats: { ... }
-            thermostat_types: { ... }
-        """
+    # Basic top-level validation
+    for key in ('mqtt', 'thermostats', 'thermostat_types'):
+        if key not in cfg:
+            raise ValueError(f"Missing required top-level section in config: {key}")
 
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"Config file not found: {path}")
+    return cfg
 
-        with open(path, 'r') as f:
-            cfg = yaml.safe_load(f) or {}
-
-        # required top-level sections: try once for all three to report missing sections
-        try:
-            mqtt_cfg = cfg['mqtt']
-            thermostats_cfg = cfg['thermostats']
-            thermostat_types_cfg = cfg['thermostat_types']
-        except KeyError as e:
-            raise ValueError(f"Missing required top-level section in config: {e}")
-
-        
-        # Validate sections via helper
-        validate_section('mqtt', mqtt_cfg, expected_type=dict, required_keys={
-            'broker': str,
-            'port': int,
-            'base_topic': str,
-            'delay_between_messages': int,
-        })
-        validate_section('thermostats', thermostats_cfg, expected_type=dict, per_item_required_keys={
-            'type': str,
-            'day_hour': 'time',
-            'day_temperature': 'number',
-            'night_hour': 'time',
-            'night_temperature': 'number',
-        })
-
-        validate_section('thermostat_types', thermostat_types_cfg, expected_type=dict)
-
-        # Thermostat_types may optionally supply a `schedule_prefix` string that
-        # is used as the prefix for weekday schedule keys (default is "schedule_"). 
-        # Type-specific payload keys needed to enter scheduling mode are placed
-        # under the `schedule_mode` subsection. Validate those shapes.
-        for tname, tcfg in thermostat_types_cfg.items():
-            if not isinstance(tcfg, dict):
-                raise ValueError(f"Thermostat type '{tname}' must be a mapping")
-            # `schedule_prefix` is optional; when provided it must be a
-            # string. `schedule_mode` is required and must be a mapping.
-            if 'schedule_prefix' in tcfg and not isinstance(tcfg['schedule_prefix'], str):
-                raise ValueError(f"Thermostat type '{tname}' key 'schedule_prefix' must be a string")
-            if 'schedule_mode' not in tcfg:
-                raise ValueError(f"Thermostat type '{tname}' must include a 'schedule_mode' mapping")
-            if not isinstance(tcfg['schedule_mode'], dict):
-                raise ValueError(f"Thermostat type '{tname}' key 'schedule_mode' must be a mapping")
-
-        # Ensure every thermostat references an existing thermostat type
-        missing_types = sorted({tcfg['type'] for tcfg in thermostats_cfg.values()} - set(thermostat_types_cfg.keys()))
-        if missing_types:
-            raise ValueError(f"Undefined thermostat types referenced: {', '.join(missing_types)}")
-
-        return cfg
 
 def time_to_minutes(time_str):
     """Convert HH:MM format to minutes since midnight"""
     hours, minutes = map(int, time_str.split(':'))
     return hours * 60 + minutes
 
+
 def minutes_to_time(minutes):
     """Convert minutes since midnight to HH:MM format"""
     hours = minutes // 60
     mins = minutes % 60
     return f"{hours:02d}:{mins:02d}"
+
 
 def generate_schedule_string(day_hour, day_temp, night_hour, night_temp):
     """
@@ -161,68 +104,16 @@ def generate_schedule_string(day_hour, day_temp, night_hour, night_temp):
     return " ".join(unique)
 
 
-def validate_section(name, data, expected_type=dict, required_keys=None, per_item_required_keys=None):
-    """Generic validator for configuration sections.
-
-    - name: section name (for error messages)
-    - data: the config object to validate
-    - expected_type: expected top-level type (e.g., dict)
-    - required_keys: dict of key->type expected at top-level of data
-    - per_item_required_keys: dict of key->type for each item when data is a mapping of items
-
-    Supported special types for required keys: 'time' (HH:MM) and 'number' (int/float or numeric string).
-    """
-    if not isinstance(data, expected_type):
-        raise ValueError(f"'{name}' must be a {expected_type.__name__}")
-
-    if required_keys:
-        for k, expected in required_keys.items():
-            if k not in data:
-                raise ValueError(f"Missing key '{k}' in section '{name}'")
-            val = data[k]
-            if not isinstance(val, expected):
-                raise ValueError(f"Key '{k}' in section '{name}' must be of type {expected.__name__}")
-
-    if per_item_required_keys:
-        if not isinstance(data, dict):
-            raise ValueError(f"Section '{name}' must be a mapping for per-item validation")
-        for item_name, item in data.items():
-            if not isinstance(item, dict):
-                raise ValueError(f"Item '{item_name}' in section '{name}' must be a mapping")
-            for k, expected in per_item_required_keys.items():
-                if k not in item:
-                    raise ValueError(f"Item '{item_name}' in '{name}' missing key '{k}'")
-                val = item[k]
-                if expected == 'time':
-                    # validate HH:MM
-                    if not isinstance(val, str):
-                        raise ValueError(f"Item '{item_name}' key '{k}' must be time string HH:MM")
-                    m = re.match(r'^(\d{1,2}):(\d{2})$', val)
-                    if not m:
-                        raise ValueError(f"Item '{item_name}' key '{k}' must be time string HH:MM")
-                    hh = int(m.group(1)); mm = int(m.group(2))
-                    if not (0 <= hh < 24 and 0 <= mm < 60):
-                        raise ValueError(f"Item '{item_name}' key '{k}' has invalid time value")
-                elif expected == 'number':
-                    try:
-                        float(val)
-                    except Exception:
-                        raise ValueError(f"Item '{item_name}' key '{k}' must be numeric")
-                else:
-                    if not isinstance(val, expected):
-                        raise ValueError(f"Item '{item_name}' key '{k}' must be of type {expected.__name__}")
-
 def on_connect(client, userdata, flags, rc, properties=None):
     if rc == 0:
         print("Connected to MQTT broker successfully")
-        # userdata may be an Event (old behavior) or a dict with a
-        # 'connect_event' key; support both.
         if isinstance(userdata, threading.Event):
             userdata.set()
         elif isinstance(userdata, dict) and 'connect_event' in userdata and isinstance(userdata['connect_event'], threading.Event):
             userdata['connect_event'].set()
     else:
         print(f"Failed to connect to MQTT broker. Return code: {rc}")
+
 
 def on_publish(client, userdata, mid, rc, properties=None):
     """Callback for successful message publish """
@@ -239,80 +130,65 @@ def on_message(client, userdata, msg):
     responses = userdata.setdefault('responses', {})
     responses[msg.topic] = payload
 
-def configure_thermostat(client, name, thermostat_config, index, thermostat_types, mqtt_config, dry_run=False):
-    """Configure a single thermostat with schedule
 
-    `name` is the YAML key (used both for topics and display output)
-    """
-
-    print(f"\nConfiguring thermostat {index}: {name}")
-
-    # Get thermostat type configuration
+def build_expected_payload(name, thermostat_config, thermostat_types, mqtt_config):
     thermostat_type = thermostat_config["type"]
     type_config = thermostat_types.get(thermostat_type)
-    
     if not type_config:
-        print(f"Unknown thermostat type: {thermostat_type}")
-        return
-    
-    # Generate schedule string
+        raise ValueError(f"Unknown thermostat type: {thermostat_type}")
+
     schedule_string = generate_schedule_string(
         thermostat_config["day_hour"],
         thermostat_config["day_temperature"],
         thermostat_config["night_hour"],
-        thermostat_config["night_temperature"]
+        thermostat_config["night_temperature"],
     )
-    
-    # Construct payload from the required `schedule_mode` subsection.
-    payload = type_config['schedule_mode'].copy()
 
-    # Add schedule for each weekday using the configured prefix for this
-    # thermostat type (defaults to 'schedule'). The prefix may be, e.g.,
-    # 'schedule' or 'weekly_schedule' depending on the device.
+    payload = type_config['schedule_mode'].copy()
     weekdays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
     prefix = type_config.get('schedule_prefix', 'schedule')
     for weekday in weekdays:
         payload[f"{prefix}_{weekday}"] = schedule_string
-    
-    # Construct topic: allow per-thermostat override via `topic` key in config
-    # Topics are deterministic: '<base>/<name> Thermostat/set'
+
     device_topic_name = f"{name} Thermostat"
     topic = f"{mqtt_config.get('base_topic')}/{device_topic_name}/set"
-    
-    # Convert payload to a nicely formatted string with aligned colons for
-    # readability when printed to the terminal.
-    def format_payload_aligned(obj, indent=2):
-        # Represent simple JSON values using json.dumps
-        items = []
-        for k, v in obj.items():
-            items.append((json.dumps(k), json.dumps(v)))
-        # compute max key width
-        max_key = max((len(k) for k, _ in items), default=0)
-        lines = ["{"]
-        pad = " " * indent
-        for i, (k, v) in enumerate(items):
-            comma = "," if i < len(items) - 1 else ""
-            # align the colon by padding the key to max_key
-            space = " " * (max_key - len(k))
-            lines.append(f"{pad}{k}{space}: {v}{comma}")
-        lines.append("}")
-        return "\n".join(lines)
 
-    payload_str = format_payload_aligned(payload, indent=2)
+    # pretty format
+    items = [(json.dumps(k), json.dumps(v)) for k, v in payload.items()]
+    max_key = max((len(k) for k, _ in items), default=0)
+    lines = ["{"]
+    pad = " " * 2
+    for i, (k, v) in enumerate(items):
+        comma = "," if i < len(items) - 1 else ""
+        space = " " * (max_key - len(k))
+        lines.append(f"{pad}{k}{space}: {v}{comma}")
+    lines.append("}")
+    payload_str = "\n".join(lines)
+
+    return payload, topic, payload_str
+
+
+def configure_thermostat(client, name, thermostat_config, index, thermostat_types, mqtt_config, dry_run=False):
+    print(f"\nConfiguring thermostat {index}: {name}")
+
+    thermostat_type = thermostat_config["type"]
+    type_config = thermostat_types.get(thermostat_type)
+    if not type_config:
+        print(f"Unknown thermostat type: {thermostat_type}")
+        return
+
+    payload, topic, payload_str = build_expected_payload(name, thermostat_config, thermostat_types, mqtt_config)
 
     print(f"Topic: {topic}")
     print("Payload:")
     print(payload_str)
 
-    # Always return the constructed payload and topic so callers (including
-    # the new --check mode) can compare expected vs. reported device state.
     payload_json = json.dumps(payload)
 
     if dry_run or client is None:
         print("Dry run: not publishing to MQTT.")
         return payload, topic
 
-    # Publish to MQTT using the newer synchronous API (returns MQTTMessageInfo)
     try:
         info = client.publish(topic, payload_json, qos=1, retain=False)
         try:
@@ -329,8 +205,8 @@ def configure_thermostat(client, name, thermostat_config, index, thermostat_type
 
     return payload, topic
 
+
 def print_thermostat_table(thermostats):
-    """Print a table of all thermostat settings (name, type, day/night hours and temps)."""
     headers = ["Name", "Day Hour", "Day Temp", "Night Hour", "Night Temp", "Type"]
     rows = []
     for name, cfg in thermostats.items():
@@ -340,14 +216,12 @@ def print_thermostat_table(thermostats):
             str(cfg.get("day_temperature", "")),
             cfg.get("night_hour", ""),
             str(cfg.get("night_temperature", "")),
-            cfg.get("type", "")
+            cfg.get("type", ""),
         ])
 
-    # compute column widths
-    cols = list(zip(*([headers] + rows)))
+    cols = list(zip(*([headers] + rows))) if rows else [headers]
     widths = [max(len(str(cell)) for cell in col) for col in cols]
 
-    # format strings
     sep = " | "
     header_line = sep.join(h.ljust(w) for h, w in zip(headers, widths))
     divider = "-+-".join("-" * w for w in widths)
@@ -360,13 +234,10 @@ def print_thermostat_table(thermostats):
     print()
 
 
-
 def main():
-    """Main function to configure all thermostats"""
     parser = argparse.ArgumentParser(description='Thermostat scheduler using YAML config')
     parser.add_argument('--config', '-c', default='config.yaml', help='Path to YAML config file')
     parser.add_argument('--dry-run', action='store_true', help='Do not connect to MQTT; only print topics/payloads')
-    parser.add_argument('--check', action='store_true', help='Compare expected config with monitor-reported device states')
     args = parser.parse_args()
 
     try:
@@ -386,116 +257,36 @@ def main():
 
     client = None
     if not args.dry_run:
-        # Import paho only when actually needed
         try:
             import paho.mqtt.client as mqtt
         except Exception as e:
             print(f"Failed to import paho.mqtt.client: {e}")
             sys.exit(1)
 
-        # Create MQTT client
         client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         client.on_connect = on_connect
         client.on_publish = on_publish
         client.on_message = on_message
-        # Optional: Set username and password if provided
         if mqtt_cfg.get('username'):
             client.username_pw_set(mqtt_cfg.get('username'), mqtt_cfg.get('password'))
 
     try:
         if not args.dry_run:
-            # Connect to MQTT broker
             print(f"Connecting to MQTT broker at {mqtt_cfg.get('broker')}:{mqtt_cfg.get('port')}...")
             evt = threading.Event()
             userdata = {'connect_event': evt, 'responses': {}}
             client.user_data_set(userdata)
             client.connect(mqtt_cfg.get('broker'), mqtt_cfg.get('port'), 60)
-
-            # Start the network loop
             client.loop_start()
-
-            # Wait for connection (10s timeout)
             if not userdata['connect_event'].wait(10):
                 print("Warning: MQTT connection timeout")
 
-            # If the user requested --check, query the thermostat_monitor service
-            if args.check:
-                from functools import partial
-
-                def check_thermostats(client, userdata, mqtt_cfg, thermostats, thermostat_types, timeout=5):
-                    monitor_base = 'thermostat_monitor'
-                    client.subscribe(f"{monitor_base}/+")
-                    client.publish(monitor_base, 'get')
-                    time.sleep(timeout)
-                    responses = userdata.get('responses', {})
-
-                    def normalize_str(s):
-                        return ' '.join(str(s).split())
-
-                    def compare_expected_reported(expected, reported):
-                        # reported may be a dict or JSON string; normalize to dict
-                        if reported is None:
-                            return False
-                        if isinstance(reported, str):
-                            try:
-                                reported = json.loads(reported)
-                            except Exception:
-                                return False
-                        if not isinstance(reported, dict):
-                            return False
-
-                        # Compare only keys present in expected (ignore unrelated keys)
-                        for k, ev in expected.items():
-                            rv = reported.get(k)
-                            if rv is None:
-                                return False
-                            # numeric comparison
-                            try:
-                                evf = float(ev)
-                                rvf = float(rv)
-                                if abs(evf - rvf) > 1e-6:
-                                    return False
-                                continue
-                            except Exception:
-                                pass
-                            # string comparison normalized
-                            if isinstance(ev, str) and isinstance(rv, str):
-                                if normalize_str(ev) != normalize_str(rv):
-                                    return False
-                            else:
-                                if ev != rv:
-                                    return False
-                        return True
-
-                    for name, cfg_item in thermostats.items():
-                        expected_payload, _ = configure_thermostat(None, name, cfg_item, 0, thermostat_types, mqtt_cfg, dry_run=True)
-                        resp_topic = f"{monitor_base}/{name}"
-                        resp = responses.get(resp_topic)
-                        reported = None
-                        if isinstance(resp, dict):
-                            reported = resp.get('state')
-                        if resp is None or reported is None:
-                            print(f"{name}: unknown to monitor")
-                        else:
-                            if not compare_expected_reported(expected_payload, reported):
-                                rep_short = reported if isinstance(reported, str) else json.dumps(reported)
-                                print(f"{name}: MISMATCH — expected differs from monitor (reported: {rep_short})")
-
-                check_thermostats(client, userdata, mqtt_cfg, thermostats, thermostat_types, timeout=mqtt_cfg.get('check_timeout', 5))
-                client.loop_stop()
-                client.disconnect()
-                print_thermostat_table(thermostats)
-                return
-
-        # Configure each thermostat (publish)
         for i, (thermostat_name, config) in enumerate(thermostats.items()):
-            # thermostat_name is the key from YAML and used as the display name
             result = configure_thermostat(client, thermostat_name, config, i+1, thermostat_types, mqtt_cfg, dry_run=args.dry_run)
             if result and not args.dry_run:
-                # result returned payload,topic only when not dry-run path
                 pass
             if not args.dry_run:
-                time.sleep(mqtt_cfg.get('delay_between_messages'))  # Delay to ensure message processing
+                time.sleep(mqtt_cfg.get('delay_between_messages', 1))
 
         print("\n=== Configuration Complete ===")
         if args.dry_run:
@@ -507,13 +298,12 @@ def main():
         print(f"Error: {e}")
 
     finally:
-        # Cleanup
         if not args.dry_run and client is not None:
             client.loop_stop()
             client.disconnect()
             print("Disconnected from MQTT broker.")
         print_thermostat_table(thermostats)
 
+
 if __name__ == "__main__":
     main()
-
