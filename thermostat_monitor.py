@@ -61,6 +61,12 @@ def main():
                 client.subscribe(topic)
             client.subscribe(monitor_topic)
             print(f"Subscribed to {len(topic_to_name)} device topics and '{monitor_topic}'")
+            # user-facing instructions
+            print("")
+            print("Thermostat monitor is ready.")
+            print(f" - Send a request by publishing payload 'get' to topic: '{monitor_topic}'")
+            print(f" - Responses are published per-device to: '{monitor_topic}/<Name>' (one message per device)")
+            print("")
         else:
             print(f"MQTT connect failed with rc={rc}")
 
@@ -72,18 +78,21 @@ def main():
         if t == monitor_topic:
             # request from external actor
             if payload.strip().lower() == 'get':
-                # build response list
-                out = []
+                # publish per-device responses to monitor_topic/<name>
                 for name in thermostats.keys():
                     seen = last_seen.get(name, start_time)
                     state = last_state.get(name)
-                    val = {
+                    # Flatten response: put last_seen and state at top level.
+                    # Use JSON null (None in Python) when state is unknown.
+                    resp_obj = {
+                        'name': name,
                         'last_seen': seen,
-                        'state': state if state is not None else 'unknown'
+                        'state': state,
                     }
-                    out.append({'name': name, 'value': val})
-                resp = json.dumps(out)
-                client.publish(monitor_topic, resp, qos=1)
+                    # pretty-print JSON for readability
+                    resp = json.dumps(resp_obj, indent=2, ensure_ascii=False)
+                    resp_topic = f"{monitor_topic}/{name}"
+                    client.publish(resp_topic, resp, qos=1)
             return
 
         # device topic
