@@ -304,25 +304,30 @@ def configure_thermostat(client, name, thermostat_config, index, thermostat_type
     print("Payload:")
     print(payload_str)
 
-    if dry_run:
-        print("Dry run: not publishing to MQTT.")
-        return
+    # Always return the constructed payload and topic so callers (including
+    # the new --check mode) can compare expected vs. reported device state.
+    payload_json = json.dumps(payload)
 
-    return payload, topic
+    if dry_run or client is None:
+        print("Dry run: not publishing to MQTT.")
+        return payload, topic
 
     # Publish to MQTT using the newer synchronous API (returns MQTTMessageInfo)
-    info = client.publish(topic, payload_json, qos=1, retain=False)
     try:
-        info.wait_for_publish(timeout=10)
-    except Exception:
-        pass
+        info = client.publish(topic, payload_json, qos=1, retain=False)
+        try:
+            info.wait_for_publish(timeout=10)
+        except Exception:
+            pass
 
-    if getattr(info, "is_published", lambda: False)():
-        print(f"✓ Successfully sent configuration to {thermostat_name}")
-    else:
-        print(f"✗ Failed to send configuration to {thermostat_name} (info: {info})")
-    
-    return
+        if getattr(info, "is_published", lambda: False)():
+            print(f"✓ Successfully sent configuration to {name}")
+        else:
+            print(f"✗ Failed to send configuration to {name} (info: {info})")
+    except Exception as e:
+        print(f"Publish error for {name}: {e}")
+
+    return payload, topic
 
 def print_thermostat_table(thermostats):
     """Print a table of all thermostat settings (name, type, day/night hours and temps)."""
@@ -361,6 +366,7 @@ def main():
     parser = argparse.ArgumentParser(description='Thermostat scheduler using YAML config')
     parser.add_argument('--config', '-c', default='config.yaml', help='Path to YAML config file')
     parser.add_argument('--dry-run', action='store_true', help='Do not connect to MQTT; only print topics/payloads')
+    parser.add_argument('--check', action='store_true', help='Compare expected config with monitor-reported device states')
     args = parser.parse_args()
 
     try:
@@ -411,6 +417,64 @@ def main():
             # Wait for connection (10s timeout)
             if not userdata['connect_event'].wait(10):
                 print("Warning: MQTT connection timeout")
+
+            # If the user requested --check, query the thermostat_monitor service
+            if args.check:
+                # subscribe to responses and request current states
+                monitor_base = 'thermostat_monitor'
+                client.subscribe(f"{monitor_base}/+")
+                # publish a simple 'get' payload to request states
+                client.publish(monitor_base, 'get')
+                # wait for responses (configurable via mqtt.check_timeout)
+                timeout = mqtt_cfg.get('check_timeout', 5)
+                time.sleep(timeout)
+
+                responses = userdata.get('responses', {})
+
+                def state_equals(expected_payload, reported_state):
+                    if reported_state is None:
+                        return False
+                    if isinstance(reported_state, dict):
+                        return reported_state == expected_payload
+                    if isinstance(reported_state, str):
+                        try:
+                            parsed = json.loads(reported_state)
+                            return parsed == expected_payload
+                        except Exception:
+                            pass
+                        # compare against any string value in expected payload
+                        for v in expected_payload.values():
+                            if isinstance(v, str) and v.strip() == reported_state.strip():
+                                return True
+                        try:
+                            if json.dumps(expected_payload, sort_keys=True) == reported_state.strip():
+                                return True
+                        except Exception:
+                            pass
+                        return False
+
+                # For each thermostat, generate expected payload and compare
+                for name, cfg_item in thermostats.items():
+                    expected_payload, _ = configure_thermostat(None, name, cfg_item, 0, thermostat_types, mqtt_cfg, dry_run=True)
+                    resp_topic = f"thermostat_monitor/{name}"
+                    resp = responses.get(resp_topic)
+                    reported = None
+                    if isinstance(resp, dict):
+                        reported = resp.get('state')
+                    # Print one line if differing or unknown
+                    if resp is None or reported is None:
+                        print(f"{name}: unknown to monitor")
+                    else:
+                        if not state_equals(expected_payload, reported):
+                            # show concise mismatch
+                            rep_short = reported if isinstance(reported, str) else json.dumps(reported)
+                            print(f"{name}: MISMATCH — expected differs from monitor (reported: {rep_short})")
+
+                # after check, clean up and exit
+                client.loop_stop()
+                client.disconnect()
+                print_thermostat_table(thermostats)
+                return
 
         # Configure each thermostat (publish)
         for i, (thermostat_name, config) in enumerate(thermostats.items()):
