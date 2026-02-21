@@ -259,11 +259,30 @@ def configure_thermostat(client, thermostat_name, thermostat_config, index, ther
     if not topic:
         topic = f"{mqtt_config.get('base_topic')}/{thermostat_name}/set"
     
-    # Convert payload to JSON
-    payload_json = json.dumps(payload, indent=2)
+    # Convert payload to a nicely formatted string with aligned colons for
+    # readability when printed to the terminal.
+    def format_payload_aligned(obj, indent=2):
+        # Represent simple JSON values using json.dumps
+        items = []
+        for k, v in obj.items():
+            items.append((json.dumps(k), json.dumps(v)))
+        # compute max key width
+        max_key = max((len(k) for k, _ in items), default=0)
+        lines = ["{"]
+        pad = " " * indent
+        for i, (k, v) in enumerate(items):
+            comma = "," if i < len(items) - 1 else ""
+            # align the colon by padding the key to max_key
+            space = " " * (max_key - len(k))
+            lines.append(f"{pad}{k}{space}: {v}{comma}")
+        lines.append("}")
+        return "\n".join(lines)
+
+    payload_str = format_payload_aligned(payload, indent=2)
 
     print(f"Topic: {topic}")
-    print(f"Payload: {payload_json}")
+    print("Payload:")
+    print(payload_str)
 
     if dry_run:
         print("Dry run: not publishing to MQTT.")
