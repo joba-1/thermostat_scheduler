@@ -355,118 +355,13 @@ def print_thermostat_table(thermostats):
     print()
 
 
-def build_desired_payload_and_topics(thermostats, thermostat_types, mqtt_cfg):
-    """Build desired payloads and state topics for all thermostats.
-
-    Returns a dict mapping display_name -> (desired_payload, state_topic, set_topic)
-    """
-    result = {}
-    for name, cfg in thermostats.items():
-        display_name = name
-        ttype = cfg['type']
-        type_cfg = thermostat_types.get(ttype)
-        if not type_cfg:
-            continue
-        schedule_string = generate_schedule_string(
-            cfg['day_hour'], cfg['day_temperature'], cfg['night_hour'], cfg['night_temperature']
-        )
-        payload = type_cfg['schedule_mode'].copy()
-        prefix = type_cfg.get('schedule_prefix', 'schedule')
-        weekdays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
-        for w in weekdays:
-            payload[f"{prefix}_{w}"] = schedule_string
-
-        # Default topics are built from the YAML key (`name`) with the
-        # suffix ' Thermostat', then append '/set' or '/get'
-        device_topic_name = f"{name} Thermostat"
-        base = mqtt_cfg.get('base_topic')
-        state_topic = f"{base}/{device_topic_name}"
-        set_topic = f"{base}/{device_topic_name}/set"
-        get_topic = f"{base}/{device_topic_name}/get"
-        state_request_payload = mqtt_cfg.get('state_request_payload', "")
-
-        result[name] = (payload, state_topic, set_topic, get_topic, state_request_payload)
-    return result
-
-
-def run_check(client, userdata, thermostats, thermostat_types, mqtt_cfg):
-    """Subscribe to state topics, collect current state, and print differences.
-
-    `userdata` is the dict previously set on the client and contains a
-    'responses' mapping filled by `on_message`.
-    """
-    desired = build_desired_payload_and_topics(thermostats, thermostat_types, mqtt_cfg)
-
-    # subscribe to state topics first so we receive retained or immediate
-    # responses after requesting state.
-    for name, (_payload, state_topic, _set_topic, _req_topic, _req_payload) in desired.items():
-        client.subscribe(state_topic)
-
-    # start loop before requesting state
-    client.loop_start()
-
-    # actively request state from devices by publishing to their set_topic
-    # with a configurable suffix (default: '/get'). Many devices respond on
-    # their state topic when a get request is published. Retry a few times
-    # to improve chances of receiving responses.
-    suffix = mqtt_cfg.get('state_request_suffix', '/get')
-    retries = int(mqtt_cfg.get('state_request_retries', 2))
-    interval = int(mqtt_cfg.get('delay_between_messages', 5))
-
-    responses = userdata.get('responses', {}) if isinstance(userdata, dict) else {}
-
-    for attempt in range(max(1, retries)):
-        for name, (_payload, _state_topic, _set_topic, request_topic, request_payload) in desired.items():
-            try:
-                # Print the topic and payload at publish time for visibility
-                print(f"Publishing request for {name}: topic='{request_topic}' payload='{request_payload}'")
-                client.publish(request_topic, request_payload, qos=1)
-            except Exception:
-                pass
-
-        # wait for responses to arrive
-        time.sleep(interval)
-
-        # check whether we have at least one response; if so, break early
-        if responses:
-            break
-
-    # copy current responses snapshot
-    responses = userdata.get('responses', {}) if isinstance(userdata, dict) else {}
-
-    # compare desired vs responses
-    for name, (payload, state_topic, set_topic, _request_topic, _request_payload) in desired.items():
-        current = responses.get(state_topic)
-        print(f"\nChecking {name} (state topic: {state_topic})")
-        if not current:
-            print("  No state received — unable to compare")
-            continue
-        diffs = []
-        for k, v in payload.items():
-            cur_v = current.get(k)
-            # compare as strings
-            if cur_v is None or str(cur_v) != str(v):
-                diffs.append((k, cur_v, v))
-        if not diffs:
-            print("  No differences")
-        else:
-            print("  Differences:")
-            for k, cur_v, want_v in diffs:
-                print(f"   - {k}: current={cur_v!r} desired={want_v!r}")
-
-    client.loop_stop()
 
 def main():
     """Main function to configure all thermostats"""
     parser = argparse.ArgumentParser(description='Thermostat scheduler using YAML config')
     parser.add_argument('--config', '-c', default='config.yaml', help='Path to YAML config file')
     parser.add_argument('--dry-run', action='store_true', help='Do not connect to MQTT; only print topics/payloads')
-    parser.add_argument('--check', action='store_true', help='Query current device state and list only differences from desired settings')
     args = parser.parse_args()
-
-    if args.check and args.dry_run:
-        print("Error: --check and --dry-run are mutually exclusive")
-        sys.exit(2)
 
     try:
         cfg = load_config(args.config)
@@ -484,7 +379,7 @@ def main():
     print(f"Configuring {len(thermostats)} thermostats...\n")
 
     client = None
-    if args.check or not args.dry_run:
+    if not args.dry_run:
         # Import paho only when actually needed
         try:
             import paho.mqtt.client as mqtt
@@ -517,26 +412,21 @@ def main():
             if not userdata['connect_event'].wait(10):
                 print("Warning: MQTT connection timeout")
 
-            # If check mode is requested, query current states and compare.
-        if args.check:
-            run_check(client, userdata, thermostats, thermostat_types, mqtt_cfg)
-        else:
-            # Configure each thermostat (publish)
-            for i, (thermostat_name, config) in enumerate(thermostats.items()):
-                # thermostat_name is the key from YAML and used as the display name
-                result = configure_thermostat(client, thermostat_name, config, i+1, thermostat_types, mqtt_cfg, dry_run=args.dry_run)
-                if result and not args.dry_run:
-                    # result returned payload,topic only when not dry-run path
-                    pass
-                if not args.dry_run:
-                    time.sleep(mqtt_cfg.get('delay_between_messages'))  # Delay to ensure message processing
+        # Configure each thermostat (publish)
+        for i, (thermostat_name, config) in enumerate(thermostats.items()):
+            # thermostat_name is the key from YAML and used as the display name
+            result = configure_thermostat(client, thermostat_name, config, i+1, thermostat_types, mqtt_cfg, dry_run=args.dry_run)
+            if result and not args.dry_run:
+                # result returned payload,topic only when not dry-run path
+                pass
+            if not args.dry_run:
+                time.sleep(mqtt_cfg.get('delay_between_messages'))  # Delay to ensure message processing
 
-        if not args.check:
-            print("\n=== Configuration Complete ===")
-            if args.dry_run:
-                print("Dry run complete — no MQTT connections were made.")
-            else:
-                print("All thermostats have been configured with their schedules.")
+        print("\n=== Configuration Complete ===")
+        if args.dry_run:
+            print("Dry run complete — no MQTT connections were made.")
+        else:
+            print("All thermostats have been configured with their schedules.")
 
     except Exception as e:
         print(f"Error: {e}")
@@ -547,9 +437,7 @@ def main():
             client.loop_stop()
             client.disconnect()
             print("Disconnected from MQTT broker.")
-        # Print table of settings at the end (skip in check mode)
-        if not args.check:
-            print_thermostat_table(thermostats)
+        print_thermostat_table(thermostats)
 
 if __name__ == "__main__":
     main()
