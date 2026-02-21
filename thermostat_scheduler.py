@@ -122,6 +122,7 @@ def on_publish(client, userdata, mid, rc, properties=None):
 
 def on_message(client, userdata, msg):
     """Collect incoming JSON state messages into userdata['responses'] by topic."""
+    did_check = False
     try:
         payload = json.loads(msg.payload.decode('utf-8'))
     except Exception:
@@ -166,6 +167,15 @@ def build_expected_payload(name, thermostat_config, thermostat_types, mqtt_confi
     payload_str = "\n".join(lines)
 
     return payload, topic, payload_str
+
+
+def check_thermostats(cfg):
+    """Placeholder for the --check feature.
+
+    Receives the already-loaded config dict. Currently a no-op; will be
+    implemented in subsequent small steps as requested.
+    """
+    return
 
 
 def configure_thermostat(client, name, thermostat_config, index, thermostat_types, mqtt_config, dry_run=False):
@@ -237,7 +247,9 @@ def print_thermostat_table(thermostats):
 def main():
     parser = argparse.ArgumentParser(description='Thermostat scheduler using YAML config')
     parser.add_argument('--config', '-c', default='config.yaml', help='Path to YAML config file')
-    parser.add_argument('--dry-run', action='store_true', help='Do not connect to MQTT; only print topics/payloads')
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument('--dry-run', action='store_true', help='Do not connect to MQTT; only print topics/payloads')
+    group.add_argument('--check', action='store_true', help='Run configuration checks using thermostat_monitor')
     args = parser.parse_args()
 
     try:
@@ -281,18 +293,18 @@ def main():
             if not userdata['connect_event'].wait(10):
                 print("Warning: MQTT connection timeout")
 
-        for i, (thermostat_name, config) in enumerate(thermostats.items()):
-            result = configure_thermostat(client, thermostat_name, config, i+1, thermostat_types, mqtt_cfg, dry_run=args.dry_run)
-            if result and not args.dry_run:
-                pass
-            if not args.dry_run:
-                time.sleep(mqtt_cfg.get('delay_between_messages', 1))
-
-        print("\n=== Configuration Complete ===")
-        if args.dry_run:
-            print("Dry run complete — no MQTT connections were made.")
+        if args.check:
+            check_thermostats(cfg)
         else:
-            print("All thermostats have been configured with their schedules.")
+            for i, (thermostat_name, config) in enumerate(thermostats.items()):
+                result = configure_thermostat(client, thermostat_name, config, i+1, thermostat_types, mqtt_cfg, dry_run=args.dry_run)
+                if not args.dry_run:
+                    time.sleep(mqtt_cfg.get('delay_between_messages', 1))
+
+            if args.dry_run:
+                print("Dry run complete")
+            else:
+                print("All thermostats configured")
 
     except Exception as e:
         print(f"Error: {e}")
@@ -302,7 +314,8 @@ def main():
             client.loop_stop()
             client.disconnect()
             print("Disconnected from MQTT broker.")
-        print_thermostat_table(thermostats)
+        if not args.check:
+            print_thermostat_table(thermostats)
 
 
 if __name__ == "__main__":
