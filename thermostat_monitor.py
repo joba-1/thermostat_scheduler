@@ -49,8 +49,8 @@ def main():
         device_topic_name = f"{name} Thermostat"
         state_topic = f"{base}/{device_topic_name}"
         topic_to_name[state_topic] = name
-        # initialize with start time and unknown state
-        last_seen[name] = start_time
+        # initialize with unknown state (not seen yet)
+        last_seen[name] = None
         last_state[name] = None
 
     def on_connect(client, userdata, flags, rc, properties=None):
@@ -80,7 +80,7 @@ def main():
             if payload.strip().lower() == 'get':
                 # publish per-device responses to monitor_topic/<name>
                 for name in thermostats.keys():
-                    seen = last_seen.get(name, start_time)
+                    seen = last_seen.get(name)
                     state = last_state.get(name)
                     # Flatten response: put last_seen and state at top level.
                     # Use JSON null (None in Python) when state is unknown.
@@ -117,7 +117,47 @@ def main():
 
     print(f"Connecting to MQTT broker {mqtt_cfg.get('broker')}:{mqtt_cfg.get('port')}")
     client.connect(mqtt_cfg.get('broker'), mqtt_cfg.get('port'), 60)
-    client.loop_forever()
+    # Run network loop in background so we can publish periodic unseen reports.
+    client.loop_start()
+
+    # Periodically publish devices that have not shown up recently.
+    unseen_interval = mqtt_cfg.get('unseen_interval', 1800)  # default 30 minutes
+
+    def parse_iso(s):
+        try:
+            return time.mktime(time.strptime(s, '%Y-%m-%dT%H:%M:%S'))
+        except Exception:
+            return None
+
+    def unseen_reporter():
+        while True:
+            time.sleep(unseen_interval)
+            now_ts = time.time()
+            unseen = []
+            for name in thermostats.keys():
+                seen = last_seen.get(name)
+                if seen is None:
+                    unseen.append({'name': name, 'last_seen': None})
+                    continue
+                seen_ts = parse_iso(seen)
+                if seen_ts is None or (now_ts - seen_ts) > unseen_interval:
+                    unseen.append({'name': name, 'last_seen': seen})
+            if unseen:
+                report = {'timestamp': iso_now(), 'unseen': unseen}
+                report_str = json.dumps(report, indent=2, ensure_ascii=False)
+                report_topic = f"{monitor_topic}/unseen"
+                client.publish(report_topic, report_str, qos=1)
+                print(f"Published unseen report to {report_topic}: {len(unseen)} devices")
+
+    t = threading.Thread(target=unseen_reporter, daemon=True)
+    t.start()
+
+    # Keep the main thread alive.
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        client.loop_stop()
 
 
 if __name__ == '__main__':

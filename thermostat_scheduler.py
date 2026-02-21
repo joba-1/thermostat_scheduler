@@ -420,57 +420,68 @@ def main():
 
             # If the user requested --check, query the thermostat_monitor service
             if args.check:
-                # subscribe to responses and request current states
-                monitor_base = 'thermostat_monitor'
-                client.subscribe(f"{monitor_base}/+")
-                # publish a simple 'get' payload to request states
-                client.publish(monitor_base, 'get')
-                # wait for responses (configurable via mqtt.check_timeout)
-                timeout = mqtt_cfg.get('check_timeout', 5)
-                time.sleep(timeout)
+                from functools import partial
 
-                responses = userdata.get('responses', {})
+                def check_thermostats(client, userdata, mqtt_cfg, thermostats, thermostat_types, timeout=5):
+                    monitor_base = 'thermostat_monitor'
+                    client.subscribe(f"{monitor_base}/+")
+                    client.publish(monitor_base, 'get')
+                    time.sleep(timeout)
+                    responses = userdata.get('responses', {})
 
-                def state_equals(expected_payload, reported_state):
-                    if reported_state is None:
-                        return False
-                    if isinstance(reported_state, dict):
-                        return reported_state == expected_payload
-                    if isinstance(reported_state, str):
-                        try:
-                            parsed = json.loads(reported_state)
-                            return parsed == expected_payload
-                        except Exception:
-                            pass
-                        # compare against any string value in expected payload
-                        for v in expected_payload.values():
-                            if isinstance(v, str) and v.strip() == reported_state.strip():
-                                return True
-                        try:
-                            if json.dumps(expected_payload, sort_keys=True) == reported_state.strip():
-                                return True
-                        except Exception:
-                            pass
-                        return False
+                    def normalize_str(s):
+                        return ' '.join(str(s).split())
 
-                # For each thermostat, generate expected payload and compare
-                for name, cfg_item in thermostats.items():
-                    expected_payload, _ = configure_thermostat(None, name, cfg_item, 0, thermostat_types, mqtt_cfg, dry_run=True)
-                    resp_topic = f"thermostat_monitor/{name}"
-                    resp = responses.get(resp_topic)
-                    reported = None
-                    if isinstance(resp, dict):
-                        reported = resp.get('state')
-                    # Print one line if differing or unknown
-                    if resp is None or reported is None:
-                        print(f"{name}: unknown to monitor")
-                    else:
-                        if not state_equals(expected_payload, reported):
-                            # show concise mismatch
-                            rep_short = reported if isinstance(reported, str) else json.dumps(reported)
-                            print(f"{name}: MISMATCH — expected differs from monitor (reported: {rep_short})")
+                    def compare_expected_reported(expected, reported):
+                        # reported may be a dict or JSON string; normalize to dict
+                        if reported is None:
+                            return False
+                        if isinstance(reported, str):
+                            try:
+                                reported = json.loads(reported)
+                            except Exception:
+                                return False
+                        if not isinstance(reported, dict):
+                            return False
 
-                # after check, clean up and exit
+                        # Compare only keys present in expected (ignore unrelated keys)
+                        for k, ev in expected.items():
+                            rv = reported.get(k)
+                            if rv is None:
+                                return False
+                            # numeric comparison
+                            try:
+                                evf = float(ev)
+                                rvf = float(rv)
+                                if abs(evf - rvf) > 1e-6:
+                                    return False
+                                continue
+                            except Exception:
+                                pass
+                            # string comparison normalized
+                            if isinstance(ev, str) and isinstance(rv, str):
+                                if normalize_str(ev) != normalize_str(rv):
+                                    return False
+                            else:
+                                if ev != rv:
+                                    return False
+                        return True
+
+                    for name, cfg_item in thermostats.items():
+                        expected_payload, _ = configure_thermostat(None, name, cfg_item, 0, thermostat_types, mqtt_cfg, dry_run=True)
+                        resp_topic = f"{monitor_base}/{name}"
+                        resp = responses.get(resp_topic)
+                        reported = None
+                        if isinstance(resp, dict):
+                            reported = resp.get('state')
+                        if resp is None or reported is None:
+                            print(f"{name}: unknown to monitor")
+                        else:
+                            if not compare_expected_reported(expected_payload, reported):
+                                rep_short = reported if isinstance(reported, str) else json.dumps(reported)
+                                print(f"{name}: MISMATCH — expected differs from monitor (reported: {rep_short})")
+
+                check_thermostats(client, userdata, mqtt_cfg, thermostats, thermostat_types, timeout=mqtt_cfg.get('check_timeout', 5))
                 client.loop_stop()
                 client.disconnect()
                 print_thermostat_table(thermostats)
