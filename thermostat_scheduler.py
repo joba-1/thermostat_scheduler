@@ -239,10 +239,13 @@ def on_message(client, userdata, msg):
     responses = userdata.setdefault('responses', {})
     responses[msg.topic] = payload
 
-def configure_thermostat(client, thermostat_name, thermostat_config, index, thermostat_types, mqtt_config, dry_run=False):
-    """Configure a single thermostat with schedule"""
+def configure_thermostat(client, name, thermostat_config, index, thermostat_types, mqtt_config, dry_run=False):
+    """Configure a single thermostat with schedule
 
-    print(f"\nConfiguring thermostat {index}: {thermostat_name}")
+    `name` is the YAML key (used both for topics and display output)
+    """
+
+    print(f"\nConfiguring thermostat {index}: {name}")
 
     # Get thermostat type configuration
     thermostat_type = thermostat_config["type"]
@@ -274,7 +277,8 @@ def configure_thermostat(client, thermostat_name, thermostat_config, index, ther
     # Construct topic: allow per-thermostat override via `topic` key in config
     topic = thermostat_config.get('topic')
     if not topic:
-        topic = f"{mqtt_config.get('base_topic')}/{thermostat_name}/set"
+        device_topic_name = f"{name} Thermostat"
+        topic = f"{mqtt_config.get('base_topic')}/{device_topic_name}/set"
     
     # Convert payload to a nicely formatted string with aligned colons for
     # readability when printed to the terminal.
@@ -359,7 +363,7 @@ def build_desired_payload_and_topics(thermostats, thermostat_types, mqtt_cfg):
     """
     result = {}
     for name, cfg in thermostats.items():
-        display_name = cfg.get('display_name', name)
+        display_name = name
         ttype = cfg['type']
         type_cfg = thermostat_types.get(ttype)
         if not type_cfg:
@@ -373,9 +377,24 @@ def build_desired_payload_and_topics(thermostats, thermostat_types, mqtt_cfg):
         for w in weekdays:
             payload[f"{prefix}_{w}"] = schedule_string
 
-        set_topic = cfg.get('topic') or f"{mqtt_cfg.get('base_topic')}/{display_name}/set"
-        state_topic = f"{mqtt_cfg.get('base_topic')}/{display_name}"
-        result[display_name] = (payload, state_topic, set_topic)
+        # Default topics are built from the YAML key (`name`) to match the
+        # device identifier that Zigbee2MQTT uses for topics. `display_name`
+        # is only for human-friendly output.
+        # Default topics are built from the YAML key (`name`) with the
+        # suffix ' Thermostat' to match prior naming conventions used
+        # by Zigbee2MQTT (e.g. 'Wohnzimmer Thermostat'). `display_name`
+        # remains for human-friendly output.
+        device_topic_name = f"{name} Thermostat"
+        set_topic = cfg.get('topic') or f"{mqtt_cfg.get('base_topic')}/{device_topic_name}/set"
+        # Allow per-thermostat override for the state topic (some setups use different topic names)
+        state_topic = cfg.get('state_topic') or f"{mqtt_cfg.get('base_topic')}/{device_topic_name}"
+        # Allow per-thermostat override for how to request state. If not provided,
+        # consumers will publish to the set_topic plus a suffix (configured globally).
+        state_request_topic = cfg.get('state_request_topic') or f"{set_topic}{mqtt_cfg.get('state_request_suffix', '/get')}"
+        # Optional payload to send when requesting state (default empty string)
+        state_request_payload = cfg.get('state_request_payload', mqtt_cfg.get('state_request_payload', ""))
+
+        result[name] = (payload, state_topic, set_topic, state_request_topic, state_request_payload)
     return result
 
 
@@ -389,7 +408,7 @@ def run_check(client, userdata, thermostats, thermostat_types, mqtt_cfg):
 
     # subscribe to state topics first so we receive retained or immediate
     # responses after requesting state.
-    for display_name, (_payload, state_topic, _set_topic) in desired.items():
+    for name, (_payload, state_topic, _set_topic, _req_topic, _req_payload) in desired.items():
         client.subscribe(state_topic)
 
     # start loop before requesting state
@@ -406,10 +425,9 @@ def run_check(client, userdata, thermostats, thermostat_types, mqtt_cfg):
     responses = userdata.get('responses', {}) if isinstance(userdata, dict) else {}
 
     for attempt in range(max(1, retries)):
-        for display_name, (_payload, _state_topic, set_topic) in desired.items():
-            request_topic = f"{set_topic}{suffix}"
+        for name, (_payload, _state_topic, _set_topic, request_topic, request_payload) in desired.items():
             try:
-                client.publish(request_topic, "", qos=1)
+                client.publish(request_topic, request_payload, qos=1)
             except Exception:
                 pass
 
@@ -424,9 +442,9 @@ def run_check(client, userdata, thermostats, thermostat_types, mqtt_cfg):
     responses = userdata.get('responses', {}) if isinstance(userdata, dict) else {}
 
     # compare desired vs responses
-    for display_name, (payload, state_topic, set_topic) in desired.items():
+    for name, (payload, state_topic, set_topic, _request_topic, _request_payload) in desired.items():
         current = responses.get(state_topic)
-        print(f"\nChecking {display_name} (state topic: {state_topic})")
+        print(f"\nChecking {name} (state topic: {state_topic})")
         if not current:
             print("  No state received — unable to compare")
             continue
@@ -512,9 +530,8 @@ def main():
         else:
             # Configure each thermostat (publish)
             for i, (thermostat_name, config) in enumerate(thermostats.items()):
-                # thermostat_name is the key from YAML; allow display name to differ if provided
-                display_name = config.get('display_name', thermostat_name)
-                result = configure_thermostat(client, display_name, config, i+1, thermostat_types, mqtt_cfg, dry_run=args.dry_run)
+                # thermostat_name is the key from YAML and used as the display name
+                result = configure_thermostat(client, thermostat_name, config, i+1, thermostat_types, mqtt_cfg, dry_run=args.dry_run)
                 if result and not args.dry_run:
                     # result returned payload,topic only when not dry-run path
                     pass
