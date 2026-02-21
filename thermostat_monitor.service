@@ -1,0 +1,18 @@
+[Unit]
+Description=Thermostat Monitor Service
+After=network.target
+
+[Service]
+Type=simple
+User=joachim
+WorkingDirectory=/home/joachim/git/thermostat_scheduler
+ExecStart=/home/joachim/git/thermostat_scheduler/venv/bin/python /home/joachim/git/thermostat_scheduler/thermostat_monitor.py --config /home/joachim/git/thermostat_scheduler/config.yaml
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=thermostat_monitor
+
+[Install]
+WantedBy=multi-user.target
