@@ -64,6 +64,20 @@ def load_config(path):
 
         validate_section('thermostat_types', thermostat_types_cfg, expected_type=dict)
 
+        # Thermostat_types may optionally supply a `schedule_prefix` string that
+        # is used as the prefix for weekday schedule keys (default is "schedule_"). 
+        # Type-specific payload keys needed to enter scheduling mode are placed
+        # under the `schedule_mode` subsection. Validate those shapes.
+        for tname, tcfg in thermostat_types_cfg.items():
+            if not isinstance(tcfg, dict):
+                raise ValueError(f"Thermostat type '{tname}' must be a mapping")
+            if 'schedule_prefix' in tcfg and not isinstance(tcfg['schedule_prefix'], str):
+                raise ValueError(f"Thermostat type '{tname}' key 'schedule_prefix' must be a string")
+            if 'schedule_mode' not in tcfg:
+                raise ValueError(f"Thermostat type '{tname}' must include a 'schedule_mode' mapping")
+            if not isinstance(tcfg['schedule_mode'], dict):
+                raise ValueError(f"Thermostat type '{tname}' key 'schedule_mode' must be a mapping")
+
         # Ensure every thermostat references an existing thermostat type
         missing_types = sorted({tcfg['type'] for tcfg in thermostats_cfg.values()} - set(thermostat_types_cfg.keys()))
         if missing_types:
@@ -85,8 +99,8 @@ def minutes_to_time(minutes):
 def generate_schedule_string(day_hour, day_temp, night_hour, night_temp):
     """
     Generate schedule string with 6 time/temperature pairs:
-    - 2 pairs from night to day
-    - 4 pairs from day to night
+    - 2 pairs from night to day (one starting at midnight if night_hour > day_hour)
+    - 4 pairs from day to night (one starting at midnight if day_hour > night_hour)
     """
     day_minutes = time_to_minutes(day_hour)
     night_minutes = time_to_minutes(night_hour)
@@ -105,20 +119,44 @@ def generate_schedule_string(day_hour, day_temp, night_hour, night_temp):
 
     schedule_pairs = []
 
-    # 2 pairs from night to day (use night_temp)
+    # 2 pairs from night to day (use night_temp). If the interval crosses
+    # midnight (night_minutes > day_minutes) ensure one of the pairs starts
+    # at 00:00 as per the docstring.
+    night_points = []
     for i in range(2):
         t = int(round((night_minutes + i * step_night_to_day) % DAY_MINUTES))
+        night_points.append(t)
+    if night_minutes > day_minutes:
+        # ensure one pair at midnight
+        night_points[0] = 0
+    for t in night_points:
         schedule_pairs.append(f"{minutes_to_time(t)}/{night_temp}")
 
-    # 4 pairs from day to night (use day_temp)
+    # 4 pairs from day to night (use day_temp). If the interval crosses
+    # midnight (day_minutes > night_minutes) ensure one of the pairs starts
+    # at 00:00.
+    day_points = []
     for i in range(4):
         t = int(round((day_minutes + i * step_day_to_night) % DAY_MINUTES))
+        day_points.append(t)
+    if day_minutes > night_minutes:
+        day_points[0] = 0
+    for t in day_points:
         schedule_pairs.append(f"{minutes_to_time(t)}/{day_temp}")
 
-    # Sort pairs by time (HH:MM) ascending
+    # Sort pairs by time (HH:MM) ascending and remove duplicates (keeping
+    # first occurrence for a given time).
     schedule_pairs.sort(key=lambda pair: time_to_minutes(pair.split('/')[0]))
+    seen = set()
+    unique = []
+    for pair in schedule_pairs:
+        t = pair.split('/')[0]
+        if t in seen:
+            continue
+        seen.add(t)
+        unique.append(pair)
 
-    return " ".join(schedule_pairs)
+    return " ".join(unique)
 
 
 def validate_section(name, data, expected_type=dict, required_keys=None, per_item_required_keys=None):
@@ -205,14 +243,14 @@ def configure_thermostat(client, thermostat_name, thermostat_config, index, ther
         thermostat_config["night_temperature"]
     )
     
-    # Construct payload
-    payload = type_config.copy()  # Start with thermostat type configuration
-    
-    # Add schedule for each weekday
+    # Construct payload from the required `schedule_mode` subsection.
+    payload = type_config['schedule_mode'].copy()
+
+    # Add schedule for each weekday using the configured prefix for this
+    # thermostat type (defaults to 'schedule'). The prefix may be, e.g.,
+    # 'schedule' or 'weekly_schedule' depending on the device.
     weekdays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
-    prefix = "schedule"
-    if thermostat_type == "TRVZB":
-        prefix = "weekly_schedule"
+    prefix = type_config.get('schedule_prefix', 'schedule')
     for weekday in weekdays:
         payload[f"{prefix}_{weekday}"] = schedule_string
     
@@ -352,9 +390,7 @@ def main():
             client.loop_stop()
             client.disconnect()
             print("Disconnected from MQTT broker.")
-        else:
-            print("Dry run: skipped MQTT disconnect.")
-        # Print table of settings at the end
+       # Print table of settings at the end
         print_thermostat_table(thermostats)
 
 if __name__ == "__main__":

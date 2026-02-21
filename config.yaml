@@ -8,19 +8,25 @@ mqtt:
 
 thermostat_types:
   VNTH-T2_v2:
-    temperature_sensitivity: 0.5
-    system_mode: heat
-    preset: schedule
+    schedule_mode:
+      temperature_sensitivity: 0.5
+      system_mode: heat
+      preset: schedule
   TR-M3Z:
-    system_mode: heat
-    preset: schedule
+    schedule_mode:
+      system_mode: heat
+      preset: schedule
   ME168_1:
-    system_mode: auto
+    schedule_mode:
+      system_mode: auto
   ME167:
-    system_mode: auto
+    schedule_mode:
+      system_mode: auto
   TRVZB:
-    system_mode: auto
-    temperature_accuracy: -0.6
+    schedule_mode:
+      system_mode: auto
+      temperature_accuracy: -0.6
+    schedule_prefix: weekly_schedule
 
 thermostats:
   Arbeitszimmer:
