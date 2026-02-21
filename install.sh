@@ -78,12 +78,12 @@ After=network.target
 Type=simple
 User=${USERNAME}
 WorkingDirectory=${INSTALL_DIR}
-ExecStart=${INSTALL_DIR}/venv/bin/python ${INSTALL_DIR}/thermostat_monitor.py --config ${INSTALL_DIR}/config.yaml
+ExecStart=/bin/bash -lc 'source ${INSTALL_DIR}/venv/bin/activate && exec python ${INSTALL_DIR}/thermostat_monitor.py --config ${INSTALL_DIR}/config.yaml'
 Restart=on-failure
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
-StandardOutput=syslog
-StandardError=syslog
+StandardOutput=journal
+StandardError=journal
 SyslogIdentifier=thermostat_monitor
 
 [Install]

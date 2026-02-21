@@ -6,12 +6,12 @@ After=network.target
 Type=simple
 User=joachim
 WorkingDirectory=/home/joachim/git/thermostat_scheduler
-ExecStart=/home/joachim/git/thermostat_scheduler/venv/bin/python /home/joachim/git/thermostat_scheduler/thermostat_monitor.py --config /home/joachim/git/thermostat_scheduler/config.yaml
+ExecStart=/bin/bash -lc 'source /home/joachim/git/thermostat_scheduler/venv/bin/activate && exec python /home/joachim/git/thermostat_scheduler/thermostat_monitor.py --config /home/joachim/git/thermostat_scheduler/config.yaml'
 Restart=on-failure
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
-StandardOutput=syslog
-StandardError=syslog
+StandardOutput=journal
+StandardError=journal
 SyslogIdentifier=thermostat_monitor
 
 [Install]
