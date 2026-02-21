@@ -6,6 +6,7 @@ mqtt:
   # username: mqtt_user  # optional
   # password: mqtt_pass  # optional
 
+
 thermostat_types:
   VNTH-T2_v2:
     schedule_mode:
@@ -27,6 +28,7 @@ thermostat_types:
       system_mode: auto
       temperature_accuracy: -0.6
     schedule_prefix: weekly_schedule
+
 
 thermostats:
   Arbeitszimmer:
@@ -89,4 +91,3 @@ thermostats:
     night_hour: "23:00"
     night_temperature: 20.5
     type: VNTH-T2_v2
-
