@@ -6,110 +6,70 @@ Publishes daily temperature schedules to different thermostat types via MQTT
 
 import json
 import time
-import paho.mqtt.client as mqtt
+import argparse
+import os
+import sys
 
-# Configuration
-MQTT_BROKER = "192.168.1.4"  # Change to your MQTT broker IP/hostname
-MQTT_PORT = 1883
-MQTT_BASE_TOPIC = "zigbee2mqtt"
-MQTT_DELAY_BETWEEN_MESSAGES = 5  # seconds
+import yaml
+import re
+import threading
 
-# Dictionary of all thermostats
-THERMOSTATS = {
-    "Arbeitszimmer": {
-        "day_hour": "09:00",
-        "day_temperature": 21.5,
-        "night_hour": "23:00", 
-        "night_temperature": 19.5,
-        "type": "ME168_1"
-    },
-    "Bad OG": {
-        "day_hour": "05:00",
-        "day_temperature": 21.5,
-        "night_hour": "23:00",
-        "night_temperature": 19.5,
-        "type": "VNTH-T2_v2"
-    },
-    "Caros": {
-        "day_hour": "05:00",
-        "day_temperature": 21.5,
-        "night_hour": "00:00",
-        "night_temperature": 19.5,
-        "type": "TRVZB"
-    },
-    "Dusche": {
-        "day_hour": "05:00",
-        "day_temperature": 19.5,
-        "night_hour": "23:00",
-        "night_temperature": 18.5,
-        "type": "ME168_1"
-    },
-    "Esszimmer": {
-        "day_hour": "05:00",
-        "day_temperature": 21.5,
-        "night_hour": "23:00",
-        "night_temperature": 20.5,
-        "type": "VNTH-T2_v2"
-    },
-    "Julians": {
-        "day_hour": "06:00",
-        "day_temperature": 24,
-        "night_hour": "23:00",
-        "night_temperature": 20.5,
-        "type": "VNTH-T2_v2"
-    },
-    "Schlafzimmer": {
-        "day_hour": "05:00",
-        "day_temperature": 20.5,
-        "night_hour": "00:00",
-        "night_temperature": 20,
-        "type": "TRVZB"
-    },
-    "Waschküche": {
-        "day_hour": "05:00",
-        "day_temperature": 20.5,
-        "night_hour": "23:00",
-        "night_temperature": 19.5,
-        "type": "TR-M3Z"
-    },
-    "WC OG": {
-        "day_hour": "05:00",
-        "day_temperature": 20.5,
-        "night_hour": "23:00",
-        "night_temperature": 19.5,
-        "type": "VNTH-T2_v2"
-    },
-    "Wohnzimmer": {
-        "day_hour": "05:00",
-        "day_temperature": 22.5,
-        "night_hour": "23:00",
-        "night_temperature": 20.5,
-        "type": "VNTH-T2_v2"
-    }
-}
+# No module-level config — pass config dicts around
 
-# Dictionary of thermostat types with their specific keys and values for schedule mode
-THERMOSTAT_TYPES = {
-    "VNTH-T2_v2": {
-        "temperature_sensitivity": 0.5,
-        "system_mode": "heat",
-        "preset": "schedule"
-    },
-    "TR-M3Z": {
-        "system_mode": "heat",
-        "preset": "schedule"
-    },
-    "ME168_1": {
-        "system_mode": "auto"
-    },
-    "ME167": {
-        "system_mode": "auto"
-    },
-    "TRVZB": {
-        "system_mode": "auto",
-        "temperature_accuracy": -0.6
-    }
-}
+
+def load_config(path):
+        """Load configuration from a YAML file and apply to module globals.
+
+        Expected YAML structure:
+            mqtt:
+                broker: host
+                port: 1883
+                base_topic: zigbee2mqtt
+                delay_between_messages: 5
+                username: user  # optional
+                password: pass  # optional
+            thermostats: { ... }
+            thermostat_types: { ... }
+        """
+
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Config file not found: {path}")
+
+        with open(path, 'r') as f:
+            cfg = yaml.safe_load(f) or {}
+
+        # required top-level sections: try once for all three to report missing sections
+        try:
+            mqtt_cfg = cfg['mqtt']
+            thermostats_cfg = cfg['thermostats']
+            thermostat_types_cfg = cfg['thermostat_types']
+        except KeyError as e:
+            raise ValueError(f"Missing required top-level section in config: {e}")
+
+        
+        # Validate sections via helper
+        validate_section('mqtt', mqtt_cfg, expected_type=dict, required_keys={
+            'broker': str,
+            'port': int,
+            'base_topic': str,
+            'delay_between_messages': int,
+        })
+        validate_section('thermostats', thermostats_cfg, expected_type=dict, per_item_required_keys={
+            'type': str,
+            'day_hour': 'time',
+            'day_temperature': 'number',
+            'night_hour': 'time',
+            'night_temperature': 'number',
+        })
+
+        validate_section('thermostat_types', thermostat_types_cfg, expected_type=dict)
+
+        # Ensure every thermostat references an existing thermostat type
+        missing_types = sorted({tcfg['type'] for tcfg in thermostats_cfg.values()} - set(thermostat_types_cfg.keys()))
+        if missing_types:
+            raise ValueError(f"Undefined thermostat types referenced: {', '.join(missing_types)}")
+
+        return cfg
 
 def time_to_minutes(time_str):
     """Convert HH:MM format to minutes since midnight"""
@@ -160,12 +120,63 @@ def generate_schedule_string(day_hour, day_temp, night_hour, night_temp):
 
     return " ".join(schedule_pairs)
 
+
+def validate_section(name, data, expected_type=dict, required_keys=None, per_item_required_keys=None):
+    """Generic validator for configuration sections.
+
+    - name: section name (for error messages)
+    - data: the config object to validate
+    - expected_type: expected top-level type (e.g., dict)
+    - required_keys: dict of key->type expected at top-level of data
+    - per_item_required_keys: dict of key->type for each item when data is a mapping of items
+
+    Supported special types for required keys: 'time' (HH:MM) and 'number' (int/float or numeric string).
+    """
+    if not isinstance(data, expected_type):
+        raise ValueError(f"'{name}' must be a {expected_type.__name__}")
+
+    if required_keys:
+        for k, expected in required_keys.items():
+            if k not in data:
+                raise ValueError(f"Missing key '{k}' in section '{name}'")
+            val = data[k]
+            if not isinstance(val, expected):
+                raise ValueError(f"Key '{k}' in section '{name}' must be of type {expected.__name__}")
+
+    if per_item_required_keys:
+        if not isinstance(data, dict):
+            raise ValueError(f"Section '{name}' must be a mapping for per-item validation")
+        for item_name, item in data.items():
+            if not isinstance(item, dict):
+                raise ValueError(f"Item '{item_name}' in section '{name}' must be a mapping")
+            for k, expected in per_item_required_keys.items():
+                if k not in item:
+                    raise ValueError(f"Item '{item_name}' in '{name}' missing key '{k}'")
+                val = item[k]
+                if expected == 'time':
+                    # validate HH:MM
+                    if not isinstance(val, str):
+                        raise ValueError(f"Item '{item_name}' key '{k}' must be time string HH:MM")
+                    m = re.match(r'^(\d{1,2}):(\d{2})$', val)
+                    if not m:
+                        raise ValueError(f"Item '{item_name}' key '{k}' must be time string HH:MM")
+                    hh = int(m.group(1)); mm = int(m.group(2))
+                    if not (0 <= hh < 24 and 0 <= mm < 60):
+                        raise ValueError(f"Item '{item_name}' key '{k}' has invalid time value")
+                elif expected == 'number':
+                    try:
+                        float(val)
+                    except Exception:
+                        raise ValueError(f"Item '{item_name}' key '{k}' must be numeric")
+                else:
+                    if not isinstance(val, expected):
+                        raise ValueError(f"Item '{item_name}' key '{k}' must be of type {expected.__name__}")
+
 def on_connect(client, userdata, flags, rc, properties=None):
-    """Callback for MQTT connection """
     if rc == 0:
         print("Connected to MQTT broker successfully")
-        global connected
-        connected = True
+        if isinstance(userdata, threading.Event):
+            userdata.set()
     else:
         print(f"Failed to connect to MQTT broker. Return code: {rc}")
 
@@ -173,14 +184,14 @@ def on_publish(client, userdata, mid, rc, properties=None):
     """Callback for successful message publish """
     print(f"Message published successfully (Message ID: {mid})")
 
-def configure_thermostat(client, thermostat_name, thermostat_config, index):
+def configure_thermostat(client, thermostat_name, thermostat_config, index, thermostat_types, mqtt_config, dry_run=False):
     """Configure a single thermostat with schedule"""
 
     print(f"\nConfiguring thermostat {index}: {thermostat_name}")
 
     # Get thermostat type configuration
     thermostat_type = thermostat_config["type"]
-    type_config = THERMOSTAT_TYPES.get(thermostat_type)
+    type_config = thermostat_types.get(thermostat_type)
     
     if not type_config:
         print(f"Unknown thermostat type: {thermostat_type}")
@@ -205,15 +216,21 @@ def configure_thermostat(client, thermostat_name, thermostat_config, index):
     for weekday in weekdays:
         payload[f"{prefix}_{weekday}"] = schedule_string
     
-    # Construct topic
-    topic = f"{MQTT_BASE_TOPIC}/{thermostat_name}/set"
+    # Construct topic: allow per-thermostat override via `topic` key in config
+    topic = thermostat_config.get('topic')
+    if not topic:
+        topic = f"{mqtt_config.get('base_topic')}/{thermostat_name}/set"
     
     # Convert payload to JSON
     payload_json = json.dumps(payload, indent=2)
-    
+
     print(f"Topic: {topic}")
     print(f"Payload: {payload_json}")
-    
+
+    if dry_run:
+        print("Dry run: not publishing to MQTT.")
+        return
+
     # Publish to MQTT using the newer synchronous API (returns MQTTMessageInfo)
     info = client.publish(topic, payload_json, qos=1, retain=False)
     try:
@@ -228,11 +245,11 @@ def configure_thermostat(client, thermostat_name, thermostat_config, index):
     
     return
 
-def print_thermostat_table():
+def print_thermostat_table(thermostats):
     """Print a table of all thermostat settings (name, type, day/night hours and temps)."""
     headers = ["Name", "Day Hour", "Day Temp", "Night Hour", "Night Temp", "Type"]
     rows = []
-    for name, cfg in THERMOSTATS.items():
+    for name, cfg in thermostats.items():
         rows.append([
             name,
             cfg.get("day_hour", ""),
@@ -260,52 +277,85 @@ def print_thermostat_table():
 
 def main():
     """Main function to configure all thermostats"""
-    
-    print("=== Thermostat Schedule Controller ===")
-    print(f"MQTT Broker: {MQTT_BROKER}:{MQTT_PORT}")
-    print(f"Base Topic: {MQTT_BASE_TOPIC}")
-    print(f"Configuring {len(THERMOSTATS)} thermostats...\n")
-    
-    # Create MQTT client
-    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-    client.on_connect = on_connect
-    client.on_publish = on_publish
-    
-    # Optional: Set username and password if required
-    # client.username_pw_set("username", "password")
-    
+    parser = argparse.ArgumentParser(description='Thermostat scheduler using YAML config')
+    parser.add_argument('--config', '-c', default='config.yaml', help='Path to YAML config file')
+    parser.add_argument('--dry-run', action='store_true', help='Do not connect to MQTT; only print topics/payloads')
+    args = parser.parse_args()
+
     try:
-        # Connect to MQTT broker
-        print(f"Connecting to MQTT broker at {MQTT_BROKER}:{MQTT_PORT}...")
-        global connected
-        connected = False
-        client.connect(MQTT_BROKER, MQTT_PORT, 60)
-        
-        # Start the network loop
-        client.loop_start()
-        
-        # Wait for connection
-        while not connected:
-            time.sleep(0.1)
-        
+        cfg = load_config(args.config)
+    except Exception as e:
+        print(f"Failed to load config '{args.config}': {e}")
+        sys.exit(1)
+
+    mqtt_cfg = cfg.get('mqtt', {})
+    thermostats = cfg.get('thermostats', {})
+    thermostat_types = cfg.get('thermostat_types', {})
+
+    print("=== Thermostat Schedule Controller ===")
+    print(f"MQTT Broker: {mqtt_cfg.get('broker')}:{mqtt_cfg.get('port')}")
+    print(f"Base Topic: {mqtt_cfg.get('base_topic')}")
+    print(f"Configuring {len(thermostats)} thermostats...\n")
+
+    client = None
+    if not args.dry_run:
+        # Import paho only when actually needed
+        try:
+            import paho.mqtt.client as mqtt
+        except Exception as e:
+            print(f"Failed to import paho.mqtt.client: {e}")
+            sys.exit(1)
+
+        # Create MQTT client
+        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+        client.on_connect = on_connect
+        client.on_publish = on_publish
+        # Optional: Set username and password if provided
+        if mqtt_cfg.get('username'):
+            client.username_pw_set(mqtt_cfg.get('username'), mqtt_cfg.get('password'))
+
+    try:
+        if not args.dry_run:
+            # Connect to MQTT broker
+            print(f"Connecting to MQTT broker at {mqtt_cfg.get('broker')}:{mqtt_cfg.get('port')}...")
+            evt = threading.Event()
+            client.user_data_set(evt)
+            client.connect(mqtt_cfg.get('broker'), mqtt_cfg.get('port'), 60)
+
+            # Start the network loop
+            client.loop_start()
+
+            # Wait for connection (10s timeout)
+            if not evt.wait(10):
+                print("Warning: MQTT connection timeout")
+
         # Configure each thermostat
-        for i, (thermostat_name, config) in enumerate(THERMOSTATS.items()):
-            configure_thermostat(client, f"{thermostat_name} Thermostat", config, i+1)
-            time.sleep(MQTT_DELAY_BETWEEN_MESSAGES)  # Delay to ensure message processing
+        for i, (thermostat_name, config) in enumerate(thermostats.items()):
+            # thermostat_name is the key from YAML; allow display name to differ if provided
+            display_name = config.get('display_name', thermostat_name)
+            configure_thermostat(client, display_name, config, i+1, thermostat_types, mqtt_cfg, dry_run=args.dry_run)
+            if not args.dry_run:
+                time.sleep(mqtt_cfg.get('delay_between_messages'))  # Delay to ensure message processing
 
         print("\n=== Configuration Complete ===")
-        print("All thermostats have been configured with their schedules.")
-        
+        if args.dry_run:
+            print("Dry run complete — no MQTT connections were made.")
+        else:
+            print("All thermostats have been configured with their schedules.")
+
     except Exception as e:
         print(f"Error: {e}")
-    
+
     finally:
         # Cleanup
-        client.loop_stop()
-        client.disconnect()
-        print("Disconnected from MQTT broker.")
+        if not args.dry_run and client is not None:
+            client.loop_stop()
+            client.disconnect()
+            print("Disconnected from MQTT broker.")
+        else:
+            print("Dry run: skipped MQTT disconnect.")
         # Print table of settings at the end
-        print_thermostat_table()
+        print_thermostat_table(thermostats)
 
 if __name__ == "__main__":
     main()

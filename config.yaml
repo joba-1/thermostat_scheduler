@@ -1,0 +1,86 @@
+mqtt:
+  broker: 192.168.1.4
+  port: 1883
+  base_topic: zigbee2mqtt
+  delay_between_messages: 5
+  # username: mqtt_user  # optional
+  # password: mqtt_pass  # optional
+
+thermostat_types:
+  VNTH-T2_v2:
+    temperature_sensitivity: 0.5
+    system_mode: heat
+    preset: schedule
+  TR-M3Z:
+    system_mode: heat
+    preset: schedule
+  ME168_1:
+    system_mode: auto
+  ME167:
+    system_mode: auto
+  TRVZB:
+    system_mode: auto
+    temperature_accuracy: -0.6
+
+thermostats:
+  Arbeitszimmer:
+    day_hour: "09:00"
+    day_temperature: 21.5
+    night_hour: "23:00"
+    night_temperature: 19.5
+    type: ME168_1
+  "Bad OG":
+    day_hour: "05:00"
+    day_temperature: 21.5
+    night_hour: "23:00"
+    night_temperature: 19.5
+    type: VNTH-T2_v2
+  Caros:
+    day_hour: "05:00"
+    day_temperature: 21.5
+    night_hour: "00:00"
+    night_temperature: 19.5
+    type: TRVZB
+  Dusche:
+    day_hour: "05:00"
+    day_temperature: 19.5
+    night_hour: "23:00"
+    night_temperature: 18.5
+    type: ME168_1
+  Esszimmer:
+    day_hour: "05:00"
+    day_temperature: 21.5
+    night_hour: "23:00"
+    night_temperature: 20.5
+    type: VNTH-T2_v2
+  Julians:
+    day_hour: "06:00"
+    day_temperature: 24
+    night_hour: "23:00"
+    night_temperature: 20.5
+    type: VNTH-T2_v2
+  Schlafzimmer:
+    day_hour: "05:00"
+    day_temperature: 20.5
+    night_hour: "00:00"
+    night_temperature: 20
+    type: TRVZB
+  Waschküche:
+    day_hour: "05:00"
+    day_temperature: 20.5
+    night_hour: "23:00"
+    night_temperature: 19.5
+    type: TR-M3Z
+  "WC OG":
+    day_hour: "05:00"
+    day_temperature: 20.5
+    night_hour: "23:00"
+    night_temperature: 19.5
+    type: VNTH-T2_v2
+  Wohnzimmer:
+    day_hour: "05:00"
+    day_temperature: 22.5
+    night_hour: "23:00"
+    night_temperature: 20.5
+    type: VNTH-T2_v2
+
