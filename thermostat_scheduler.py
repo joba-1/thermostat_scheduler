@@ -222,20 +222,23 @@ def check_thermostats(cfg, client, userdata, timeout=None):
     def compare_and_collect_mismatches(expected, reported_state):
         """Return a dict of mismatched keys -> (expected, reported).
 
-        Only compares keys present in the reported_state and also in
-        the expected payload. If there are no common keys, returns
-        None to indicate nothing to compare.
+        For every key in `expected`, report a mismatch if the key is
+        missing from `reported_state` or the values differ. Always
+        returns a dict (possibly empty) of mismatches.
         """
-        if reported_state is None or not isinstance(reported_state, dict):
-            return {"__error__": (expected, reported_state)}
-
-        common_keys = [k for k in reported_state.keys() if k in expected]
-        if not common_keys:
-            return None
-
         mismatches = {}
-        for k in sorted(common_keys):
+        # If reported_state is not a dict, treat it as empty (all keys
+        # missing) so we report all expected keys.
+        if not isinstance(reported_state, dict):
+            for k in sorted(expected.keys()):
+                mismatches[k] = (expected[k], None)
+            return mismatches
+
+        for k in sorted(expected.keys()):
             ev = expected.get(k)
+            if k not in reported_state:
+                mismatches[k] = (ev, None)
+                continue
             rv = reported_state.get(k)
             # numeric comparison
             try:
@@ -292,10 +295,6 @@ def check_thermostats(cfg, client, userdata, timeout=None):
             continue
 
         mismatches = compare_and_collect_mismatches(expected, reported)
-        if mismatches is None:
-            print(f"{name}: no comparable keys between expected and reported")
-            continue
-
         if not mismatches:
             print(f"{name}: OK")
         else:
