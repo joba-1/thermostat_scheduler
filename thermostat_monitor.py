@@ -148,6 +148,8 @@ def main():
                 report_topic = f"{monitor_topic}/unseen"
                 client.publish(report_topic, report_str, qos=1)
                 print(f"Published unseen report to {report_topic}: {len(unseen)} devices")
+                # Also print the full unseen report to stdout for easier monitoring
+                print(report_str)
 
     t = threading.Thread(target=unseen_reporter, daemon=True)
     t.start()
