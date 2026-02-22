@@ -11,6 +11,7 @@ import os
 import sys
 import yaml
 import re
+from decimal import Decimal
 import threading
 
 
@@ -118,6 +119,53 @@ def generate_schedule_string(day_hour, day_temp, night_hour, night_temp):
     schedule.sort(key=lambda it: it[0])
     pairs = [f"{minutes_to_time(t)}/{v}" for t, v in schedule]
     return " ".join(pairs)
+
+
+def _normalize_temp_token_for_compare(token):
+    """Return a canonical string for a numeric temperature token suitable for comparison.
+
+    Attempts to parse with Decimal and returns a plain string without
+    leading/trailing zeros or an unnecessary decimal point (e.g. '24.0' -> '24').
+    If parsing fails, returns the original token stripped.
+    """
+    s = str(token).strip()
+    try:
+        d = Decimal(s)
+        # Use 'f' format to avoid exponent notation and remove trailing zeros
+        normalized = format(d.normalize(), 'f')
+        return normalized
+    except Exception:
+        return s
+
+
+def compare_schedule_strings(a, b):
+    """Compare two schedule strings token-by-token, ignoring insignificant zeros.
+
+    Returns True if they match (times identical and numeric temps equal
+    after normalization). Falls back to simple whitespace-normalized string
+    comparison when tokens don't look like schedule tokens.
+    """
+    if not isinstance(a, str) or not isinstance(b, str):
+        return False
+    parts_a = a.split()
+    parts_b = b.split()
+    if len(parts_a) != len(parts_b):
+        return False
+
+    for pa, pb in zip(parts_a, parts_b):
+        if '/' not in pa or '/' not in pb:
+            # Not a schedule-like token; fall back to normalized string compare
+            return ' '.join(a.split()) == ' '.join(b.split())
+        ta, va = pa.split('/', 1)
+        tb, vb = pb.split('/', 1)
+        if ta != tb:
+            return False
+        na = _normalize_temp_token_for_compare(va)
+        nb = _normalize_temp_token_for_compare(vb)
+        if na != nb:
+            return False
+
+    return True
 
 
 def on_connect(client, userdata, flags, rc, properties=None):
@@ -268,6 +316,15 @@ def check_thermostats(cfg, client, userdata, timeout=None):
 
             # string comparison (normalize whitespace)
             if isinstance(ev, str) and isinstance(rv, str):
+                # Prefer schedule-aware comparison that ignores insignificant
+                # zeros/decimal formatting. Falls back to whitespace-normalized
+                # string comparison if not schedule-like.
+                try:
+                    if compare_schedule_strings(ev, rv):
+                        continue
+                except Exception:
+                    pass
+
                 if normalize_str(ev) != normalize_str(rv):
                     mismatches[k] = (ev, rv)
             else:
