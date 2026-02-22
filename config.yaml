@@ -46,7 +46,7 @@ thermostats:
   Caros:
     day_hour: "05:00"
     day_temperature: 21.5
-    night_hour: "00:00"
+    night_hour: "23:00"
     night_temperature: 19.5
     type: TRVZB
   Dusche:
@@ -70,7 +70,7 @@ thermostats:
   Schlafzimmer:
     day_hour: "05:00"
     day_temperature: 20.5
-    night_hour: "00:00"
+    night_hour: "23:00"
     night_temperature: 20
     type: TRVZB
   Waschküche:

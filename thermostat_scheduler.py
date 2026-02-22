@@ -42,66 +42,82 @@ def minutes_to_time(minutes):
 
 
 def generate_schedule_string(day_hour, day_temp, night_hour, night_temp):
+    """Generate a schedule string using the new algorithm:
+
+    - Produce 3 "day" entries between `day_hour` (inclusive) and
+      `night_hour` (exclusive): those are spaced in 2 equal intervals
+      (3 points total: start + 2 interior points).
+    - Produce 3 "night" entries between `night_hour` (inclusive) and
+      `day_hour` (exclusive): similarly spaced (3 points total).
+    - `day_hour` and `night_hour` are kept exactly (they appear in the
+      generated points if they are the respective segment starts).
+    - If no entry lands exactly at midnight (00:00), move the closest
+      generated time to midnight.
+    - Finally sort by time and return a space-separated list of
+      "HH:MM/temperature" pairs. No additional deduplication step is
+      required by this construction.
     """
-    Generate schedule string with 6 time/temperature pairs:
-    - 2 pairs from night to day (one starting at midnight if night_hour > day_hour)
-    - 4 pairs from day to night (one starting at midnight if day_hour > night_hour)
-    """
+    DAY_MINUTES = 24 * 60
     day_minutes = time_to_minutes(day_hour)
     night_minutes = time_to_minutes(night_hour)
-    DAY_MINUTES = 24 * 60
 
-    def mod_diff(a, b):
-        # Minutes from a to b going forward in time, wrapping past midnight
+    def span(a, b):
+        # minutes going forward from a to b (wraps past midnight)
         return (b - a) % DAY_MINUTES
 
-    night_to_day_dur = mod_diff(night_minutes, day_minutes)
-    day_to_night_dur = mod_diff(day_minutes, night_minutes)
+    def round_to_half_hour(mins):
+        # Round to nearest 30-minute increment, wrap around 24h
+        rounded = int(round(mins / 30.0) * 30) % DAY_MINUTES
+        return rounded
 
-    # Compute step sizes (may be fractional); we'll round to nearest minute
-    step_night_to_day = (night_to_day_dur / 2.0) if night_to_day_dur != 0 else 0.0
-    step_day_to_night = (day_to_night_dur / 4.0) if day_to_night_dur != 0 else 0.0
+    schedule = []
 
-    schedule_pairs = []
+    # Day segment: from day_minutes (inclusive) toward night_minutes (exclusive)
+    day_span = span(day_minutes, night_minutes)
+    # produce 3 points: i in [0,1,2] -> positions at day + i*(day_span/3)
+    for i in range(3):
+        if i == 0:
+            # keep day_start exactly
+            t = day_minutes
+        else:
+            pos = (day_minutes + (i * (day_span / 3.0))) % DAY_MINUTES
+            t = round_to_half_hour(pos)
+        schedule.append((t, day_temp))
 
-    # 2 pairs from night to day (use night_temp). If the interval crosses
-    # midnight (night_minutes > day_minutes) ensure one of the pairs starts
-    # at 00:00 as per the docstring.
-    night_points = []
-    for i in range(2):
-        t = int(round((night_minutes + i * step_night_to_day) % DAY_MINUTES))
-        night_points.append(t)
-    if night_minutes > day_minutes:
-        # ensure one pair at midnight
-        night_points[0] = 0
-    for t in night_points:
-        schedule_pairs.append(f"{minutes_to_time(t)}/{night_temp}")
+    # Night segment: from night_minutes (inclusive) toward day_minutes (exclusive)
+    night_span = span(night_minutes, day_minutes)
+    for i in range(3):
+        if i == 0:
+            # keep night_start exactly
+            t = night_minutes
+        else:
+            pos = (night_minutes + (i * (night_span / 3.0))) % DAY_MINUTES
+            t = round_to_half_hour(pos)
+        schedule.append((t, night_temp))
 
-    # 4 pairs from day to night (use day_temp). If the interval crosses
-    # midnight (day_minutes > night_minutes) ensure one of the pairs starts
-    # at 00:00.
-    day_points = []
-    for i in range(4):
-        t = int(round((day_minutes + i * step_day_to_night) % DAY_MINUTES))
-        day_points.append(t)
-    if day_minutes > night_minutes:
-        day_points[0] = 0
-    for t in day_points:
-        schedule_pairs.append(f"{minutes_to_time(t)}/{day_temp}")
+    # Ensure there's an entry at midnight (00:00). If none exists, move
+    # the closest time to 0.
+    times = [t for t, _ in schedule]
+    if 0 not in times:
+        # find index of closest time to midnight (consider wrap)
+        # but do not move the segment start points (day_start at index 0,
+        # night_start at index 3). Prefer moving one of the interior points
+        # (indices 1,2,4,5).
+        def dist_to_mid(t):
+            return min((t - 0) % DAY_MINUTES, (0 - t) % DAY_MINUTES)
 
-    # Sort pairs by time (HH:MM) ascending and remove duplicates (keeping
-    # first occurrence for a given time).
-    schedule_pairs.sort(key=lambda pair: time_to_minutes(pair.split('/')[0]))
-    seen = set()
-    unique = []
-    for pair in schedule_pairs:
-        t = pair.split('/')[0]
-        if t in seen:
-            continue
-        seen.add(t)
-        unique.append(pair)
+        candidate_indices = [i for i in range(len(times)) if i not in (0, 3)]
+        if not candidate_indices:
+            # Fallback: allow any index (shouldn't normally happen)
+            candidate_indices = list(range(len(times)))
 
-    return " ".join(unique)
+        closest_idx = min(candidate_indices, key=lambda i: dist_to_mid(times[i]))
+        schedule[closest_idx] = (0, schedule[closest_idx][1])
+
+    # Sort by time and format
+    schedule.sort(key=lambda it: it[0])
+    pairs = [f"{minutes_to_time(t)}/{v}" for t, v in schedule]
+    return " ".join(pairs)
 
 
 def on_connect(client, userdata, flags, rc, properties=None):
