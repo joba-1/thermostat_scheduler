@@ -277,6 +277,7 @@ def check_thermostats(cfg, client, userdata, timeout=None):
         pass
 
     time.sleep(timeout)
+    print()
 
     responses = userdata.get('responses', {}) if isinstance(userdata, dict) else {}
 
@@ -393,6 +394,7 @@ def check_thermostats(cfg, client, userdata, timeout=None):
             print(f"{name}: MISMATCHES{battery_note}:")
             print_mismatch_table(mismatches, indent=2)
 
+    print()
     return checked
 
 
@@ -484,7 +486,7 @@ def main():
     print("=== Thermostat Schedule Controller ===")
     print(f"MQTT Broker: {mqtt_cfg.get('broker')}:{mqtt_cfg.get('port')}")
     print(f"Base Topic: {mqtt_cfg.get('base_topic')}")
-    print(f"Configuring {len(thermostats)} thermostats...\n")
+    print(f"Configuring {len(thermostats)} thermostats...")
 
     client = None
     if not args.dry_run:
