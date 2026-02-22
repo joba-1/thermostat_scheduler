@@ -3,6 +3,7 @@ mqtt:
   port: 1883
   base_topic: zigbee2mqtt
   delay_between_messages: 5
+  check_timeout: 1
   # username: mqtt_user  # optional
   # password: mqtt_pass  # optional
 
