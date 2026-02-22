@@ -169,13 +169,48 @@ def build_expected_payload(name, thermostat_config, thermostat_types, mqtt_confi
     return payload, topic, payload_str
 
 
-def check_thermostats(cfg):
-    """Placeholder for the --check feature.
+def check_thermostats(cfg, client, userdata, timeout=None):
+    """Query `thermostat_monitor` for per-device status and collect responses.
 
-    Receives the already-loaded config dict. Currently a no-op; will be
-    implemented in subsequent small steps as requested.
+    - Subscribes to `thermostat_monitor/+`
+    - Publishes a single `get` message to `thermostat_monitor`
+    - Waits `timeout` seconds (or `cfg['mqtt']['check_timeout']` or 5)
+    - Collects responses from `userdata['responses']` into a `checked` dict
+    - Prints the checked dict pretty-printed with indentation
     """
-    return
+    if timeout is None:
+        timeout = cfg.get('mqtt', {}).get('check_timeout', 5)
+
+    monitor_base = 'thermostat_monitor'
+    try:
+        client.subscribe(f"{monitor_base}/+")
+    except Exception:
+        pass
+
+    # Ask monitor to publish current device statuses
+    try:
+        client.publish(monitor_base, 'get')
+    except Exception:
+        pass
+
+    time.sleep(timeout)
+
+    responses = userdata.get('responses', {}) if isinstance(userdata, dict) else {}
+
+    checked = {}
+    for topic, payload in responses.items():
+        if not topic.startswith(monitor_base + '/'):
+            continue
+        name = topic.split('/', 1)[1]
+        checked[name] = payload
+
+    # Pretty-print with indentation
+    try:
+        print(json.dumps(checked, indent=2, ensure_ascii=False))
+    except Exception:
+        print(f"Received responses: {checked}")
+
+    return checked
 
 
 def configure_thermostat(client, name, thermostat_config, index, thermostat_types, mqtt_config, dry_run=False):
@@ -294,7 +329,7 @@ def main():
                 print("Warning: MQTT connection timeout")
 
         if args.check:
-            check_thermostats(cfg)
+            check_thermostats(cfg, client, userdata, timeout=mqtt_cfg.get('check_timeout', 5))
         else:
             for i, (thermostat_name, config) in enumerate(thermostats.items()):
                 result = configure_thermostat(client, thermostat_name, config, i+1, thermostat_types, mqtt_cfg, dry_run=args.dry_run)
