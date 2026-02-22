@@ -168,6 +168,23 @@ def compare_schedule_strings(a, b):
     return True
 
 
+def battery_status_note(reported, limit):
+    """Return a parenthesized battery note for display, or empty string.
+    """
+    try:
+        low = reported.get('battery_low')
+        if low is True:
+            return " (battery low)"
+        level = reported.get('battery')
+        if level is not None and level < limit:
+            return f" (battery {level}%)"
+        if low is False or level is not None:
+            return ""
+    except Exception:
+        pass
+    return " (battery unknown)"
+
+
 def on_connect(client, userdata, flags, rc, properties=None):
     if rc == 0:
         print("Connected to MQTT broker successfully")
@@ -367,11 +384,13 @@ def check_thermostats(cfg, client, userdata, timeout=None):
             print(f"{name}: no monitored state found: {e}")
             continue
 
+        battery_note = battery_status_note(reported, 20)
+
         mismatches = compare_and_collect_mismatches(expected, reported)
         if not mismatches:
-            print(f"{name}: OK")
+            print(f"{name}: OK{battery_note}")
         else:
-            print(f"{name}: MISMATCHES:")
+            print(f"{name}: MISMATCHES{battery_note}:")
             print_mismatch_table(mismatches, indent=2)
 
     return checked
