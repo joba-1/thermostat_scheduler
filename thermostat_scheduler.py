@@ -154,19 +154,21 @@ def build_expected_payload(name, thermostat_config, thermostat_types, mqtt_confi
     device_topic_name = f"{name} Thermostat"
     topic = f"{mqtt_config.get('base_topic')}/{device_topic_name}/set"
 
-    # pretty format
-    items = [(json.dumps(k), json.dumps(v)) for k, v in payload.items()]
+    return payload, topic
+
+
+def pretty_payload(obj, indent=2):
+    """Return a pretty-printed single-line-aligned JSON-like string for payloads."""
+    items = [(json.dumps(k), json.dumps(v)) for k, v in obj.items()]
     max_key = max((len(k) for k, _ in items), default=0)
     lines = ["{"]
-    pad = " " * 2
+    pad = " " * indent
     for i, (k, v) in enumerate(items):
         comma = "," if i < len(items) - 1 else ""
         space = " " * (max_key - len(k))
         lines.append(f"{pad}{k}{space}: {v}{comma}")
     lines.append("}")
-    payload_str = "\n".join(lines)
-
-    return payload, topic, payload_str
+    return "\n".join(lines)
 
 
 def check_thermostats(cfg, client, userdata, timeout=None):
@@ -204,11 +206,101 @@ def check_thermostats(cfg, client, userdata, timeout=None):
         name = topic.split('/', 1)[1]
         checked[name] = payload
 
-    # Pretty-print with indentation
-    try:
-        print(json.dumps(checked, indent=2, ensure_ascii=False))
-    except Exception:
-        print(f"Received responses: {checked}")
+    # Pretty-print collected responses
+    # try:
+    #     print(json.dumps(checked, indent=2, ensure_ascii=False))
+    # except Exception:
+    #     print(f"Received responses: {checked}")
+
+    # Compare expected payload keys to reported state keys (only intersecting keys)
+    thermostats = cfg.get('thermostats', {})
+    thermostat_types = cfg.get('thermostat_types', {})
+
+    def normalize_str(s):
+        return ' '.join(str(s).split())
+
+    def compare_and_collect_mismatches(expected, reported_state):
+        """Return a dict of mismatched keys -> (expected, reported).
+
+        Only compares keys present in the reported_state and also in
+        the expected payload. If there are no common keys, returns
+        None to indicate nothing to compare.
+        """
+        if reported_state is None or not isinstance(reported_state, dict):
+            return {"__error__": (expected, reported_state)}
+
+        common_keys = [k for k in reported_state.keys() if k in expected]
+        if not common_keys:
+            return None
+
+        mismatches = {}
+        for k in sorted(common_keys):
+            ev = expected.get(k)
+            rv = reported_state.get(k)
+            # numeric comparison
+            try:
+                evf = float(ev)
+                rvf = float(rv)
+                if abs(evf - rvf) > 1e-6:
+                    mismatches[k] = (ev, rv)
+                continue
+            except Exception:
+                pass
+
+            # string comparison (normalize whitespace)
+            if isinstance(ev, str) and isinstance(rv, str):
+                if normalize_str(ev) != normalize_str(rv):
+                    mismatches[k] = (ev, rv)
+            else:
+                if ev != rv:
+                    mismatches[k] = (ev, rv)
+
+        return mismatches
+
+    def print_mismatch_table(mismatches, indent=2):
+        pad = " " * indent
+        if not mismatches:
+            return
+        # Prepare rows: header + items
+        rows = [["Key", "Expected", "Reported"]]
+        for k, (ev, rv) in mismatches.items():
+            rows.append([k, str(ev), str(rv)])
+
+        cols = list(zip(*rows))
+        widths = [max(len(cell) for cell in col) for col in cols]
+        lines = []
+        header = pad + " | ".join(h.ljust(w) for h, w in zip(rows[0], widths))
+        divider = pad + "-+-".join("-" * w for w in widths)
+        lines.append(header)
+        lines.append(divider)
+        for row in rows[1:]:
+            lines.append(pad + " | ".join(str(c).ljust(w) for c, w in zip(row, widths)))
+
+        print("\n".join(lines))
+
+    for name, cfg_item in thermostats.items():
+        try:
+            expected, _ = build_expected_payload(name, cfg_item, thermostat_types, cfg.get('mqtt', {}))
+        except Exception as e:
+            print(f"{name}: error building expected payload: {e}")
+            continue
+
+        try:
+            reported = checked[name]['state']
+        except KeyError:
+            print(f"{name}: no monitored state found: {e}")
+            continue
+
+        mismatches = compare_and_collect_mismatches(expected, reported)
+        if mismatches is None:
+            print(f"{name}: no comparable keys between expected and reported")
+            continue
+
+        if not mismatches:
+            print(f"{name}: OK")
+        else:
+            print(f"{name}: MISMATCHES:")
+            print_mismatch_table(mismatches, indent=2)
 
     return checked
 
@@ -222,7 +314,8 @@ def configure_thermostat(client, name, thermostat_config, index, thermostat_type
         print(f"Unknown thermostat type: {thermostat_type}")
         return
 
-    payload, topic, payload_str = build_expected_payload(name, thermostat_config, thermostat_types, mqtt_config)
+    payload, topic = build_expected_payload(name, thermostat_config, thermostat_types, mqtt_config)
+    payload_str = pretty_payload(payload, indent=2)
 
     print(f"Topic: {topic}")
     print("Payload:")
