@@ -143,13 +143,22 @@ def main():
                 if seen_ts is None or (now_ts - seen_ts) > unseen_interval:
                     unseen.append({'name': name, 'last_seen': seen})
             if unseen:
+                # Sort unseen by last_seen (earliest first). Treat None (never seen)
+                # as the oldest by mapping it to -1.
+                unseen.sort(key=lambda d: (parse_iso(d.get('last_seen'))
+                                           if parse_iso(d.get('last_seen')) is not None
+                                           else -1))
+
                 report = {'timestamp': iso_now(), 'unseen': unseen}
                 report_str = json.dumps(report, indent=2, ensure_ascii=False)
                 report_topic = f"{monitor_topic}/unseen"
                 client.publish(report_topic, report_str, qos=1)
                 print(f"Published unseen report to {report_topic}: {len(unseen)} devices")
-                # Also print the full unseen report to stdout for easier monitoring
-                print(report_str)
+                # Print one-line per unseen device to stdout for easier monitoring
+                for dev in unseen:
+                    name = dev.get('name')
+                    last = dev.get('last_seen')
+                    print(f"Unseen device: {name} last_seen: {last}")
 
     t = threading.Thread(target=unseen_reporter, daemon=True)
     t.start()
