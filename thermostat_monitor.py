@@ -108,7 +108,7 @@ def main():
         last_seen[name] = now
         last_state[name] = obj
 
-    client = mqtt.Client()
+    client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
     client.on_connect = on_connect
     client.on_message = on_message
 
@@ -116,7 +116,7 @@ def main():
         client.username_pw_set(mqtt_cfg.get('username'), mqtt_cfg.get('password'))
 
     print(f"Connecting to MQTT broker {mqtt_cfg.get('broker')}:{mqtt_cfg.get('port')}")
-    client.connect(mqtt_cfg.get('broker'), mqtt_cfg.get('port'), 60)
+    client.connect(mqtt_cfg.get('broker'), mqtt_cfg.get('port'), keepalive=60)
     # Run network loop in background so we can publish periodic unseen reports.
     client.loop_start()
 
