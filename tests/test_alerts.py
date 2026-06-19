@@ -52,6 +52,26 @@ def test_cleared_issue_removed_from_state(tmp_path):
     assert 'd:life' not in a.state['issues']
 
 
+def test_resolved_alert_sends_recovery_mail(tmp_path):
+    now_box = [1000.0]
+    a, sent = make_alerter(tmp_path, now_box)
+    iss = make_issue('d:battery', 'battery_low', 'D thermostat', 'battery 13%')
+    a.process([iss])
+    assert len(sent) == 1                       # initial alert
+    a.process([])                               # battery swapped -> cleared
+    assert len(sent) == 2
+    assert sent[1][0].startswith('[thermostat] resolved:')
+
+
+def test_resolved_not_sent_for_info_only(tmp_path):
+    now_box = [1000.0]
+    a, sent = make_alerter(tmp_path, now_box)
+    iss = make_issue('r:manual', 'manual_override', 'R thermostat', 'manual', severity='info')
+    a.process([iss])
+    a.process([])                               # cleared, but never alerted
+    assert sent == []
+
+
 def test_state_persists_across_restart(tmp_path):
     now_box = [1000.0]
     a, sent = make_alerter(tmp_path, now_box)

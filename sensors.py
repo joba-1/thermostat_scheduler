@@ -28,11 +28,16 @@ def window_open(contact_state):
     return False
 
 
-def evaluate_room(room, temp_state, windows_states, setpoint, mode, tolerance):
+def evaluate_room(room, temp_state, windows_states, setpoint, mode, tolerance,
+                  improving=False):
     """Return issues for one room's comfort situation.
 
     temp_state: parsed temp sensor payload (or None)
     windows_states: dict of {friendly_name: parsed_payload}
+    improving: True if the room temperature is moving toward the target (or the
+        target changed too recently to judge). A deviation that is improving is
+        reported as a low-priority note rather than an immediate alert — it only
+        escalates once it is stuck off-target without progress.
     """
     issues = []
     any_open = any(window_open(s) for s in (windows_states or {}).values())
@@ -49,6 +54,11 @@ def evaluate_room(room, temp_state, windows_states, setpoint, mode, tolerance):
             issues.append(make_issue(
                 f"{room}:window", 'window_open', f"{room} room",
                 f"temp {temp}°C {direction} target {setpoint}°C, but a window is open",
+                severity='info'))
+        elif improving:
+            issues.append(make_issue(
+                f"{room}:temp", 'temp_unexpected', f"{room} room",
+                f"temp {temp}°C {direction} target {setpoint}°C, but moving toward it",
                 severity='info'))
         else:
             issues.append(make_issue(

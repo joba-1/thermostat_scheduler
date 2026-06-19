@@ -246,9 +246,11 @@ class Manager:
             self._record_history(name, item, reported, temp_state, now_ts)
             if not manual:
                 windows = {w: self.sensor_state.get(w) for w in self.room_windows.get(name, [])}
+                improving = self._temp_improving(name, setpoint, mode)
                 issues += sensors_mod.evaluate_room(
                     name, temp_state, windows, setpoint, mode,
-                    item.get('tolerance', self.cfg.get('default_tolerance', 1.5)))
+                    item.get('tolerance', self.cfg.get('default_tolerance', 1.5)),
+                    improving=improving)
                 nr = health.no_reaction_issue(
                     name, list(self.history[name]), mode, setpoint,
                     item.get('no_reaction_minutes', self.cfg.get('default_no_reaction_minutes', 60)))
@@ -322,6 +324,29 @@ class Manager:
         if isinstance(st, dict) and 'local_temperature' in st:
             return {'temperature': st.get('local_temperature')}
         return None
+
+    def _temp_improving(self, name, setpoint, mode, epsilon=0.2):
+        """True if the room temp is trending toward `setpoint`, or there isn't
+        yet enough history to judge (e.g. just after a target/mode change).
+
+        Keeps a fresh deviation as a quiet note instead of an immediate alert:
+        only a deviation that is *stuck* (enough history, no progress) is loud.
+        History samples are (ts, running_state, temp), oldest first.
+        """
+        if setpoint is None:
+            return True
+        hist = [(h[0], h[2]) for h in self.history[name]
+                if isinstance(h[2], (int, float))]
+        if len(hist) < 2:
+            return True
+        span = hist[-1][0] - hist[0][0]
+        grace = self.cfg.get('comfort_grace_minutes', 30) * 60
+        if span < grace:
+            return True  # still settling after a recent change
+        first, last = hist[0][1], hist[-1][1]
+        if mode == 'cooling':
+            return (first - last) > epsilon   # temperature falling
+        return (last - first) > epsilon       # temperature rising
 
     def _record_history(self, name, item, reported, temp_state, now_ts):
         running = reported.get('running_state') if isinstance(reported, dict) else None

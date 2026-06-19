@@ -112,11 +112,19 @@ class Alerter:
                     to_mail.append(iss)
 
         cleared = [k for k in list(open_state.keys()) if k not in seen]
+        resolved = []
         for k in cleared:
-            open_state.pop(k, None)
+            st = open_state.pop(k, None)
+            # Only announce recovery for issues that actually alerted (loud
+            # enough to warn about -> loud enough to confirm resolved). Cleared
+            # info-only items stay quiet.
+            if st and st.get('severity') == 'alert' and st.get('last_alert'):
+                resolved.append(st)
 
         if to_mail and self.enabled:
             self._mail_issues(to_mail)
+        if resolved and self.enabled:
+            self._mail_resolved(resolved)
         self._save()
         return to_mail, cleared
 
@@ -129,6 +137,15 @@ class Alerter:
             lines.append(f"  - {iss.subject}: {iss.detail}")
         lines += ["", "You will get a daily digest while these remain open,",
                   "and another mail if an issue persists past the cooldown."]
+        self._sender(subject, "\n".join(lines))
+
+    def _mail_resolved(self, resolved):
+        n = len(resolved)
+        subject = (f"[thermostat] resolved: {resolved[0]['subject']}"
+                   if n == 1 else f"[thermostat] {n} issues resolved")
+        lines = ["The following thermostat issue(s) have cleared:", ""]
+        for st in resolved:
+            lines.append(f"  - {st.get('subject')}: {st.get('detail')} — now OK")
         self._sender(subject, "\n".join(lines))
 
     def maybe_send_digest(self, localtime_fn=time.localtime):

@@ -74,6 +74,21 @@ def test_temp_alert_when_closed():
     assert kinds(issues) == {'temp_unexpected'}
 
 
+def test_improving_deviation_is_info_not_alert():
+    # room above cooling target but trending toward it -> quiet note
+    issues = sensors_mod.evaluate_room('Bad OG', {'temperature': 24.0}, {},
+                                       21.0, 'cooling', 1.5, improving=True)
+    assert kinds(issues) == {'temp_unexpected'}
+    assert issues[0].severity == 'info'
+
+
+def test_stuck_deviation_is_alert():
+    issues = sensors_mod.evaluate_room('Bad OG', {'temperature': 24.0}, {},
+                                       21.0, 'cooling', 1.5, improving=False)
+    assert kinds(issues) == {'temp_unexpected'}
+    assert issues[0].severity == 'alert'
+
+
 def test_sensor_battery_and_leak():
     issues = sensors_mod.classify_sensor('Waschküche Wasser', 'leak',
                                          {'battery': 5, 'water_leak': True},

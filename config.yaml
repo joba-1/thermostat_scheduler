@@ -4,7 +4,8 @@ mqtt:
   base_topic: zigbee2mqtt
   delay_between_messages: 5
   check_timeout: 1
-  unseen_interval: 1800       # thermostat "no life sign" threshold (seconds)
+  unseen_interval: 7200       # thermostat "no life sign" threshold (seconds); TRVs
+                              # only publish on change, so 30 min was too aggressive
   # username: mqtt_user       # optional; prefer env THERMOSTAT_MQTT_USER/PASS or a 600 secrets file
   # password: mqtt_pass
 
@@ -52,7 +53,13 @@ season:
   mode: auto                  # auto | heating | cooling
   source: heatpump            # when mode==auto: heatpump | config
   control: true               # let the manager drive thermostats for cooling
-  cool_target: 24             # reference room temp used by the comfort check in cooling
+  cool_target: 21             # reference room temp used by the comfort check in cooling
+
+
+# Grace before a room temperature deviation becomes a loud alert: while the
+# room is still moving toward target, or the target changed less than this many
+# minutes ago, the deviation is reported only as a quiet digest note.
+comfort_grace_minutes: 30
 
 
 sensors:
