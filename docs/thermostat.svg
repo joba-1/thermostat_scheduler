@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <title>Thermostat Scheduler</title>
+  <!-- thermometer body -->
+  <rect x="27" y="6" width="10" height="34" rx="5" fill="#e8eef5" stroke="#34495e" stroke-width="2"/>
+  <circle cx="32" cy="48" r="11" fill="#e8eef5" stroke="#34495e" stroke-width="2"/>
+  <!-- mercury: red (heat) bulb to blue (cool) column -->
+  <circle cx="32" cy="48" r="7" fill="#e74c3c"/>
+  <rect x="29.5" y="14" width="5" height="34" rx="2.5" fill="#e74c3c"/>
+  <rect x="29.5" y="14" width="5" height="14" rx="2.5" fill="#2980b9"/>
+  <!-- sun (heat) top-left -->
+  <g stroke="#f39c12" stroke-width="2" stroke-linecap="round">
+    <line x1="10" y1="14" x2="10" y2="8"/>
+    <line x1="10" y1="20" x2="10" y2="24"/>
+    <line x1="4" y1="16" x2="1" y2="16"/>
+    <line x1="16" y1="16" x2="19" y2="16"/>
+  </g>
+  <circle cx="10" cy="16" r="4" fill="#f39c12"/>
+  <!-- snowflake (cool) bottom-right -->
+  <g stroke="#2980b9" stroke-width="2" stroke-linecap="round">
+    <line x1="54" y1="44" x2="54" y2="58"/>
+    <line x1="48" y1="47.5" x2="60" y2="54.5"/>
+    <line x1="60" y1="47.5" x2="48" y2="54.5"/>
+  </g>
+</svg>
