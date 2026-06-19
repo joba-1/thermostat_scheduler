@@ -1,11 +1,14 @@
 [Unit]
-Description=Thermostat Monitor Service
+Description=Thermostat Manager (health, cooling, alerts)
 After=network.target
 
 [Service]
 Type=simple
 User=joachim
 WorkingDirectory=/home/joachim/git/thermostat_scheduler
+# Optional mode-600 secrets file (THERMOSTAT_MQTT_USER / THERMOSTAT_MQTT_PASS).
+# The leading '-' makes it optional.
+EnvironmentFile=-/etc/thermostat/secrets.env
 ExecStart=/bin/bash -lc 'source /home/joachim/git/thermostat_scheduler/venv/bin/activate && exec python /home/joachim/git/thermostat_scheduler/thermostat_monitor.py --config /home/joachim/git/thermostat_scheduler/config.yaml'
 Restart=on-failure
 RestartSec=5

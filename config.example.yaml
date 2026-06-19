@@ -1,0 +1,98 @@
+# Annotated example configuration for the thermostat scheduler + manager.
+# Copy to config.yaml and adjust. Credentials should NOT live here in
+# production: prefer env vars (THERMOSTAT_MQTT_USER/PASS) or a mode-600 secrets
+# file. See docs/admin.md.
+
+mqtt:
+  broker: 192.168.1.4          # MQTT broker host/IP
+  port: 1883
+  base_topic: zigbee2mqtt      # zigbee2mqtt base topic
+  delay_between_messages: 5    # seconds between scheduler pushes
+  check_timeout: 1             # seconds the scheduler --check waits for replies
+  unseen_interval: 1800        # thermostat "no life sign" threshold (seconds)
+  # username: mqtt_user
+  # password: mqtt_pass
+
+alerts:
+  enabled: true
+  mail_to: you@example.com     # default recipient (send-mail uses its own default if unset)
+  send_mail_cmd: ~/bin/send-mail.py
+  cooldown_hours: 24           # don't re-mail the same ongoing issue more often than this
+  digest_hour: 7              # daily digest of open issues at this local hour
+  battery_limit: 20           # percent
+  eval_interval: 300          # seconds between evaluation passes
+  state_file: ~/.local/state/thermostat_manager/alerts.json
+
+heatpump:
+  enabled: true
+  boiler_topic: ems-esp/boiler_data
+  thermostat_topic: ems-esp/thermostat_data
+  fields:
+    vorlauf: curflowtemp       # flow temperature
+    ruecklauf: rettemp         # return temperature
+    outdoor: outdoortemp
+    power: hpcurrpower
+    pressure: syspress
+  cooling_when:                # OR'd conditions; house is "cooling" if any matches
+    - field: hpcooling         # hc1.hpcooling: cooling enabled, stable across cycles
+      equals: "on"
+    # Avoid hpactivity (toggles per compressor cycle) and hp4way (reads
+    # "cooling & defrost" even from a resting valve in winter).
+  bounds:                      # warn (digest) if telemetry leaves these ranges
+    heating:
+      vorlauf: [20, 60]
+      pressure: [1.0, 2.5]
+    cooling:
+      vorlauf: [8, 25]
+      pressure: [1.0, 2.5]
+
+season:
+  mode: auto                   # auto | heating | cooling
+  source: heatpump             # when auto: derive from heatpump | config
+  control: true                # manager drives thermostats open in cooling
+  cool_target: 24              # comfort-check reference temperature in cooling
+
+sensors:
+  battery_limit: 20
+  unseen_interval: 7200
+
+# Dumb / manual radiator valves the manager cannot control. On every
+# heating<->cooling change it mails a reminder to open them (cooling) or set
+# them back to normal (heating).
+manual_thermostats: []         # e.g. ["Keller", "Gäste WC"]
+
+default_tolerance: 1.5         # °C room may deviate from setpoint before warning
+default_no_reaction_minutes: 60
+
+# Per type: how to push the schedule, force fully open for cooling, restore, and
+# detect end-user manual override. cooling_open/cooling_restore mirror schedule_mode.
+thermostat_types:
+  VNTH-T2_v2:
+    schedule_mode: {temperature_sensitivity: 0.5, system_mode: heat, preset: schedule}
+    cooling_open: {preset: comfort, comfort_temperature: 30}
+    cooling_restore: {preset: schedule}
+    manual_marker: {field: preset, equals: manual}
+  TRVZB:
+    schedule_mode: {system_mode: auto, temperature_accuracy: -0.6}
+    schedule_prefix: weekly_schedule
+    cooling_open: {system_mode: heat, occupied_heating_setpoint: 30}
+    cooling_restore: {system_mode: auto}
+    manual_marker: {field: system_mode, equals: heat}
+
+thermostats:
+  Wohnzimmer:
+    day_hour: "06:00"
+    day_temperature: 21.5
+    night_hour: "23:00"
+    night_temperature: 19.5
+    type: VNTH-T2_v2
+    tolerance: 1.5             # optional per-room override
+    no_reaction_minutes: 60    # optional per-room override
+    sensors:
+      temperature: "Wohnzimmer Luft"   # zigbee2mqtt friendly name of a temp sensor
+      windows: ["Wohnzimmer Fenster"]  # contact sensor friendly names
+      leak: []                          # optional water-leak sensors
+
+# Sensors not tied to a heated room (still battery/life-sign monitored):
+# extra_sensors:
+#   - {name: "Dach Luft", kind: temperature}

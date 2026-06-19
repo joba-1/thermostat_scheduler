@@ -6,10 +6,12 @@ A Python-based system for managing Zigbee thermostats via MQTT. Because manually
 
 This project provides two complementary tools for controlling smart thermostats through zigbee2mqtt:
 
-1. **`thermostat_scheduler.py`** — Pushes temperature schedules to your thermostats
-2. **`thermostat_monitor.py`** — Runs as a service, tracking device states and providing verification
+1. **`thermostat_scheduler.py`** — Pushes temperature schedules; checks and resets manual overrides
+2. **`thermostat_monitor.py`** — The manager daemon: monitors device/sensor/heat-pump health, drives cooling, and emails low-noise alerts + a status overview
 
-Together, they let you configure multiple thermostats from a single YAML file and verify that your changes actually took effect (spoiler: sometimes they don't).
+Together, they let you configure multiple thermostats from a single YAML file, keep rooms comfortable (warm in winter, cool in summer), and get told — sparingly — only when something actually needs you.
+
+Full design and operations docs live in [`docs/`](docs/): [spec.md](docs/spec.md), [spec-manager.md](docs/spec-manager.md), [user.md](docs/user.md), [admin.md](docs/admin.md), [test.md](docs/test.md).
 
 ## Prerequisites
 
@@ -113,23 +115,38 @@ For each thermostat, the scheduler:
 
 See [SCHEDULER.md](SCHEDULER.md) for detailed installation and usage instructions.
 
-## The Monitor Service
+## The Manager Daemon
 
-`thermostat_monitor.py` runs continuously as a systemd service, subscribing to all thermostat state topics and remembering the last seen values.
+`thermostat_monitor.py` runs continuously as a systemd service. It subscribes to
+every thermostat, the configured zigbee2mqtt sensors, and the EMS-ESP heat pump
+(all **directly over MQTT**, no Home Assistant), and on a timer evaluates health,
+comfort and operating bounds.
 
-### What It Monitors
+### What it does
 
-- Last seen timestamp for each device
-- Current state (JSON payload from zigbee2mqtt)
-- Battery levels (reports low battery warnings)
+- **Health alerts** — battery low, lost device/sensor, thermostat not applying
+  its settings, room not following its setpoint, water leak.
+- **Cooling mode** — when the heat pump is cooling (or `season.mode: cooling`),
+  forces every controllable valve fully open and restores the weekly schedule
+  when heating resumes; rooms in manual override are left alone.
+- **Sensors** — temperature vs setpoint (a window open explains a deviation
+  instead of alerting), plus sensor battery/life-sign.
+- **Low-noise email** — one mail per new issue, re-sent only after a cooldown,
+  a daily digest, a periodic full status report, and a reminder to adjust your
+  uncontrollable manual valves whenever the house switches heating↔cooling.
+- **Status overview** — `thermostat_monitor.py --report [--mail]`.
 
-### How It Works
+It still answers `get` on the `thermostat_monitor` topic (per-device replies on
+`thermostat_monitor/{Name}`) for the scheduler's `--check`.
 
-The monitor subscribes to `{base_topic}/{Name} Thermostat` for each configured device. When you publish `get` to the `thermostat_monitor` topic, it responds with per-device status on `thermostat_monitor/{Name}`.
+See [MONITOR.md](MONITOR.md) for installation and [docs/](docs/) for details.
 
-It also periodically publishes a list of devices that haven't reported in recently (default: 30 minutes) to `thermostat_monitor/unseen`.
+### Manual overrides
 
-See [MONITOR.md](MONITOR.md) for installation instructions.
+```bash
+python3 thermostat_scheduler.py --list-manual            # which rooms are manual?
+python3 thermostat_scheduler.py --reset-manual ["Name"]  # clear (re-push schedule)
+```
 
 ## Installation
 
@@ -168,27 +185,34 @@ Adding new types is straightforward: just define the required JSON keys in `ther
 - **Multi-device management** — Configure 10 thermostats as easily as 1
 - **Type abstraction** — Handles different thermostat brands with different protocols
 - **Schedule verification** — Check mode confirms your settings actually applied
-- **Battery monitoring** — Get warnings when devices are running low
+- **Cooling mode** — Heat-pump-aware; opens valves for cooling, restores schedules for heating
+- **Health & comfort monitoring** — Battery, lost devices/sensors, settings not applied, rooms off-target, leaks
+- **Low-noise email alerts** — Throttled, with daily digest, status report and mode-change reminders
+- **Manual-override aware** — Detect, respect, list and reset manual control
 - **Dry-run mode** — Test configuration changes safely
 - **Automated deployment** — One-command installation and service setup
 
 ## Project Structure
 
 ```
-config.yaml                    # Main configuration file
-thermostat_scheduler.py        # Schedule publisher (run on-demand)
-thermostat_monitor.py          # State monitor (runs as service)
-install.sh                     # Automated installer
-requirements.txt               # Python dependencies
-SCHEDULER.md                   # Detailed scheduler documentation
-MONITOR.md                     # Detailed monitor documentation
-thermostat_monitor.service     # systemd service template
+config.yaml / config.example.yaml  # Configuration + annotated example
+thermostat_scheduler.py            # Schedule publisher / manual reset (on-demand)
+thermostat_monitor.py              # Manager daemon (runs as service)
+common.py                          # Shared helpers
+heatpump.py cooling.py health.py sensors.py alerts.py   # Manager logic modules
+tests/                             # pytest unit tests
+docs/                              # spec / user / admin / test docs
+install.sh                         # Automated installer
+requirements.txt                   # Python dependencies
+SCHEDULER.md / MONITOR.md          # Detailed scheduler / monitor docs
+thermostat_monitor.service         # systemd service template
 ```
 
 ## Dependencies
 
 - **paho-mqtt** ≥1.6.1 — MQTT client library
 - **PyYAML** ≥6.0 — Config file parsing
+- **pytest** ≥7.0 — Unit tests (dev)
 
 Install with: `pip install -r requirements.txt`
 

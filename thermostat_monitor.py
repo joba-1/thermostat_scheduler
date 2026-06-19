@@ -1,174 +1,512 @@
 #!/usr/bin/env python3
 """
-Thermostat Monitor
-Subscribes to each device's state topic and remembers last seen time and payload.
-Listens on topic `thermostat_monitor` for a payload of "get" and replies with a
-JSON list of objects: {"name": ..., "value": {"last_seen": ..., "state": ...}}
+Thermostat Manager (formerly "monitor") daemon.
 
-Uses the same `config.yaml` format as `thermostat_scheduler.py`.
+One always-on process that:
+  * subscribes to every thermostat state topic, every configured sensor topic,
+    and the EMS-ESP heat-pump topics;
+  * remembers last-seen time + last state, and answers `get` on the
+    `thermostat_monitor` topic (kept for `thermostat_scheduler.py --check`);
+  * on a timer, classifies thermostat/sensor health and room comfort, checks
+    heat-pump bounds, and feeds issues to the throttled `Alerter` (mail +
+    daily digest);
+  * drives cooling mode: when the season is cooling (config or heat pump),
+    forces every non-manual thermostat fully open, and restores the stored
+    weekly schedule when heating resumes.
+
+Uses the same `config.yaml` as `thermostat_scheduler.py`.
 """
 
 import time
 import json
 import argparse
 import threading
+from collections import deque, defaultdict
 
-from thermostat_scheduler import load_config
+import paho.mqtt.client as mqtt
 
-try:
-    import paho.mqtt.client as mqtt
-except Exception as e:
-    print(f"Failed to import paho.mqtt.client: {e}")
-    raise
+from common import (setup_logging, log, load_config, time_to_minutes,
+                    device_topic_name, mqtt_credentials)
+import heatpump
+import cooling
+import health
+import sensors as sensors_mod
+from alerts import Alerter, make_issue
+
+__version__ = "2.0.0"
+
+DAY_MINUTES = 24 * 60
 
 
 def iso_now():
     return time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime())
 
 
-def main():
-    parser = argparse.ArgumentParser(description='Thermostat monitor')
-    parser.add_argument('--config', '-c', default='config.yaml', help='Path to YAML config file')
-    args = parser.parse_args()
+def parse_iso(s):
+    try:
+        return time.mktime(time.strptime(s, '%Y-%m-%dT%H:%M:%S'))
+    except Exception:
+        return None
 
-    cfg = load_config(args.config)
-    mqtt_cfg = cfg.get('mqtt', {})
-    thermostats = cfg.get('thermostats', {})
 
-    base = mqtt_cfg.get('base_topic')
-    monitor_topic = 'thermostat_monitor'
+def current_setpoint(cfg_item, now_lt, mode, season_cfg):
+    """Active target temperature for a room right now.
 
-    # state storage
-    start_time = iso_now()
-    last_seen = {}
-    last_state = {}
+    Heating: scheduled day/night temperature for the current local time.
+    Cooling: the configured cool target (we force valves open regardless, but
+    this is the reference the comfort check compares the room temperature to).
+    """
+    if mode == 'cooling':
+        return (season_cfg or {}).get('cool_target')
+    cur = now_lt.tm_hour * 60 + now_lt.tm_min
+    try:
+        dh = time_to_minutes(cfg_item['day_hour'])
+        nh = time_to_minutes(cfg_item['night_hour'])
+    except Exception:
+        return None
+    day_span = (nh - dh) % DAY_MINUTES
+    in_day = ((cur - dh) % DAY_MINUTES) < day_span
+    return cfg_item['day_temperature'] if in_day else cfg_item['night_temperature']
 
-    # map topic -> name for quick lookup
-    topic_to_name = {}
-    for name in thermostats.keys():
-        device_topic_name = f"{name} Thermostat"
-        state_topic = f"{base}/{device_topic_name}"
-        topic_to_name[state_topic] = name
-        # initialize with unknown state (not seen yet)
-        last_seen[name] = None
-        last_state[name] = None
 
-    def on_connect(client, userdata, flags, rc, properties=None):
-        if rc == 0:
-            print("Connected to MQTT broker")
-            # subscribe to device topics and monitor topic
-            for topic in topic_to_name.keys():
-                client.subscribe(topic)
-            client.subscribe(monitor_topic)
-            print(f"Subscribed to {len(topic_to_name)} device topics and '{monitor_topic}'")
-            # user-facing instructions
-            print("")
-            print("Thermostat monitor is ready.")
-            print(f" - Send a request by publishing payload 'get' to topic: '{monitor_topic}'")
-            print(f" - Responses are published per-device to: '{monitor_topic}/<Name>' (one message per device)")
-            print("")
-        else:
-            print(f"MQTT connect failed with rc={rc}")
+class Manager:
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.start_ts = time.time()
+        self.mqtt_cfg = cfg.get('mqtt', {})
+        self.thermostats = cfg.get('thermostats', {})
+        self.thermostat_types = cfg.get('thermostat_types', {})
+        self.alerts_cfg = cfg.get('alerts', {})
+        self.heatpump_cfg = cfg.get('heatpump', {})
+        self.season_cfg = cfg.get('season', {})
+        self.sensors_cfg = cfg.get('sensors', {})
+        self.manual_thermostats = cfg.get('manual_thermostats', []) or []
+        self.last_mode = None        # for heating<->cooling transition detection
+        self.base = self.mqtt_cfg.get('base_topic')
+        self.monitor_topic = 'thermostat_monitor'
 
-    def on_message(client, userdata, msg):
+        self.alerter = Alerter(self.alerts_cfg)
+
+        # Thermostats and sensors are separate namespaces: a contact sensor may
+        # share a friendly name with a thermostat room (e.g. "Bad OG"), so they
+        # must not share a state dict.
+        self.last_seen = {}          # room -> iso ts  (thermostats)
+        self.last_state = {}         # room -> payload (thermostats)
+        self.thermo_topic = {}       # state topic -> room
+        self.sensor_seen = {}        # friendly name -> iso ts
+        self.sensor_state = {}       # friendly name -> payload
+        self.sensor_topic = {}       # state topic -> friendly name
+        self.sensor_kind = {}        # sensor name -> 'temperature'|'window'|'leak'
+        self.room_temp_sensor = {}   # room -> temp sensor name
+        self.room_windows = defaultdict(list)  # room -> [window sensor names]
+
+        # heat-pump latest payloads
+        self.hp_boiler = None
+        self.hp_thermostat = None
+
+        # room temperature/running-state history for no-reaction detection
+        self.history = defaultdict(lambda: deque(maxlen=64))
+
+        # cooling control bookkeeping: thermostat name -> last applied mode
+        self.applied_mode = {}
+
+        self._build_topic_maps()
+
+    def _build_topic_maps(self):
+        for name, item in self.thermostats.items():
+            topic = f"{self.base}/{device_topic_name(name)}"
+            self.thermo_topic[topic] = name
+            self.last_seen[name] = None
+            self.last_state[name] = None
+            sensors = item.get('sensors') or {}
+            temp = sensors.get('temperature')
+            if temp:
+                self.room_temp_sensor[name] = temp
+                self._register_sensor(temp, 'temperature')
+            for w in sensors.get('windows') or []:
+                self.room_windows[name].append(w)
+                self._register_sensor(w, 'window')
+            for leak in sensors.get('leak') or []:
+                self._register_sensor(leak, 'leak')
+        for extra in self.cfg.get('extra_sensors') or []:
+            self._register_sensor(extra.get('name'), extra.get('kind', 'temperature'))
+
+    def _register_sensor(self, name, kind):
+        if not name or name in self.sensor_kind:
+            return
+        self.sensor_kind[name] = kind
+        topic = f"{self.base}/{name}"
+        self.sensor_topic[topic] = name
+        self.sensor_seen[name] = None
+        self.sensor_state[name] = None
+
+    # ---- MQTT --------------------------------------------------------
+    def on_connect(self, client, userdata, flags, rc, properties=None):
+        if rc != 0:
+            log.error("MQTT connect failed with rc=%s", rc)
+            return
+        log.info("Connected to MQTT broker")
+        for topic in self.thermo_topic:
+            client.subscribe(topic)
+        for topic in self.sensor_topic:
+            client.subscribe(topic)
+        client.subscribe(self.monitor_topic)
+        if self.heatpump_cfg.get('enabled'):
+            for t in (self.heatpump_cfg.get('boiler_topic'),
+                      self.heatpump_cfg.get('thermostat_topic')):
+                if t:
+                    client.subscribe(t)
+        log.info("Subscribed to %d thermostats + %d sensors + heat pump",
+                 len(self.thermo_topic), len(self.sensor_topic))
+
+    def on_message(self, client, userdata, msg):
         t = msg.topic
         payload = msg.payload.decode('utf-8', errors='ignore')
-        now = iso_now()
 
-        if t == monitor_topic:
-            # request from external actor
+        if t == self.monitor_topic:
             if payload.strip().lower() == 'get':
-                # publish per-device responses to monitor_topic/<name>
-                for name in thermostats.keys():
-                    seen = last_seen.get(name)
-                    state = last_state.get(name)
-                    # Flatten response: put last_seen and state at top level.
-                    # Use JSON null (None in Python) when state is unknown.
-                    resp_obj = {
-                        'name': name,
-                        'last_seen': seen,
-                        'state': state,
-                    }
-                    # pretty-print JSON for readability
-                    resp = json.dumps(resp_obj, indent=2, ensure_ascii=False)
-                    resp_topic = f"{monitor_topic}/{name}"
-                    client.publish(resp_topic, resp, qos=1)
+                self._respond_get(client)
             return
 
-        # device topic
-        name = topic_to_name.get(t)
-        if not name:
+        if t == self.heatpump_cfg.get('boiler_topic'):
+            self.hp_boiler = self._safe_json(payload)
             return
-        # attempt to parse JSON payload
+        if t == self.heatpump_cfg.get('thermostat_topic'):
+            self.hp_thermostat = self._safe_json(payload)
+            return
+
+        room = self.thermo_topic.get(t)
+        if room:
+            self.last_seen[room] = iso_now()
+            self.last_state[room] = self._safe_json(payload)
+            return
+        sensor = self.sensor_topic.get(t)
+        if sensor:
+            self.sensor_seen[sensor] = iso_now()
+            self.sensor_state[sensor] = self._safe_json(payload)
+
+    @staticmethod
+    def _safe_json(payload):
         try:
-            obj = json.loads(payload)
+            return json.loads(payload)
         except Exception:
-            # keep raw string as state if not JSON
-            obj = payload
-        last_seen[name] = now
-        last_state[name] = obj
+            return payload
+
+    def _respond_get(self, client):
+        for name in self.thermostats:
+            resp = {
+                'name': name,
+                'last_seen': self.last_seen.get(name),
+                'state': self.last_state.get(name),
+            }
+            client.publish(f"{self.monitor_topic}/{name}",
+                           json.dumps(resp, indent=2, ensure_ascii=False), qos=1)
+
+    # ---- evaluation --------------------------------------------------
+    def heatpump_state(self):
+        if not self.heatpump_cfg.get('enabled'):
+            return None
+        if self.hp_boiler is None and self.hp_thermostat is None:
+            return None
+        return heatpump.parse(self.hp_boiler, self.hp_thermostat, self.heatpump_cfg)
+
+    def _limits(self):
+        return {
+            'battery_limit': self.alerts_cfg.get('battery_limit', 20),
+            'unseen_interval': self.mqtt_cfg.get('unseen_interval', 1800),
+        }, {
+            'battery_limit': self.sensors_cfg.get('battery_limit', 20),
+            'unseen_interval': self.sensors_cfg.get('unseen_interval', 7200),
+        }
+
+    def collect_issues(self, mode, now_ts, now_lt, hp):
+        """Gather all issues without sending mail or driving devices.
+
+        Pure-ish: only side effect is recording temperature history. Used by
+        both the evaluation loop and the status report.
+        """
+        limits, sensor_limits = self._limits()
+        issues = []
+
+        # thermostats
+        for name, item in self.thermostats.items():
+            reported = self.last_state.get(name)
+            seen_ts = self._effective_seen(self.last_seen.get(name))
+            issues += health.classify_device(
+                name, item, self.thermostat_types, self.mqtt_cfg,
+                reported, seen_ts, now_ts, limits, mode=mode)
+
+            type_cfg = self.thermostat_types.get(item.get('type'), {})
+            manual = cooling.is_manual_override(type_cfg, reported)
+
+            # comfort + no-reaction only when we're actually in control of the
+            # room; a manually overridden room deviating is the user's choice.
+            setpoint = current_setpoint(item, now_lt, mode, self.season_cfg)
+            temp_state = self._room_temp_state(name)
+            self._record_history(name, item, reported, temp_state, now_ts)
+            if not manual:
+                windows = {w: self.sensor_state.get(w) for w in self.room_windows.get(name, [])}
+                issues += sensors_mod.evaluate_room(
+                    name, temp_state, windows, setpoint, mode,
+                    item.get('tolerance', self.cfg.get('default_tolerance', 1.5)))
+                nr = health.no_reaction_issue(
+                    name, list(self.history[name]), mode, setpoint,
+                    item.get('no_reaction_minutes', self.cfg.get('default_no_reaction_minutes', 60)))
+                if nr:
+                    issues.append(nr)
+
+        # standalone sensors (battery / life sign / leak)
+        for name, kind in self.sensor_kind.items():
+            seen_ts = self._effective_seen(self.sensor_seen.get(name))
+            issues += sensors_mod.classify_sensor(
+                name, kind, self.sensor_state.get(name), seen_ts, now_ts, sensor_limits)
+
+        # heat-pump operating bounds (low-priority digest items, only while active)
+        if hp and hp.get('active'):
+            for field, val, low, high in heatpump.check_bounds(
+                    hp['telemetry'], hp['mode'], self.heatpump_cfg.get('bounds', {})):
+                issues.append(make_issue(
+                    f"heatpump:{field}", 'hp_bounds', "heat pump",
+                    f"{field}={val} outside [{low}, {high}] in {hp['mode']} mode",
+                    severity='info'))
+        return issues
+
+    def evaluate(self, client=None):
+        now_ts = time.time()
+        now_lt = time.localtime(now_ts)
+        hp = self.heatpump_state()
+        mode = cooling.desired_mode(self.season_cfg, hp)
+        issues = self.collect_issues(mode, now_ts, now_lt, hp)
+
+        # heating<->cooling transition: remind operator about manual valves
+        if self.last_mode is None:
+            self.last_mode = mode           # baseline; no mail on first pass
+        elif mode != self.last_mode:
+            self._notify_mode_change(self.last_mode, mode)
+            self.last_mode = mode
+
+        # cooling control
+        if client is not None and self.season_cfg.get('control', True):
+            self._apply_cooling(client, mode, issues)
+
+        mailed, cleared = self.alerter.process(issues)
+        for iss in mailed:
+            log.warning("ALERT %s: %s", iss.subject, iss.detail)
+        for key in cleared:
+            log.info("cleared: %s", key)
+        self.alerter.maybe_send_digest()
+
+        # periodic full status overview (not just problems)
+        interval = self.alerts_cfg.get('report_interval_hours', 24) * 3600
+        if interval > 0 and self.alerter.due('status_report', interval):
+            self.alerter.notify("[thermostat] status report",
+                                self.status_report(mode, hp))
+        return issues
+
+    def _effective_seen(self, iso_seen):
+        """Parsed last-seen timestamp, or the manager start time if never seen.
+
+        Treating a never-seen device as "last seen at startup" gives every
+        device a full unseen_interval grace period after a restart before we
+        complain — otherwise a fresh start would mail about every device that
+        simply hasn't published yet.
+        """
+        return parse_iso(iso_seen) or self.start_ts
+
+    def _room_temp_state(self, room):
+        sensor = self.room_temp_sensor.get(room)
+        if sensor and isinstance(self.sensor_state.get(sensor), dict):
+            return self.sensor_state[sensor]
+        # fall back to the thermostat's own local_temperature
+        st = self.last_state.get(room)
+        if isinstance(st, dict) and 'local_temperature' in st:
+            return {'temperature': st.get('local_temperature')}
+        return None
+
+    def _record_history(self, name, item, reported, temp_state, now_ts):
+        running = reported.get('running_state') if isinstance(reported, dict) else None
+        temp = temp_state.get('temperature') if isinstance(temp_state, dict) else None
+        self.history[name].append((now_ts, running, temp))
+
+    def _notify_mode_change(self, old, new):
+        """Mail a reminder to physically adjust uncontrollable manual valves."""
+        log.info("mode change %s -> %s", old, new)
+        if not self.manual_thermostats:
+            return  # nothing actionable to remind about
+        action = ("OPEN fully (for cooling)" if new == 'cooling'
+                  else "set back to normal heating")
+        lines = [f"House operating mode changed: {old} -> {new}.", "",
+                 f"Please {action} these manual (non-controllable) thermostats:"]
+        lines += [f"  - {loc}" for loc in self.manual_thermostats]
+        log.warning("mode change %s -> %s; manual valves to %s: %s",
+                    old, new, action, ", ".join(self.manual_thermostats))
+        self.alerter.notify(f"[thermostat] mode changed to {new}", "\n".join(lines))
+
+    def manual_overrides(self):
+        """List rooms whose thermostat currently reports a manual override."""
+        out = []
+        for name, item in self.thermostats.items():
+            type_cfg = self.thermostat_types.get(item.get('type'), {})
+            if cooling.is_manual_override(type_cfg, self.last_state.get(name)):
+                out.append(name)
+        return out
+
+    def _age(self, iso_seen):
+        ts = parse_iso(iso_seen)
+        if ts is None:
+            return "never"
+        mins = int((time.time() - ts) / 60)
+        return f"{mins}m ago" if mins < 120 else f"{mins // 60}h ago"
+
+    def status_report(self, mode=None, hp=None):
+        """Human-readable overview: modes vs expected, sensors, heat pump, totals."""
+        now_ts = time.time()
+        now_lt = time.localtime(now_ts)
+        if hp is None:
+            hp = self.heatpump_state()
+        if mode is None:
+            mode = cooling.desired_mode(self.season_cfg, hp)
+        issues = self.collect_issues(mode, now_ts, now_lt, hp)
+        n_alert = sum(1 for i in issues if i.severity == 'alert')
+        n_info = sum(1 for i in issues if i.severity == 'info')
+        overall = ("OK" if n_alert == 0 and n_info == 0
+                   else f"{n_alert} alert(s), {n_info} note(s)")
+
+        lines = [f"Thermostat status — {time.strftime('%Y-%m-%d %H:%M', now_lt)}",
+                 f"Overall: {overall}", f"Desired mode: {mode}"]
+        if hp:
+            tele = ", ".join(f"{k}={v}" for k, v in hp['telemetry'].items())
+            lines.append(f"Heat pump: {hp['mode']}"
+                         f"{' (active)' if hp.get('active') else ' (idle)'} — {tele}")
+        if self.manual_thermostats:
+            want = "OPEN" if mode == 'cooling' else "normal heating"
+            lines.append(f"Manual valves (set to {want}): "
+                         + ", ".join(self.manual_thermostats))
+        lines.append("")
+        lines.append("Thermostats (room: state | setpoint | temp | battery | seen):")
+        for name, item in self.thermostats.items():
+            st = self.last_state.get(name) or {}
+            type_cfg = self.thermostat_types.get(item.get('type'), {})
+            manual = cooling.is_manual_override(type_cfg, st)
+            sp = current_setpoint(item, now_lt, mode, self.season_cfg)
+            temp_state = self._room_temp_state(name)
+            temp = temp_state.get('temperature') if isinstance(temp_state, dict) else '?'
+            statelabel = (st.get('preset') or st.get('system_mode') or '?')
+            if manual:
+                statelabel += " (MANUAL)"
+            bat = st.get('battery', '?')
+            lines.append(f"  {name}: {statelabel} | set {sp} | {temp}°C "
+                         f"| bat {bat} | {self._age(self.last_seen.get(name))}")
+        if self.sensor_kind:
+            lines.append("")
+            lines.append("Sensors:")
+            for name, kind in self.sensor_kind.items():
+                st = self.sensor_state.get(name) or {}
+                if not st:
+                    val = "?"
+                elif kind == 'window':
+                    val = "open" if sensors_mod.window_open(st) else "closed"
+                elif kind == 'leak':
+                    val = "LEAK" if st.get('water_leak') else "dry"
+                else:
+                    val = f"{st.get('temperature', '?')}°C"
+                bat = st.get('battery', '?')
+                lines.append(f"  {name} ({kind}): {val} | bat {bat} "
+                             f"| {self._age(self.sensor_seen.get(name))}")
+        if issues:
+            lines.append("")
+            lines.append("Open items:")
+            for i in sorted(issues, key=lambda x: x.severity):
+                lines.append(f"  [{i.severity}] {i.subject}: {i.detail}")
+        return "\n".join(lines)
+
+    def _apply_cooling(self, client, mode, issues):
+        want = 'cooling' if mode == 'cooling' else 'heating'
+        for name, item in self.thermostats.items():
+            type_cfg = self.thermostat_types.get(item.get('type'), {})
+            reported = self.last_state.get(name)
+            # Respect user manual control, but don't mistake the cooling state
+            # we ourselves applied (system_mode=heat on some types) for manual.
+            if (self.applied_mode.get(name) != 'cooling'
+                    and cooling.is_manual_override(type_cfg, reported)):
+                continue  # user wins; already surfaced as info issue
+            # seed heating baseline at startup without writing
+            if name not in self.applied_mode and want == 'heating':
+                self.applied_mode[name] = 'heating'
+                continue
+            if self.applied_mode.get(name) == want:
+                continue
+            payload = (cooling.build_open_payload(type_cfg) if want == 'cooling'
+                       else cooling.build_restore_payload(type_cfg))
+            if not payload:
+                continue
+            topic = f"{self.base}/{device_topic_name(name)}/set"
+            try:
+                client.publish(topic, json.dumps(payload), qos=1)
+                self.applied_mode[name] = want
+                log.info("cooling: set %s -> %s (%s)", name, want, payload)
+            except Exception as e:
+                log.error("cooling publish failed for %s: %s", name, e)
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Thermostat manager daemon')
+    parser.add_argument('--config', '-c', default='config.yaml', help='Path to YAML config file')
+    parser.add_argument('--once', action='store_true', help='Run a single evaluation pass and exit')
+    parser.add_argument('--report', action='store_true',
+                        help='Connect, take a status snapshot, print it and exit')
+    parser.add_argument('--mail', action='store_true',
+                        help='With --report: also send the report by mail')
+    args = parser.parse_args()
+
+    setup_logging()
+    cfg = load_config(args.config)
+    mgr = Manager(cfg)
 
     client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
-    client.on_connect = on_connect
-    client.on_message = on_message
+    client.on_connect = mgr.on_connect
+    client.on_message = mgr.on_message
+    mqtt_user, mqtt_pass = mqtt_credentials(mgr.mqtt_cfg)
+    if mqtt_user:
+        client.username_pw_set(mqtt_user, mqtt_pass)
 
-    if mqtt_cfg.get('username'):
-        client.username_pw_set(mqtt_cfg.get('username'), mqtt_cfg.get('password'))
-
-    print(f"Connecting to MQTT broker {mqtt_cfg.get('broker')}:{mqtt_cfg.get('port')}")
-    client.connect(mqtt_cfg.get('broker'), mqtt_cfg.get('port'), keepalive=60)
-    # Run network loop in background so we can publish periodic unseen reports.
+    log.info("Thermostat manager %s connecting to %s:%s",
+             __version__, mgr.mqtt_cfg.get('broker'), mgr.mqtt_cfg.get('port'))
+    client.connect(mgr.mqtt_cfg.get('broker'), mgr.mqtt_cfg.get('port'), keepalive=60)
     client.loop_start()
 
-    # Periodically publish devices that have not shown up recently.
-    unseen_interval = mqtt_cfg.get('unseen_interval', 1800)  # default 30 minutes
+    eval_interval = mgr.alerts_cfg.get('eval_interval', 300)
 
-    def parse_iso(s):
-        try:
-            return time.mktime(time.strptime(s, '%Y-%m-%dT%H:%M:%S'))
-        except Exception:
-            return None
+    if args.report:
+        # give the broker a moment to deliver retained/periodic device states
+        time.sleep(max(mgr.mqtt_cfg.get('check_timeout', 5), 5))
+        report = mgr.status_report()
+        print(report)
+        if args.mail:
+            mgr.alerter.notify("[thermostat] status report", report)
+        client.loop_stop()
+        client.disconnect()
+        return
 
-    def unseen_reporter():
-        while True:
-            time.sleep(unseen_interval)
-            now_ts = time.time()
-            unseen = []
-            for name in thermostats.keys():
-                seen = last_seen.get(name)
-                if seen is None:
-                    unseen.append({'name': name, 'last_seen': None})
-                    continue
-                seen_ts = parse_iso(seen)
-                if seen_ts is None or (now_ts - seen_ts) > unseen_interval:
-                    unseen.append({'name': name, 'last_seen': seen})
-            if unseen:
-                # Sort unseen by last_seen (earliest first). Treat None (never seen)
-                # as the oldest by mapping it to -1.
-                unseen.sort(key=lambda d: (parse_iso(d.get('last_seen'))
-                                           if parse_iso(d.get('last_seen')) is not None
-                                           else -1))
+    if args.once:
+        time.sleep(mgr.mqtt_cfg.get('check_timeout', 5))
+        mgr.evaluate(client)
+        client.loop_stop()
+        client.disconnect()
+        return
 
-                report = {'timestamp': iso_now(), 'unseen': unseen}
-                report_str = json.dumps(report, indent=2, ensure_ascii=False)
-                report_topic = f"{monitor_topic}/unseen"
-                client.publish(report_topic, report_str, qos=1)
-                print(f"Published unseen report to {report_topic}: {len(unseen)} devices")
-                # Print one-line per unseen device to stdout for easier monitoring
-                for dev in unseen:
-                    name = dev.get('name')
-                    last = dev.get('last_seen')
-                    print(f"Unseen device: {name} last_seen: {last}")
-
-    t = threading.Thread(target=unseen_reporter, daemon=True)
-    t.start()
-
-    # Keep the main thread alive.
     try:
+        # let initial retained/periodic messages arrive before first pass
+        time.sleep(min(eval_interval, 15))
         while True:
-            time.sleep(3600)
+            try:
+                mgr.evaluate(client)
+            except Exception as e:
+                log.exception("evaluation error: %s", e)
+            time.sleep(eval_interval)
     except KeyboardInterrupt:
         client.loop_stop()
+        client.disconnect()
 
 
 if __name__ == '__main__':
