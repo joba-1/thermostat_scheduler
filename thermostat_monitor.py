@@ -17,6 +17,7 @@ One always-on process that:
 Uses the same `config.yaml` as `thermostat_scheduler.py`.
 """
 
+import os
 import time
 import json
 import argparse
@@ -110,7 +111,14 @@ class Manager:
         # cooling control bookkeeping: thermostat name -> last applied mode
         self.applied_mode = {}
 
+        # Persisted device/sensor state so a restart starts with the last known
+        # readings instead of a cold blank slate (no '?'/never in reports).
+        self.device_state_file = os.path.expanduser(
+            cfg.get('device_state_file',
+                    '~/.local/state/thermostat_manager/devices.json'))
+
         self._build_topic_maps()
+        self._load_device_state()
 
     def _build_topic_maps(self):
         for name, item in self.thermostats.items():
@@ -139,6 +147,52 @@ class Manager:
         self.sensor_topic[topic] = name
         self.sensor_seen[name] = None
         self.sensor_state[name] = None
+
+    # ---- device-state persistence ------------------------------------
+    def _load_device_state(self):
+        """Restore last known device/sensor readings from disk (best-effort).
+
+        Only keys still present in the current config are restored; unknown or
+        removed devices are ignored. Staleness handling lives in
+        `_effective_seen`, which gives every device a fresh grace window after
+        startup so restoring an old timestamp never triggers a no-life-sign
+        mail-storm on restart.
+        """
+        try:
+            with open(self.device_state_file) as f:
+                data = json.load(f)
+        except Exception:
+            return
+        for room in self.last_state:
+            if room in data.get('last_state', {}):
+                self.last_state[room] = data['last_state'][room]
+                self.last_seen[room] = data.get('last_seen', {}).get(room)
+        for name in self.sensor_state:
+            if name in data.get('sensor_state', {}):
+                self.sensor_state[name] = data['sensor_state'][name]
+                self.sensor_seen[name] = data.get('sensor_seen', {}).get(name)
+        self.hp_boiler = data.get('hp_boiler', self.hp_boiler)
+        self.hp_thermostat = data.get('hp_thermostat', self.hp_thermostat)
+        log.info("restored device state from %s", self.device_state_file)
+
+    def _save_device_state(self):
+        """Persist current device/sensor readings (best-effort, atomic)."""
+        data = {
+            'last_seen': self.last_seen,
+            'last_state': self.last_state,
+            'sensor_seen': self.sensor_seen,
+            'sensor_state': self.sensor_state,
+            'hp_boiler': self.hp_boiler,
+            'hp_thermostat': self.hp_thermostat,
+        }
+        try:
+            os.makedirs(os.path.dirname(self.device_state_file), exist_ok=True)
+            tmp = self.device_state_file + '.tmp'
+            with open(tmp, 'w') as f:
+                json.dump(data, f, ensure_ascii=False)
+            os.replace(tmp, self.device_state_file)
+        except Exception as e:
+            log.warning("could not persist device state: %s", e)
 
     # ---- MQTT --------------------------------------------------------
     def on_connect(self, client, userdata, flags, rc, properties=None):
@@ -313,17 +367,23 @@ class Manager:
         if interval > 0 and self.alerter.due('status_report', interval):
             self.alerter.notify("[thermostat] status report",
                                 self.status_report(mode, hp))
+
+        self._save_device_state()
         return issues
 
     def _effective_seen(self, iso_seen):
-        """Parsed last-seen timestamp, or the manager start time if never seen.
+        """Last-seen timestamp for *alerting*, floored at the manager start time.
 
-        Treating a never-seen device as "last seen at startup" gives every
-        device a full unseen_interval grace period after a restart before we
-        complain — otherwise a fresh start would mail about every device that
-        simply hasn't published yet.
+        A device gets a full unseen_interval grace period after every restart
+        before we complain: never-seen falls back to start_ts, and a restored
+        (possibly old) timestamp is clamped up to start_ts until the device
+        reports again this session. The report's "seen" column uses the raw
+        timestamp via `_age`, so it still shows the true age.
         """
-        return parse_iso(iso_seen) or self.start_ts
+        ts = parse_iso(iso_seen)
+        if ts is None:
+            return self.start_ts
+        return max(ts, self.start_ts)
 
     def _room_temp_state(self, room):
         sensor = self.room_temp_sensor.get(room)
@@ -582,6 +642,13 @@ def main():
         client.disconnect()
         return
 
+    # Flush device state on a systemd stop/restart (SIGTERM) too, not just Ctrl-C.
+    import signal
+
+    def _graceful(signum, frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, _graceful)
+
     try:
         # let initial retained/periodic messages arrive before first pass
         time.sleep(min(eval_interval, 15))
@@ -592,6 +659,7 @@ def main():
                 log.exception("evaluation error: %s", e)
             time.sleep(eval_interval)
     except KeyboardInterrupt:
+        mgr._save_device_state()
         client.loop_stop()
         client.disconnect()
 

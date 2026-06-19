@@ -1,4 +1,6 @@
 """Manager status report + manual-override helpers (no MQTT connection)."""
+import tempfile
+
 import thermostat_monitor as tm
 
 CFG = {
@@ -17,8 +19,36 @@ CFG = {
 }
 
 
-def make_mgr():
-    return tm.Manager({k: (dict(v) if isinstance(v, dict) else v) for k, v in CFG.items()})
+def make_mgr(state_file=None):
+    cfg = {k: (dict(v) if isinstance(v, dict) else v) for k, v in CFG.items()}
+    # Isolate persistence to a throwaway path so tests never touch real state.
+    cfg['device_state_file'] = state_file or (
+        tempfile.mkdtemp() + '/devices.json')
+    return tm.Manager(cfg)
+
+
+def test_device_state_persists_across_restart(tmp_path):
+    sf = str(tmp_path / 'devices.json')
+    mgr = make_mgr(sf)
+    mgr.last_state['Bad OG'] = {'preset': 'schedule', 'battery': 55}
+    mgr.last_seen['Bad OG'] = '2026-06-19T10:00:00'
+    mgr.sensor_state['Bad OG Luft'] = {'temperature': 22.3, 'battery': 90}
+    mgr.sensor_seen['Bad OG Luft'] = '2026-06-19T10:01:00'
+    mgr._save_device_state()
+
+    # a fresh manager (simulating restart) loads the saved readings
+    mgr2 = make_mgr(sf)
+    assert mgr2.last_state['Bad OG'] == {'preset': 'schedule', 'battery': 55}
+    assert mgr2.last_seen['Bad OG'] == '2026-06-19T10:00:00'
+    assert mgr2.sensor_state['Bad OG Luft']['temperature'] == 22.3
+
+
+def test_restored_old_timestamp_gets_restart_grace():
+    """A restored, long-stale last_seen must not immediately alert no_life_sign."""
+    mgr = make_mgr()
+    # last seen far in the past, but the device hasn't reported this session
+    eff = mgr._effective_seen('2000-01-01T00:00:00')
+    assert eff >= mgr.start_ts        # clamped up to startup -> full grace window
 
 
 def test_manual_override_listed():

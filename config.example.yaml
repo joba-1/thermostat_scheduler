@@ -26,6 +26,11 @@ alerts:
   eval_interval: 300          # seconds between evaluation passes
   state_file: ~/.local/state/thermostat_manager/alerts.json
 
+# Last known device/sensor readings, restored on restart so reports aren't
+# blank until every device next publishes. Stale entries still get a fresh
+# no-life-sign grace window after startup.
+device_state_file: ~/.local/state/thermostat_manager/devices.json
+
 heatpump:
   enabled: true
   boiler_topic: ems-esp/boiler_data
