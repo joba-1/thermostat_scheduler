@@ -111,3 +111,18 @@ def test_status_report_html_has_scrollable_tables():
     assert 'Bad OG' in html
     # HTML is escaped (no raw angle brackets injected from data)
     assert '<script' not in html
+
+
+def test_html_color_cues():
+    # cooling mode so "above target" is the problematic direction
+    cfg = {k: (dict(v) if isinstance(v, dict) else v) for k, v in CFG.items()}
+    cfg['season'] = {'mode': 'cooling', 'cool_target': 21}
+    cfg['device_state_file'] = tempfile.mkdtemp() + '/devices.json'
+    mgr = tm.Manager(cfg)
+    mgr.last_state['Bad OG'] = {'preset': 'comfort', 'battery': 8}     # low battery
+    mgr.sensor_state['Bad OG Luft'] = {'temperature': 26.0}           # >21+1.5 -> hot
+    mgr.sensor_state['Bad OG'] = {'contact': False}                   # window open
+    html = mgr.status_report_html()
+    assert tm.Manager._CSS_BAD in html      # low battery coloured
+    assert tm.Manager._CSS_HOT in html      # too-warm temp coloured
+    assert tm.Manager._CSS_WARN in html     # open window coloured

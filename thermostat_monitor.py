@@ -510,7 +510,8 @@ class Manager:
             want = "OPEN fully" if mode == 'cooling' else "normal heating"
             manual_line = f"{want}: " + ", ".join(self.manual_thermostats)
 
-        thermo_rows = []
+        thermo_bat_limit = self.alerts_cfg.get('battery_limit', 20)
+        thermo_rows, thermo_styles = [], []
         for name, item in self.thermostats.items():
             st = self.last_state.get(name) or {}
             type_cfg = self.thermostat_types.get(item.get('type'), {})
@@ -528,23 +529,48 @@ class Manager:
                 self._fmt(st.get('battery'), "%"),
                 self._age(self.last_seen.get(name)),
             ])
+            style = {}
+            tol = item.get('tolerance', self.cfg.get('default_tolerance', 1.5))
+            if isinstance(temp, (int, float)) and isinstance(sp, (int, float)):
+                # highlight the deviation that matters for the season: too warm
+                # while cooling, too cold while heating
+                if mode == 'cooling' and temp > sp + tol:
+                    style['temp'] = self._CSS_HOT
+                elif mode == 'heating' and temp < sp - tol:
+                    style['temp'] = self._CSS_COLD
+            if self._battery_low(st, thermo_bat_limit):
+                style['bat'] = self._CSS_BAD
+            thermo_styles.append(style)
 
-        sensor_rows = None
+        sensor_rows = sensor_styles = None
         if self.sensor_kind:
-            sensor_rows = []
+            sensor_bat_limit = self.sensors_cfg.get('battery_limit', 20)
+            sensor_rows, sensor_styles = [], []
             for name, kind in self.sensor_kind.items():
                 st = self.sensor_state.get(name) or {}
+                style = {}
                 if not st:
                     val = "—"
                 elif kind == 'window':
-                    val = "OPEN" if sensors_mod.window_open(st) else "closed"
+                    if sensors_mod.window_open(st):
+                        val = "OPEN"
+                        style['value'] = self._CSS_WARN
+                    else:
+                        val = "closed"
                 elif kind == 'leak':
-                    val = "LEAK" if st.get('water_leak') else "dry"
+                    if st.get('water_leak'):
+                        val = "LEAK"
+                        style['value'] = self._CSS_BAD
+                    else:
+                        val = "dry"
                 else:
                     val = self._fmt(st.get('temperature'), "°C")
+                if self._battery_low(st, sensor_bat_limit):
+                    style['bat'] = self._CSS_BAD
                 sensor_rows.append([name, kind, val,
                                     self._fmt(st.get('battery'), "%"),
                                     self._age(self.sensor_seen.get(name))])
+                sensor_styles.append(style)
 
         order = {'alert': 0, 'info': 1}
         issue_list = [(i.severity, i.subject, i.detail)
@@ -555,11 +581,27 @@ class Manager:
             'overall': overall, 'mode': mode,
             'hp_line': hp_line, 'manual_line': manual_line,
             'thermo': {'headers': ["room", "state", "set", "temp", "bat", "seen"],
-                       'rows': thermo_rows},
+                       'rows': thermo_rows, 'styles': thermo_styles},
             'sensors': ({'headers': ["sensor", "kind", "value", "bat", "seen"],
-                         'rows': sensor_rows} if sensor_rows is not None else None),
+                         'rows': sensor_rows, 'styles': sensor_styles}
+                        if sensor_rows is not None else None),
             'issues': issue_list,
         }
+
+    # cell highlight styles for the HTML report
+    _CSS_BAD = 'color:#b00020;font-weight:bold'      # low battery / leak
+    _CSS_HOT = 'color:#c0392b;font-weight:bold'      # too warm vs target
+    _CSS_COLD = 'color:#1f6feb;font-weight:bold'     # too cold vs target
+    _CSS_WARN = 'color:#c05600;font-weight:bold'     # window open
+
+    @staticmethod
+    def _battery_low(state, limit):
+        if not isinstance(state, dict):
+            return False
+        if state.get('battery_low') is True:
+            return True
+        lvl = state.get('battery')
+        return isinstance(lvl, (int, float)) and lvl < limit
 
     @staticmethod
     def _render_text(d):
@@ -584,17 +626,23 @@ class Manager:
         return "\n".join(lines)
 
     @staticmethod
-    def _html_table(headers, rows):
-        """One scrollable HTML table (horizontal scroll on narrow screens)."""
+    def _html_table(headers, rows, styles=None):
+        """One scrollable HTML table (horizontal scroll on narrow screens).
+
+        `styles` is an optional per-row list of {header_name: extra_css} maps
+        used to colour individual cells (low battery, open window, off-target).
+        """
         th = "".join(
             '<th style="text-align:left;padding:4px 12px 4px 0;'
             'border-bottom:2px solid #999;white-space:nowrap">'
             f'{html.escape(str(h))}</th>' for h in headers)
         trs = []
-        for row in rows:
+        for ri, row in enumerate(rows):
+            cs = styles[ri] if styles else {}
             tds = "".join(
-                '<td style="padding:3px 12px 3px 0;border-bottom:1px solid #e2e2e2;'
-                f'white-space:nowrap">{html.escape(str(c))}</td>' for c in row)
+                f'<td style="padding:3px 12px 3px 0;border-bottom:1px solid #e2e2e2;'
+                f'white-space:nowrap;{cs.get(h, "")}">{html.escape(str(c))}</td>'
+                for h, c in zip(headers, row))
             trs.append(f"<tr>{tds}</tr>")
         return ('<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;'
                 'margin:4px 0 16px">'
@@ -624,10 +672,12 @@ class Manager:
                      '</td></tr>')
         p.append('</tbody></table>')
         p.append('<h3 style="font-size:15px;margin:14px 0 2px">Thermostats</h3>')
-        p.append(Manager._html_table(d['thermo']['headers'], d['thermo']['rows']))
+        p.append(Manager._html_table(d['thermo']['headers'], d['thermo']['rows'],
+                                     d['thermo'].get('styles')))
         if d['sensors']:
             p.append('<h3 style="font-size:15px;margin:14px 0 2px">Sensors</h3>')
-            p.append(Manager._html_table(d['sensors']['headers'], d['sensors']['rows']))
+            p.append(Manager._html_table(d['sensors']['headers'], d['sensors']['rows'],
+                                         d['sensors'].get('styles')))
         if d['issues']:
             p.append('<h3 style="font-size:15px;margin:14px 0 2px">Open items</h3>')
             p.append('<ul style="margin:2px 0;padding-left:18px;font-size:14px">')
