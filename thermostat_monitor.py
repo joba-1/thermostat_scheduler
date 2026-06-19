@@ -164,8 +164,18 @@ class Manager:
         payload = msg.payload.decode('utf-8', errors='ignore')
 
         if t == self.monitor_topic:
-            if payload.strip().lower() == 'get':
+            cmd = payload.strip().lower()
+            if cmd == 'get':
                 self._respond_get(client)
+            elif cmd in ('report', 'status', 'status-mail'):
+                # Build from the daemon's full accumulated state so the report
+                # has real data (a cold one-shot would show many '?').
+                report = self.status_report()
+                client.publish(f"{self.monitor_topic}/_report",
+                               json.dumps({'report': report}), qos=1)
+                if cmd == 'status-mail':
+                    self.alerter.notify("[thermostat] status report", report)
+                    log.info("status report mailed on request")
             return
 
         if t == self.heatpump_cfg.get('boiler_topic'):
@@ -383,6 +393,29 @@ class Manager:
         mins = int((time.time() - ts) / 60)
         return f"{mins}m ago" if mins < 120 else f"{mins // 60}h ago"
 
+    @staticmethod
+    def _fmt(val, unit="", dash="—"):
+        """Format a value with an optional unit, or a dash when missing."""
+        if val is None or val == "" or val == "?":
+            return dash
+        if isinstance(val, float):
+            val = f"{val:g}"
+        return f"{val}{unit}"
+
+    @staticmethod
+    def _table(headers, rows, indent="  "):
+        """Render aligned columns. Cells are strings; empty rows -> []."""
+        if not rows:
+            return []
+        cols = list(zip(*([headers] + rows)))
+        widths = [max(len(str(c)) for c in col) for col in cols]
+        out = [indent + "  ".join(h.ljust(w) for h, w in zip(headers, widths)),
+               indent + "  ".join("-" * w for w in widths)]
+        for row in rows:
+            out.append(indent + "  ".join(str(c).ljust(w)
+                                          for c, w in zip(row, widths)))
+        return out
+
     def status_report(self, mode=None, hp=None):
         """Human-readable overview: modes vs expected, sensors, heat pump, totals."""
         now_ts = time.time()
@@ -394,55 +427,84 @@ class Manager:
         issues = self.collect_issues(mode, now_ts, now_lt, hp)
         n_alert = sum(1 for i in issues if i.severity == 'alert')
         n_info = sum(1 for i in issues if i.severity == 'info')
-        overall = ("OK" if n_alert == 0 and n_info == 0
+        overall = ("OK — nothing to report" if n_alert == 0 and n_info == 0
                    else f"{n_alert} alert(s), {n_info} note(s)")
 
-        lines = [f"Thermostat status — {time.strftime('%Y-%m-%d %H:%M', now_lt)}",
-                 f"Overall: {overall}", f"Desired mode: {mode}"]
+        bar = "=" * 56
+        lines = [bar,
+                 f"  Thermostat status report",
+                 f"  {time.strftime('%a %Y-%m-%d %H:%M', now_lt)}",
+                 bar,
+                 f"  Overall : {overall}",
+                 f"  Mode    : {mode}"]
+
+        # Heat pump line, with units
         if hp:
-            tele = ", ".join(f"{k}={v}" for k, v in hp['telemetry'].items())
-            lines.append(f"Heat pump: {hp['mode']}"
-                         f"{' (active)' if hp.get('active') else ' (idle)'} — {tele}")
+            t = hp['telemetry']
+            units = {'vorlauf': '°C', 'ruecklauf': '°C', 'outdoor': '°C',
+                     'power': 'W', 'pressure': 'bar'}
+            parts = []
+            for k in ('vorlauf', 'ruecklauf', 'outdoor', 'power', 'pressure'):
+                if k in t:
+                    parts.append(f"{k} {self._fmt(t[k], units.get(k, ''))}")
+            act = 'running' if hp.get('active') else 'idle'
+            lines.append(f"  Heatpump: {hp['mode']} ({act}) — " + ", ".join(parts))
         if self.manual_thermostats:
-            want = "OPEN" if mode == 'cooling' else "normal heating"
-            lines.append(f"Manual valves (set to {want}): "
+            want = "OPEN fully" if mode == 'cooling' else "normal heating"
+            lines.append(f"  Manual valves -> {want}: "
                          + ", ".join(self.manual_thermostats))
-        lines.append("")
-        lines.append("Thermostats (room: state | setpoint | temp | battery | seen):")
+
+        # Thermostats table
+        rows = []
         for name, item in self.thermostats.items():
             st = self.last_state.get(name) or {}
             type_cfg = self.thermostat_types.get(item.get('type'), {})
             manual = cooling.is_manual_override(type_cfg, st)
             sp = current_setpoint(item, now_lt, mode, self.season_cfg)
             temp_state = self._room_temp_state(name)
-            temp = temp_state.get('temperature') if isinstance(temp_state, dict) else '?'
-            statelabel = (st.get('preset') or st.get('system_mode') or '?')
-            if manual:
-                statelabel += " (MANUAL)"
-            bat = st.get('battery', '?')
-            lines.append(f"  {name}: {statelabel} | set {sp} | {temp}°C "
-                         f"| bat {bat} | {self._age(self.last_seen.get(name))}")
+            temp = temp_state.get('temperature') if isinstance(temp_state, dict) else None
+            state = (st.get('preset') or st.get('system_mode')
+                     or st.get('running_state'))
+            rows.append([
+                name,
+                ("MANUAL" if manual else self._fmt(state)),
+                self._fmt(sp, "°C"),
+                self._fmt(temp, "°C"),
+                self._fmt(st.get('battery'), "%"),
+                self._age(self.last_seen.get(name)),
+            ])
+        lines.append("")
+        lines.append("  Thermostats")
+        lines += self._table(["room", "state", "set", "temp", "bat", "seen"], rows)
+
+        # Sensors table
         if self.sensor_kind:
-            lines.append("")
-            lines.append("Sensors:")
+            rows = []
             for name, kind in self.sensor_kind.items():
                 st = self.sensor_state.get(name) or {}
                 if not st:
-                    val = "?"
+                    val = "—"
                 elif kind == 'window':
-                    val = "open" if sensors_mod.window_open(st) else "closed"
+                    val = "OPEN" if sensors_mod.window_open(st) else "closed"
                 elif kind == 'leak':
                     val = "LEAK" if st.get('water_leak') else "dry"
                 else:
-                    val = f"{st.get('temperature', '?')}°C"
-                bat = st.get('battery', '?')
-                lines.append(f"  {name} ({kind}): {val} | bat {bat} "
-                             f"| {self._age(self.sensor_seen.get(name))}")
+                    val = self._fmt(st.get('temperature'), "°C")
+                rows.append([name, kind, val, self._fmt(st.get('battery'), "%"),
+                             self._age(self.sensor_seen.get(name))])
+            lines.append("")
+            lines.append("  Sensors")
+            lines += self._table(["sensor", "kind", "value", "bat", "seen"], rows)
+
+        # Open items
         if issues:
             lines.append("")
-            lines.append("Open items:")
-            for i in sorted(issues, key=lambda x: x.severity):
-                lines.append(f"  [{i.severity}] {i.subject}: {i.detail}")
+            lines.append("  Open items")
+            order = {'alert': 0, 'info': 1}
+            for i in sorted(issues, key=lambda x: order.get(x.severity, 2)):
+                tag = "ALERT" if i.severity == 'alert' else "note "
+                lines.append(f"    [{tag}] {i.subject}: {i.detail}")
+        lines.append(bar)
         return "\n".join(lines)
 
     def _apply_cooling(self, client, mode, issues):

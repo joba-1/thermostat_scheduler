@@ -48,6 +48,14 @@ current local time (day window = `[day_hour, night_hour)`); cooling →
 - `--report [--mail]` — connect, snapshot, print `status_report()`, optionally mail.
 - (no flag) — run the evaluation loop forever.
 
+While running, the daemon answers commands published to the `thermostat_monitor`
+topic: `get` (per-device state replies), `report`/`status` (publish the full
+`status_report()` text on `thermostat_monitor/_report`), and `status-mail` (also
+email it). The scheduler's `--status` / `--status-mail` use these so the report
+reflects the daemon's full live state. Alert mail uses the sender display name
+from `alerts.from_name` (default: the running script name, e.g.
+`thermostat_monitor`).
+
 ## Known limitations
 
 - On AVATTO/SONOFF types the cooling-open state (`system_mode: heat`) is

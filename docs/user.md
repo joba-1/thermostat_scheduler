@@ -24,14 +24,20 @@ python3 thermostat_scheduler.py --reset-manual "Bad OG"  # clear specific rooms
 ### Status overview
 
 ```bash
-python3 thermostat_monitor.py --report          # print a full overview
-python3 thermostat_monitor.py --report --mail   # ...and email it
+python3 thermostat_scheduler.py --status        # print a full overview
+python3 thermostat_scheduler.py --status-mail   # ...and email it
 ```
 
-The overview shows desired mode, heat-pump telemetry, every thermostat
-(state vs expected, setpoint, room temp, battery, last seen), every sensor, any
+These ask the **running daemon** for the report, so it is built from the
+daemon's full accumulated state (real data, not the many `—` you'd get from a
+cold one-shot). The equivalent one-shot still exists for when the daemon isn't
+running: `python3 thermostat_monitor.py --report [--mail]`.
+
+The overview shows the desired mode, heat-pump telemetry (with units), every
+thermostat (state, setpoint, room temp, battery, last seen), every sensor, any
 manual valves, and the open issues. The daemon also mails this automatically
-every `report_interval_hours`.
+every `report_interval_hours`. Mail arrives from the sender name
+`thermostat_monitor`.
 
 ## Email alerts
 

@@ -15,6 +15,7 @@ callable can be injected for testing.
 
 import json
 import os
+import sys
 import time
 import subprocess
 from collections import namedtuple
@@ -29,12 +30,14 @@ def make_issue(key, kind, subject, detail, severity='alert'):
     return Issue(key=key, kind=kind, severity=severity, subject=subject, detail=detail)
 
 
-def _default_sender(subject, body, mail_to, send_mail_cmd):
+def _default_sender(subject, body, mail_to, send_mail_cmd, from_name=None):
     """Send a mail via the send-mail helper. Returns True on success."""
     try:
         cmd = [send_mail_cmd, subject]
         if mail_to:
             cmd += ['--to', mail_to]
+        if from_name:
+            cmd += ['--from-name', from_name]
         proc = subprocess.run(cmd, input=body.encode('utf-8'),
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if proc.returncode != 0:
@@ -58,8 +61,12 @@ class Alerter:
         self.digest_hour = cfg.get('digest_hour', 7)
         self.state_file = os.path.expanduser(
             cfg.get('state_file', '~/.local/state/thermostat_manager/alerts.json'))
+        # Sender display name: configured value, else the running script/service
+        # name without extension (e.g. "thermostat_monitor") so mail isn't "me".
+        self.from_name = cfg.get('from_name') or (
+            os.path.splitext(os.path.basename(sys.argv[0]))[0] or 'thermostat')
         self._sender = sender or (lambda subj, body: _default_sender(
-            subj, body, self.mail_to, self.send_mail_cmd))
+            subj, body, self.mail_to, self.send_mail_cmd, self.from_name))
         self._now = now_fn
         self.state = self._load()
 

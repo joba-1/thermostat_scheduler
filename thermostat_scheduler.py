@@ -99,6 +99,36 @@ def list_manual(cfg, client, userdata, timeout=None):
     return manual
 
 
+def request_status(cfg, client, userdata, mail=False, timeout=None):
+    """Ask the running manager daemon for a full status report.
+
+    The daemon builds the report from its full accumulated state (so it has
+    real data, not the '?' of a cold one-shot) and publishes it back; with
+    `mail=True` it also emails it. Returns the report text or None.
+    """
+    if timeout is None:
+        timeout = max(cfg.get('mqtt', {}).get('check_timeout', 5), 4)
+    monitor_base = 'thermostat_monitor'
+    try:
+        client.subscribe(f"{monitor_base}/_report")
+        client.publish(monitor_base, 'status-mail' if mail else 'report')
+    except Exception:
+        pass
+    time.sleep(timeout)
+    responses = userdata.get('responses', {}) if isinstance(userdata, dict) else {}
+    payload = responses.get(f"{monitor_base}/_report")
+    report = payload.get('report') if isinstance(payload, dict) else None
+    print()
+    if report is None:
+        print("No response from the manager daemon — is thermostat_monitor "
+              "running and connected to the broker?")
+        return None
+    print(report)
+    if mail:
+        print("\nStatus report emailed by the manager.")
+    return report
+
+
 def check_thermostats(cfg, client, userdata, timeout=None):
     """Query `thermostat_monitor` for per-device status and collect responses.
 
@@ -284,6 +314,10 @@ def main():
                        help='List thermostats currently in end-user manual override')
     group.add_argument('--reset-manual', nargs='*', metavar='NAME',
                        help='Clear manual override by re-pushing the schedule to NAMEs (all if none given)')
+    group.add_argument('--status', action='store_true',
+                       help='Print a full status report from the running manager')
+    group.add_argument('--status-mail', action='store_true',
+                       help='Have the running manager email a full status report')
     args = parser.parse_args()
 
     setup_logging()
@@ -330,7 +364,9 @@ def main():
             if not userdata['connect_event'].wait(10):
                 print("Warning: MQTT connection timeout")
 
-        if args.check:
+        if args.status or args.status_mail:
+            request_status(cfg, client, userdata, mail=args.status_mail)
+        elif args.check:
             check_thermostats(cfg, client, userdata, timeout=mqtt_cfg.get('check_timeout', 5))
         elif args.list_manual:
             list_manual(cfg, client, userdata, timeout=mqtt_cfg.get('check_timeout', 5))
@@ -363,7 +399,8 @@ def main():
             client.loop_stop()
             client.disconnect()
             print("Disconnected from MQTT broker.")
-        if not (args.check or args.list_manual or args.reset_manual is not None):
+        if not (args.check or args.list_manual or args.reset_manual is not None
+                or args.status or args.status_mail):
             print_thermostat_table(thermostats)
 
 

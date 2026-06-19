@@ -19,6 +19,7 @@ alerts:
   enabled: true
   mail_to: you@example.com     # default recipient (send-mail uses its own default if unset)
   send_mail_cmd: ~/bin/send-mail.py
+  # from_name: thermostat_monitor  # sender display name (default: script name)
   cooldown_hours: 24           # don't re-mail the same ongoing issue more often than this
   digest_hour: 7              # daily digest of open issues at this local hour
   battery_limit: 20           # percent

@@ -68,4 +68,6 @@ def test_status_report_contains_overview():
     report = mgr.status_report()
     assert 'Thermostat status' in report
     assert 'Bad OG' in report and 'MANUAL' in report
-    assert 'Desired mode: heating' in report
+    assert 'Mode' in report and 'heating' in report
+    # battery filled, missing fields render as a dash rather than '?'
+    assert '8%' in report and '—' in report
