@@ -641,6 +641,9 @@ class Manager:
                         val = "dry"
                 else:
                     val = self._fmt(st.get('temperature'), "°C")
+                    hum = st.get('humidity')
+                    if hum is not None:
+                        val = f"{val} {self._fmt(hum, '%RH')}"
                 if self._battery_low(st, sensor_bat_limit):
                     style['bat'] = self._CSS_BAD
                 sensor_rows.append([name, kind, val,

@@ -103,6 +103,13 @@ def test_status_report_contains_overview():
     assert '8%' in report and '—' in report
 
 
+def test_sensor_value_shows_humidity():
+    mgr = make_mgr()
+    mgr.sensor_state['Bad OG Luft'] = {'temperature': 22.3, 'humidity': 55}
+    report = mgr.status_report()
+    assert '22.3°C' in report and '55%RH' in report
+
+
 def test_status_report_html_has_scrollable_tables():
     mgr = make_mgr()
     mgr.last_state['Bad OG'] = {'preset': 'manual', 'battery': 8}
