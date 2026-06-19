@@ -28,19 +28,21 @@ fi
 mkdir -p "/home/${USERNAME}"
 chown "${USERNAME}:${USERNAME}" "/home/${USERNAME}"
 
-# 2) clone or copy repository
-if [ -d "${INSTALL_DIR}" ] && [ -f "${INSTALL_DIR}/thermostat_monitor.py" ]; then
-  echo "Repository already present at ${INSTALL_DIR}"
-else
-  if [ -n "${REPO_URL}" ]; then
-    echo "Cloning ${REPO_URL} into ${INSTALL_DIR}"
-    git clone "${REPO_URL}" "${INSTALL_DIR}"
-  else
-    echo "Copying current repository into ${INSTALL_DIR}"
-    mkdir -p "${INSTALL_DIR}"
-    rsync -a --exclude .git "${SCRIPT_DIR}/" "${INSTALL_DIR}/"
-  fi
+# 2) clone or copy/update repository
+if [ -n "${REPO_URL}" ] && [ ! -d "${INSTALL_DIR}/.git" ]; then
+  echo "Cloning ${REPO_URL} into ${INSTALL_DIR}"
+  git clone "${REPO_URL}" "${INSTALL_DIR}"
   chown -R "${USERNAME}:${USERNAME}" "${INSTALL_DIR}"
+elif [ "${SCRIPT_DIR}" != "${INSTALL_DIR}" ]; then
+  # Update code from this checkout; preserve the deployed venv and config.yaml.
+  echo "Syncing code from ${SCRIPT_DIR} into ${INSTALL_DIR} (preserving venv + config.yaml)"
+  mkdir -p "${INSTALL_DIR}"
+  rsync -a --delete --exclude .git --exclude venv --exclude config.yaml \
+    --exclude __pycache__ --exclude .pytest_cache \
+    "${SCRIPT_DIR}/" "${INSTALL_DIR}/"
+  chown -R "${USERNAME}:${USERNAME}" "${INSTALL_DIR}"
+else
+  echo "Running from the install dir; not copying."
 fi
 
 # 3) create virtualenv
@@ -63,6 +65,38 @@ else
   echo "No requirements.txt found; skipping pip install"
 fi
 
+# 4b) seed config from the annotated example if none exists yet
+CONFIG_FILE="${INSTALL_DIR}/config.yaml"
+if [ ! -f "${CONFIG_FILE}" ] && [ -f "${INSTALL_DIR}/config.example.yaml" ]; then
+  echo "No config.yaml; seeding from config.example.yaml (edit it before relying on the service)"
+  cp "${INSTALL_DIR}/config.example.yaml" "${CONFIG_FILE}"
+  chown "${USERNAME}:${USERNAME}" "${CONFIG_FILE}"
+fi
+
+# 4c) optional MQTT secrets file (env vars override config; never commit secrets)
+SECRETS_DIR="/etc/thermostat"
+SECRETS_FILE="${SECRETS_DIR}/secrets.env"
+if [ ! -f "${SECRETS_FILE}" ]; then
+  echo "Creating ${SECRETS_FILE} template (mode 600). Fill in if your broker needs auth."
+  mkdir -p "${SECRETS_DIR}"
+  cat > "${SECRETS_FILE}" <<'SECRETS'
+# MQTT credentials for the thermostat manager (override config.yaml).
+# Leave commented if the broker is open. Keep this file mode 600.
+#THERMOSTAT_MQTT_USER=mqtt_user
+#THERMOSTAT_MQTT_PASS=mqtt_pass
+SECRETS
+  chmod 600 "${SECRETS_FILE}"
+fi
+
+# Mail uses the send-mail helper (~/bin/send-mail.py of the service User). Warn
+# if it is missing for that user, since alerts would then fail to send.
+USER_HOME=$(getent passwd "${USERNAME}" | cut -d: -f6)
+if [ ! -x "${USER_HOME}/bin/send-mail.py" ]; then
+  echo "WARNING: ${USER_HOME}/bin/send-mail.py not found for user ${USERNAME}."
+  echo "         Email alerts will fail until send-mail is deployed for this user,"
+  echo "         or set alerts.send_mail_cmd in config.yaml to an absolute path."
+fi
+
 # 5) install systemd unit
 SERVICE_PATH="/etc/systemd/system/thermostat_monitor.service"
 echo "Writing systemd unit to ${SERVICE_PATH} (backing up existing if present)"
@@ -71,13 +105,16 @@ if [ -f "${SERVICE_PATH}" ]; then
 fi
 cat > "${SERVICE_PATH}" <<EOF
 [Unit]
-Description=Thermostat Monitor Service
+Description=Thermostat Manager (health, cooling, alerts)
 After=network.target
 
 [Service]
 Type=simple
 User=${USERNAME}
 WorkingDirectory=${INSTALL_DIR}
+# Optional mode-600 secrets file (THERMOSTAT_MQTT_USER / THERMOSTAT_MQTT_PASS).
+# The leading '-' makes it optional.
+EnvironmentFile=-${SECRETS_FILE}
 ExecStart=/bin/bash -lc 'source ${INSTALL_DIR}/venv/bin/activate && exec python ${INSTALL_DIR}/thermostat_monitor.py --config ${INSTALL_DIR}/config.yaml'
 Restart=on-failure
 RestartSec=5

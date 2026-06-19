@@ -4,8 +4,103 @@ mqtt:
   base_topic: zigbee2mqtt
   delay_between_messages: 5
   check_timeout: 1
-  # username: mqtt_user  # optional
-  # password: mqtt_pass  # optional
+  unseen_interval: 7200       # thermostat "no life sign" threshold (seconds); TRVs
+                              # only publish on change, so 30 min was too aggressive
+  # username: mqtt_user       # optional; prefer env THERMOSTAT_MQTT_USER/PASS or a 600 secrets file
+  # password: mqtt_pass
+
+
+# --- Operator alerting (manager daemon) ---
+alerts:
+  enabled: true
+  mail_to: joachim.banzhaf@gmail.com
+  send_mail_cmd: ~/bin/send-mail.py
+  cooldown_hours: 24          # re-mail an ongoing issue at most this often
+  digest_hour: 7             # send the daily digest of open issues at this local hour
+  battery_limit: 20          # percent; below this -> battery_low
+  eval_interval: 300         # seconds between evaluation passes
+  state_file: ~/.local/state/thermostat_manager/alerts.json
+
+
+# Last known device/sensor readings, restored on restart so status reports
+# aren't blank until each device next publishes (stale entries still get a
+# fresh no-life-sign grace window after startup).
+device_state_file: ~/.local/state/thermostat_manager/devices.json
+
+
+# --- EMS-ESP heat pump (read directly from MQTT, not Home Assistant) ---
+heatpump:
+  enabled: true
+  boiler_topic: ems-esp/boiler_data
+  thermostat_topic: ems-esp/thermostat_data
+  fields:                     # canonical name -> EMS-ESP field name
+    activity: hpactivity      # live compressor activity (heating/cooling/off/defrost)
+    vorlauf: curflowtemp
+    ruecklauf: rettemp
+    outdoor: outdoortemp
+    power: hpcurrpower
+    pressure: syspress
+  cooling_when:               # OR'd; house is "cooling" if any matches
+    - field: hpcooling        # ems-esp/thermostat_data hc1.hpcooling: cooling enabled
+      equals: "on"            # stable across compressor cycles (unlike hpactivity)
+    # Avoid keying off hpactivity (toggles each compressor cycle) or hp4way
+    # (reads "cooling & defrost" from a resting valve even in winter).
+  bounds:                     # operator sanity ranges -> digest warning if outside
+    heating:
+      vorlauf: [20, 60]
+      pressure: [1.0, 2.5]
+    cooling:
+      vorlauf: [8, 25]
+      pressure: [1.0, 2.5]
+  # Feed a Zigbee room sensor's temperature + humidity to the heat pump as its
+  # remote thermostat reading. The pump uses humidity for its dew-point guard
+  # (the real lever gating cooling), so a fresh value matters: if the source
+  # sensor goes stale we keep publishing the last value AND raise an alert.
+  remote_feed:
+    enabled: true
+    sensor: "Wohnzimmer Luft"   # Zigbee temp/humidity sensor providing the values
+    control_topic: ems-esp/thermostat/hc1/control
+    control_value: RC100H       # published once per connect: sets remote thermostat type
+    temp_topic: ems-esp/thermostat/hc1/remotetemp
+    hum_topic: ems-esp/thermostat/hc1/remotehum
+    interval: 60                # seconds between republishes of the last known value
+    stale_after: 1800           # alert if the source sensor hasn't updated in this long
+
+
+# --- Season / cooling control ---
+season:
+  mode: auto                  # auto | heating | cooling
+  source: heatpump            # when mode==auto: heatpump | config
+  control: true               # let the manager drive thermostats for cooling
+  cool_target: 21             # reference room temp used by the comfort check in cooling
+
+
+# Grace before a room temperature deviation becomes a loud alert: while the
+# room is still moving toward target, or the target changed less than this many
+# minutes ago, the deviation is reported only as a quiet digest note.
+comfort_grace_minutes: 30
+
+
+# Expected pace at which a room works off a temperature deviation. While the
+# room is closing the gap at least this fast, the deviation stays a quiet note;
+# slower than this (stalled or merely crawling) escalates to a loud alert.
+# Default 60 = 1 °C per hour, so a 2 °C deviation should clear within ~2 h.
+comfort_minutes_per_degree: 60
+
+
+sensors:
+  battery_limit: 20
+  unseen_interval: 7200       # contact/temp sensors report less often than TRVs
+
+
+# Dumb / manual radiator valves that cannot be controlled remotely. The manager
+# can't actuate these, so on every heating<->cooling change it mails a reminder
+# to OPEN them fully (cooling) or set them back to normal (heating).
+manual_thermostats: []        # e.g. ["Keller", "Gäste WC"]
+
+
+default_tolerance: 1.5        # °C the room may deviate from setpoint before warning
+default_no_reaction_minutes: 60
 
 
 thermostat_types:
@@ -14,21 +109,61 @@ thermostat_types:
       temperature_sensitivity: 0.5
       system_mode: heat
       preset: schedule
+    cooling_open:             # force fully open: comfort preset at a high temp
+      preset: comfort
+      comfort_temperature: 34
+    cooling_restore:
+      preset: schedule
+    manual_marker:            # end user took control
+      field: preset
+      equals: manual
   TR-M3Z:
     schedule_mode:
       system_mode: heat
       preset: schedule
+    cooling_open:
+      preset: comfort
+      comfort_temperature: 34
+    cooling_restore:
+      preset: schedule
+    manual_marker:
+      field: preset
+      equals: manual
   ME168_1:
     schedule_mode:
       system_mode: auto
+    cooling_open:
+      system_mode: heat
+      current_heating_setpoint: 34
+    cooling_restore:
+      system_mode: auto
+    manual_marker:
+      field: system_mode
+      equals: heat
   ME167:
     schedule_mode:
       system_mode: auto
+    cooling_open:
+      system_mode: heat
+      current_heating_setpoint: 34
+    cooling_restore:
+      system_mode: auto
+    manual_marker:
+      field: system_mode
+      equals: heat
   TRVZB:
     schedule_mode:
       system_mode: auto
       temperature_accuracy: -0.6
     schedule_prefix: weekly_schedule
+    cooling_open:
+      system_mode: heat
+      occupied_heating_setpoint: 34
+    cooling_restore:
+      system_mode: auto
+    manual_marker:
+      field: system_mode
+      equals: heat
 
 
 thermostats:
@@ -38,54 +173,74 @@ thermostats:
     night_hour: "23:00"
     night_temperature: 19.5
     type: ME168_1
+    sensors:
+      temperature: "Arbeitszimmer Luft"
+      windows: ["Arbeitszimmer Fenster"]
   "Bad OG":
     day_hour: "05:00"
     day_temperature: 21.5
     night_hour: "23:00"
     night_temperature: 19.5
     type: VNTH-T2_v2
+    sensors:
+      temperature: "Bad OG Luft"
+      windows: ["Bad OG"]
   Caros:
     day_hour: "05:00"
     day_temperature: 21.5
     night_hour: "23:00"
     night_temperature: 19.5
     type: TRVZB
+    sensors:
+      windows: ["Caro Fenster"]
   Dusche:
     day_hour: "05:00"
-    day_temperature: 19.5
+    day_temperature: 16.0
     night_hour: "23:00"
-    night_temperature: 18.5
+    night_temperature: 16.0
     type: ME168_1
+    sensors:
+      windows: ["Dusche Fenster"]
   Esszimmer:
     day_hour: "05:00"
-    day_temperature: 21.5
+    day_temperature: 21.0
     night_hour: "23:00"
-    night_temperature: 20.5
+    night_temperature: 19.5
     type: VNTH-T2_v2
+    sensors:
+      windows: ["Esszimmer Terrasse"]
   Julians:
     day_hour: "06:00"
-    day_temperature: 24
+    day_temperature: 22.5
     night_hour: "23:00"
     night_temperature: 20.5
     type: VNTH-T2_v2
   Schlafzimmer:
     day_hour: "05:00"
-    day_temperature: 20.5
+    day_temperature: 19.5
     night_hour: "23:00"
-    night_temperature: 20
+    night_temperature: 19.5
     type: TRVZB
+    sensors:
+      windows: ["Schlafzimmer Fenster"]
   Waschküche:
     day_hour: "05:00"
     day_temperature: 20.5
     night_hour: "23:00"
     night_temperature: 19.5
     type: TR-M3Z
+    sensors:
+      temperature: "Waschküche Luft"
+      windows: ["Waschküche Fenster"]
+      leak: ["Waschküche Wasser"]
   "WC OG":
     day_hour: "05:00"
-    day_temperature: 20.5
+    day_temperature: 19.5
     night_hour: "23:00"
-    night_temperature: 19.5
+    night_temperature: 18.5
     type: VNTH-T2_v2
+    sensors:
+      windows: ["WC OG Fenster"]
   Wohnzimmer:
     day_hour: "05:00"
     day_temperature: 22.5
