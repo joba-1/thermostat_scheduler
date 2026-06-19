@@ -53,6 +53,16 @@ def test_manual_override_detection():
     assert not cooling.is_manual_override(vnth, {'preset': 'schedule'})
 
 
+def test_cooling_open_state_not_seen_as_manual():
+    # AVATTO/SONOFF type: cooling_open uses system_mode=heat, same as manual_marker.
+    tcfg = {'cooling_open': {'system_mode': 'heat', 'current_heating_setpoint': 30},
+            'manual_marker': {'field': 'system_mode', 'equals': 'heat'}}
+    # our cooling state -> NOT manual
+    assert not cooling.is_manual_override(tcfg, {'system_mode': 'heat', 'current_heating_setpoint': 30})
+    # user manual heat at a normal setpoint -> manual
+    assert cooling.is_manual_override(tcfg, {'system_mode': 'heat', 'current_heating_setpoint': 22})
+
+
 def test_open_and_restore_payloads():
     tcfg = {'cooling_open': {'preset': 'comfort', 'comfort_temperature': 30},
             'cooling_restore': {'preset': 'schedule'}}

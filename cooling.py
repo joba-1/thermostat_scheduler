@@ -54,8 +54,18 @@ def is_manual_override(type_cfg, reported_state):
     touched by cooling control, but should be surfaced as a low-priority
     warning so the operator knows comfort control is partly suspended.
     """
+    if not isinstance(reported_state, dict):
+        return False
+    # If the reported state matches our own cooling-open payload, it is the
+    # manager's cooling action, not a user manual override. This disambiguates
+    # the system_mode=heat that both cooling and a manual override produce on
+    # AVATTO/SONOFF types — important across daemon restarts mid-cooling.
+    op = type_cfg.get('cooling_open')
+    if isinstance(op, dict) and all(
+            str(reported_state.get(k)) == str(v) for k, v in op.items()):
+        return False
     marker = type_cfg.get('manual_marker')
-    if not isinstance(marker, dict) or not isinstance(reported_state, dict):
+    if not isinstance(marker, dict):
         return False
     field = marker.get('field')
     if field is None or field not in reported_state:
