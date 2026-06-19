@@ -24,7 +24,12 @@ reference. Key sections: `mqtt`, `alerts`, `heatpump`, `season`, `sensors`,
   For the service, put them in a mode-600 EnvironmentFile, e.g.
   `/etc/thermostat/secrets.env`, referenced from the unit (`EnvironmentFile=`).
 - **Mail**: handled by the `send-mail` helper (`~/bin/send-mail.py` +
-  `~/.config/sendmail-gmail.env`, mode 600). The repo never stores these.
+  `~/.config/sendmail-gmail.env`, mode 600). The repo never stores these. The
+  manager invokes it with `--from-name` (sender shows as `thermostat_monitor`)
+  and `--pre` (adds a monospace HTML part so the report's aligned tables stay
+  readable in clients that render plain text proportionally). The helper must
+  support those flags; deploy it for the service user too
+  (`/home/thermostat/bin/send-mail.py`).
 - Where to find the values: password manager / Nextcloud (personal). The MQTT
   password is also in the broker/zigbee2mqtt config on the broker host.
 

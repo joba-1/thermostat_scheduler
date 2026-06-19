@@ -33,7 +33,7 @@ def make_issue(key, kind, subject, detail, severity='alert'):
 def _default_sender(subject, body, mail_to, send_mail_cmd, from_name=None):
     """Send a mail via the send-mail helper. Returns True on success."""
     try:
-        cmd = [send_mail_cmd, subject]
+        cmd = [send_mail_cmd, subject, '--pre']
         if mail_to:
             cmd += ['--to', mail_to]
         if from_name:
