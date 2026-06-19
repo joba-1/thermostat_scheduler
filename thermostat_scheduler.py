@@ -27,6 +27,7 @@ from common import (
 # Re-exported for back-compatibility / unit tests that import from this module.
 from common import time_to_minutes, minutes_to_time  # noqa: F401
 import cooling
+import heatpump
 
 
 def on_connect(client, userdata, flags, rc, properties=None):
@@ -110,7 +111,33 @@ def check_thermostats(cfg, client, userdata, timeout=None):
     if timeout is None:
         timeout = cfg.get('mqtt', {}).get('check_timeout', 5)
 
+    # Determine the active season first: in cooling mode the manager
+    # deliberately forces every valve open, so comparing against the heating
+    # schedule would report false violations for every device. Subscribe to the
+    # heat-pump topics (retained) before query_monitor's wait so they arrive.
+    hp_cfg = cfg.get('heatpump', {})
+    season_cfg = cfg.get('season', {})
+    if hp_cfg.get('enabled') and hp_cfg.get('boiler_topic'):
+        try:
+            client.subscribe(hp_cfg['boiler_topic'])
+            if hp_cfg.get('thermostat_topic'):
+                client.subscribe(hp_cfg['thermostat_topic'])
+        except Exception:
+            pass
+
     checked = query_monitor(client, userdata, timeout)
+    print()
+
+    responses = userdata.get('responses', {}) if isinstance(userdata, dict) else {}
+    hp_state = None
+    if hp_cfg.get('enabled'):
+        boiler = responses.get(hp_cfg.get('boiler_topic'))
+        thermo = responses.get(hp_cfg.get('thermostat_topic'))
+        if boiler is not None or thermo is not None:
+            hp_state = heatpump.parse(boiler, thermo, hp_cfg)
+    mode = cooling.desired_mode(season_cfg, hp_state)
+    print(f"Mode: {mode}"
+          + (f" (heat pump: {hp_state['mode']})" if hp_state else ""))
     print()
 
     thermostats = cfg.get('thermostats', {})
@@ -139,24 +166,41 @@ def check_thermostats(cfg, client, userdata, timeout=None):
 
     for name, cfg_item in thermostats.items():
         try:
-            expected, _ = build_expected_payload(name, cfg_item, thermostat_types, cfg.get('mqtt', {}))
-        except Exception as e:
-            print(f"{name}: error building expected payload: {e}")
-            continue
-
-        try:
             reported = checked[name]['state']
         except KeyError:
             print(f"{name}: no monitored state found")
             continue
 
         battery_note = battery_status_note(reported, 20)
+        type_cfg = thermostat_types.get(cfg_item.get('type'), {})
+
+        # A manually overridden device is intentionally off-schedule (the user's
+        # choice) — report it as such, not as a violation.
+        if cooling.is_manual_override(type_cfg, reported):
+            print(f"{name}: MANUAL override — comfort control suspended{battery_note}")
+            continue
+
+        # Compare against what *should* be applied for the active season.
+        if mode == 'cooling':
+            expected = cooling.build_open_payload(type_cfg)
+            label = "cooling/open"
+        else:
+            try:
+                expected, _ = build_expected_payload(name, cfg_item, thermostat_types, cfg.get('mqtt', {}))
+            except Exception as e:
+                print(f"{name}: error building expected payload: {e}")
+                continue
+            label = "schedule"
+
+        if not expected:
+            print(f"{name}: no {label} payload to compare{battery_note}")
+            continue
 
         mismatches = compare_and_collect_mismatches(expected, reported)
         if not mismatches:
-            print(f"{name}: OK{battery_note}")
+            print(f"{name}: OK ({label}){battery_note}")
         else:
-            print(f"{name}: MISMATCHES{battery_note}:")
+            print(f"{name}: MISMATCHES ({label}){battery_note}:")
             print_mismatch_table(mismatches, indent=2)
 
     print()
