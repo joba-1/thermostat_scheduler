@@ -53,6 +53,18 @@ heatpump:
     cooling:
       vorlauf: [8, 25]
       pressure: [1.0, 2.5]
+  # Feed a Zigbee room sensor to the heat pump as its remote thermostat reading.
+  # The pump uses humidity for dew-point protection (gates cooling), so a fresh
+  # value matters: a stale source keeps publishing the last value AND alerts.
+  remote_feed:
+    enabled: false               # set true once the source sensor is confirmed
+    sensor: "Wohnzimmer Luft"    # Zigbee temp/humidity sensor providing the values
+    control_topic: ems-esp/thermostat/hc1/control
+    control_value: RC100H        # sent once per connect: registers the remote thermostat type
+    temp_topic: ems-esp/thermostat/hc1/remotetemp
+    hum_topic: ems-esp/thermostat/hc1/remotehum
+    interval: 60                 # seconds between republishes of the last known value
+    stale_after: 1800            # alert if the source sensor hasn't updated in this long
 
 season:
   mode: auto                   # auto | heating | cooling

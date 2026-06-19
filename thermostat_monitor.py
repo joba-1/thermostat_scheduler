@@ -82,6 +82,7 @@ class Manager:
         self.heatpump_cfg = cfg.get('heatpump', {})
         self.season_cfg = cfg.get('season', {})
         self.sensors_cfg = cfg.get('sensors', {})
+        self.remote_feed_cfg = self.heatpump_cfg.get('remote_feed', {}) or {}
         self.manual_thermostats = cfg.get('manual_thermostats', []) or []
         self.last_mode = None        # for heating<->cooling transition detection
         self.base = self.mqtt_cfg.get('base_topic')
@@ -139,6 +140,10 @@ class Manager:
                 self._register_sensor(leak, 'leak')
         for extra in self.cfg.get('extra_sensors') or []:
             self._register_sensor(extra.get('name'), extra.get('kind', 'temperature'))
+        # Track the heat-pump remote-feed source sensor so the daemon subscribes
+        # to it, shows it in the report, and can warn when it goes stale.
+        if self.remote_feed_cfg.get('enabled') and self.remote_feed_cfg.get('sensor'):
+            self._register_sensor(self.remote_feed_cfg['sensor'], 'temperature')
 
     def _register_sensor(self, name, kind):
         if not name or name in self.sensor_kind:
@@ -213,6 +218,11 @@ class Manager:
                     client.subscribe(t)
         log.info("Subscribed to %d thermostats + %d sensors + heat pump",
                  len(self.thermo_topic), len(self.sensor_topic))
+        # Re-assert the remote thermostat type on every (re)connect. Idempotent.
+        rf = self.remote_feed_cfg
+        if rf.get('enabled') and rf.get('control_topic') and rf.get('control_value'):
+            client.publish(rf['control_topic'], str(rf['control_value']), qos=1)
+            log.info("remote feed: sent %s=%s", rf['control_topic'], rf['control_value'])
 
     def on_message(self, client, userdata, msg):
         t = msg.topic
@@ -268,6 +278,67 @@ class Manager:
             }
             client.publish(f"{self.monitor_topic}/{name}",
                            json.dumps(resp, indent=2, ensure_ascii=False), qos=1)
+
+    # ---- heat-pump remote sensor feed --------------------------------
+    def _remote_feed_values(self):
+        """Last known (temperature, humidity) from the configured source sensor.
+
+        Either may be None if the sensor hasn't reported it. Returns None when
+        the feed is disabled or no sensor is configured.
+        """
+        rf = self.remote_feed_cfg
+        if not rf.get('enabled') or not rf.get('sensor'):
+            return None
+        st = self.sensor_state.get(rf['sensor'])
+        if not isinstance(st, dict):
+            return None, None
+        return st.get('temperature'), st.get('humidity')
+
+    def publish_remote_feed(self, client):
+        """Publish the last known room temp/humidity to the heat pump.
+
+        We always send the last value (the pump must not lose its remote
+        reading); a stale source is surfaced as an alert by `collect_issues`,
+        not by withholding the feed.
+        """
+        rf = self.remote_feed_cfg
+        vals = self._remote_feed_values()
+        if not vals or client is None:
+            return
+        temp, hum = vals
+        if temp is not None and rf.get('temp_topic'):
+            client.publish(rf['temp_topic'], str(temp), qos=1)
+        if hum is not None and rf.get('hum_topic'):
+            client.publish(rf['hum_topic'], str(hum), qos=1)
+
+    def _remote_feed_issue(self, now_ts):
+        """Alert if the remote-feed source sensor has gone stale.
+
+        Dew-point protection depends on a fresh humidity reading, so a stale
+        source is a real (alert-severity) problem, not a quiet note.
+        """
+        rf = self.remote_feed_cfg
+        if not rf.get('enabled') or not rf.get('sensor'):
+            return None
+        name = rf['sensor']
+        subject = f"{name} (heat-pump remote feed)"
+        seen_ts = self._effective_seen(self.sensor_seen.get(name))
+        stale_after = rf.get('stale_after', 1800)
+        if now_ts - seen_ts > stale_after:
+            mins = int((now_ts - seen_ts) / 60)
+            return make_issue(
+                'remotefeed:stale', 'remote_feed_stale', subject,
+                f"no fresh reading for {mins} min; heat-pump dew-point "
+                f"protection is running on a stale value")
+        # Only complain about a missing humidity once the sensor has actually
+        # reported (a dict payload). A cold start with no reading yet is covered
+        # by the staleness check above (which has restart grace), not here.
+        st = self.sensor_state.get(name)
+        if isinstance(st, dict) and st.get('humidity') is None:
+            return make_issue(
+                'remotefeed:nohum', 'remote_feed_nohum', subject,
+                "sensor reports no humidity; dew-point protection has no live value")
+        return None
 
     # ---- evaluation --------------------------------------------------
     def heatpump_state(self):
@@ -329,6 +400,11 @@ class Manager:
             seen_ts = self._effective_seen(self.sensor_seen.get(name))
             issues += sensors_mod.classify_sensor(
                 name, kind, self.sensor_state.get(name), seen_ts, now_ts, sensor_limits)
+
+        # heat-pump remote sensor feed freshness (dew-point safety -> alert)
+        rf_issue = self._remote_feed_issue(now_ts)
+        if rf_issue:
+            issues.append(rf_issue)
 
         # heat-pump operating bounds (low-priority digest items, only while active)
         if hp and hp.get('active'):
@@ -772,6 +848,7 @@ def main():
     if args.once:
         time.sleep(mgr.mqtt_cfg.get('check_timeout', 5))
         mgr.evaluate(client)
+        mgr.publish_remote_feed(client)
         client.loop_stop()
         client.disconnect()
         return
@@ -782,6 +859,22 @@ def main():
     def _graceful(signum, frame):
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, _graceful)
+
+    # Heat-pump remote feed runs on its own (faster) cadence than the eval loop.
+    rf = mgr.remote_feed_cfg
+    if rf.get('enabled'):
+        interval = rf.get('interval', 60)
+
+        def _feed_loop():
+            while True:
+                try:
+                    mgr.publish_remote_feed(client)
+                except Exception as e:
+                    log.exception("remote feed error: %s", e)
+                time.sleep(interval)
+        threading.Thread(target=_feed_loop, daemon=True).start()
+        log.info("remote feed: republishing %s every %ds",
+                 rf.get('sensor'), interval)
 
     try:
         # let initial retained/periodic messages arrive before first pass

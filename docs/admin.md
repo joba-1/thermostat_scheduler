@@ -72,3 +72,8 @@ Test the restore on a spare host at least once after major changes.
   `season.control` is true.
 - **Per-type cooling payload wrong**: verify against one device of each type
   with `--dry-run` and zigbee2mqtt before trusting auto control (see test.md).
+- **Heat-pump remote feed stale (alert)**: the `heatpump.remote_feed` source
+  sensor (e.g. `Wohnzimmer Luft`) stopped updating; the pump's dew-point
+  protection is running on a stale value. Usually a Zigbee mesh dropout —
+  confirm the sensor is publishing (`mosquitto_sub -t 'zigbee2mqtt/Wohnzimmer Luft' -v`).
+  Watch the feed itself with `mosquitto_sub -t 'ems-esp/thermostat/hc1/remote#' -v`.
