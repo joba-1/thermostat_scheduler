@@ -76,13 +76,13 @@ default_no_reaction_minutes: 60
 thermostat_types:
   VNTH-T2_v2:
     schedule_mode: {temperature_sensitivity: 0.5, system_mode: heat, preset: schedule}
-    cooling_open: {preset: comfort, comfort_temperature: 30}
+    cooling_open: {preset: comfort, comfort_temperature: 34}
     cooling_restore: {preset: schedule}
     manual_marker: {field: preset, equals: manual}
   TRVZB:
     schedule_mode: {system_mode: auto, temperature_accuracy: -0.6}
     schedule_prefix: weekly_schedule
-    cooling_open: {system_mode: heat, occupied_heating_setpoint: 30}
+    cooling_open: {system_mode: heat, occupied_heating_setpoint: 34}
     cooling_restore: {system_mode: auto}
     manual_marker: {field: system_mode, equals: heat}
 

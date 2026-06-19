@@ -85,7 +85,7 @@ thermostat_types:
       preset: schedule
     cooling_open:             # force fully open: comfort preset at a high temp
       preset: comfort
-      comfort_temperature: 30
+      comfort_temperature: 34
     cooling_restore:
       preset: schedule
     manual_marker:            # end user took control
@@ -97,7 +97,7 @@ thermostat_types:
       preset: schedule
     cooling_open:
       preset: comfort
-      comfort_temperature: 30
+      comfort_temperature: 34
     cooling_restore:
       preset: schedule
     manual_marker:
@@ -108,7 +108,7 @@ thermostat_types:
       system_mode: auto
     cooling_open:
       system_mode: heat
-      current_heating_setpoint: 30
+      current_heating_setpoint: 34
     cooling_restore:
       system_mode: auto
     manual_marker:
@@ -119,7 +119,7 @@ thermostat_types:
       system_mode: auto
     cooling_open:
       system_mode: heat
-      current_heating_setpoint: 30
+      current_heating_setpoint: 34
     cooling_restore:
       system_mode: auto
     manual_marker:
@@ -132,7 +132,7 @@ thermostat_types:
     schedule_prefix: weekly_schedule
     cooling_open:
       system_mode: heat
-      occupied_heating_setpoint: 30
+      occupied_heating_setpoint: 34
     cooling_restore:
       system_mode: auto
     manual_marker:
