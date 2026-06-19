@@ -12,7 +12,8 @@ def make_alerter(tmp_path, now_box, cooldown_hours=24):
         'state_file': str(tmp_path / 'alerts.json'),
     }
     sent = []
-    a = Alerter(cfg, sender=lambda subj, body: sent.append((subj, body)) or True,
+    a = Alerter(cfg,
+                sender=lambda subj, body, html=None: sent.append((subj, body, html)) or True,
                 now_fn=lambda: now_box[0])
     return a, sent
 

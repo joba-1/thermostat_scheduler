@@ -17,6 +17,7 @@ import json
 import os
 import sys
 import time
+import tempfile
 import subprocess
 from collections import namedtuple
 
@@ -30,14 +31,28 @@ def make_issue(key, kind, subject, detail, severity='alert'):
     return Issue(key=key, kind=kind, severity=severity, subject=subject, detail=detail)
 
 
-def _default_sender(subject, body, mail_to, send_mail_cmd, from_name=None):
-    """Send a mail via the send-mail helper. Returns True on success."""
+def _default_sender(subject, body, mail_to, send_mail_cmd, from_name=None,
+                    html_body=None):
+    """Send a mail via the send-mail helper. Returns True on success.
+
+    With `html_body`, a rich HTML alternative is sent (used for the status
+    report's scrollable tables); otherwise a monospace `--pre` part keeps simple
+    preformatted lists aligned.
+    """
+    html_path = None
     try:
-        cmd = [send_mail_cmd, subject, '--pre']
+        cmd = [send_mail_cmd, subject]
         if mail_to:
             cmd += ['--to', mail_to]
         if from_name:
             cmd += ['--from-name', from_name]
+        if html_body:
+            fd, html_path = tempfile.mkstemp(suffix='.html')
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                f.write(html_body)
+            cmd += ['--html-file', html_path]
+        else:
+            cmd += ['--pre']
         proc = subprocess.run(cmd, input=body.encode('utf-8'),
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if proc.returncode != 0:
@@ -48,6 +63,12 @@ def _default_sender(subject, body, mail_to, send_mail_cmd, from_name=None):
     except Exception as e:
         log.error("send-mail error: %s", e)
         return False
+    finally:
+        if html_path:
+            try:
+                os.unlink(html_path)
+            except OSError:
+                pass
 
 
 class Alerter:
@@ -65,8 +86,8 @@ class Alerter:
         # name without extension (e.g. "thermostat_monitor") so mail isn't "me".
         self.from_name = cfg.get('from_name') or (
             os.path.splitext(os.path.basename(sys.argv[0]))[0] or 'thermostat')
-        self._sender = sender or (lambda subj, body: _default_sender(
-            subj, body, self.mail_to, self.send_mail_cmd, self.from_name))
+        self._sender = sender or (lambda subj, body, html_body=None: _default_sender(
+            subj, body, self.mail_to, self.send_mail_cmd, self.from_name, html_body))
         self._now = now_fn
         self.state = self._load()
 
@@ -171,11 +192,11 @@ class Alerter:
         self._save()
         return True
 
-    def notify(self, subject, body):
+    def notify(self, subject, body, html_body=None):
         """Send an arbitrary mail through the configured sender (if enabled)."""
         if not self.enabled:
             return False
-        return self._sender(subject, body)
+        return self._sender(subject, body, html_body)
 
     def due(self, key, interval_seconds):
         """Return True at most once per `interval_seconds` for `key`.

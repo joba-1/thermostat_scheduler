@@ -18,6 +18,7 @@ Uses the same `config.yaml` as `thermostat_scheduler.py`.
 """
 
 import os
+import html
 import time
 import json
 import argparse
@@ -224,11 +225,13 @@ class Manager:
             elif cmd in ('report', 'status', 'status-mail'):
                 # Build from the daemon's full accumulated state so the report
                 # has real data (a cold one-shot would show many '?').
-                report = self.status_report()
+                d = self._report_data()
+                report = self._render_text(d)
                 client.publish(f"{self.monitor_topic}/_report",
                                json.dumps({'report': report}), qos=1)
                 if cmd == 'status-mail':
-                    self.alerter.notify("[thermostat] status report", report)
+                    self.alerter.notify("[thermostat] status report", report,
+                                        html_body=self._render_html(d))
                     log.info("status report mailed on request")
             return
 
@@ -365,8 +368,9 @@ class Manager:
         # periodic full status overview (not just problems)
         interval = self.alerts_cfg.get('report_interval_hours', 24) * 3600
         if interval > 0 and self.alerter.due('status_report', interval):
+            d = self._report_data(mode, hp)
             self.alerter.notify("[thermostat] status report",
-                                self.status_report(mode, hp))
+                                self._render_text(d), html_body=self._render_html(d))
 
         self._save_device_state()
         return issues
@@ -476,8 +480,8 @@ class Manager:
                                           for c, w in zip(row, widths)))
         return out
 
-    def status_report(self, mode=None, hp=None):
-        """Human-readable overview: modes vs expected, sensors, heat pump, totals."""
+    def _report_data(self, mode=None, hp=None):
+        """Gather the status overview once as structured data for rendering."""
         now_ts = time.time()
         now_lt = time.localtime(now_ts)
         if hp is None:
@@ -490,32 +494,23 @@ class Manager:
         overall = ("OK — nothing to report" if n_alert == 0 and n_info == 0
                    else f"{n_alert} alert(s), {n_info} note(s)")
 
-        bar = "=" * 56
-        lines = [bar,
-                 f"  Thermostat status report",
-                 f"  {time.strftime('%a %Y-%m-%d %H:%M', now_lt)}",
-                 bar,
-                 f"  Overall : {overall}",
-                 f"  Mode    : {mode}"]
-
-        # Heat pump line, with units
+        hp_line = None
         if hp:
             t = hp['telemetry']
             units = {'vorlauf': '°C', 'ruecklauf': '°C', 'outdoor': '°C',
                      'power': 'W', 'pressure': 'bar'}
-            parts = []
-            for k in ('vorlauf', 'ruecklauf', 'outdoor', 'power', 'pressure'):
-                if k in t:
-                    parts.append(f"{k} {self._fmt(t[k], units.get(k, ''))}")
+            parts = [f"{k} {self._fmt(t[k], units.get(k, ''))}"
+                     for k in ('vorlauf', 'ruecklauf', 'outdoor', 'power', 'pressure')
+                     if k in t]
             act = 'running' if hp.get('active') else 'idle'
-            lines.append(f"  Heatpump: {hp['mode']} ({act}) — " + ", ".join(parts))
+            hp_line = f"{hp['mode']} ({act}) — " + ", ".join(parts)
+
+        manual_line = None
         if self.manual_thermostats:
             want = "OPEN fully" if mode == 'cooling' else "normal heating"
-            lines.append(f"  Manual valves -> {want}: "
-                         + ", ".join(self.manual_thermostats))
+            manual_line = f"{want}: " + ", ".join(self.manual_thermostats)
 
-        # Thermostats table
-        rows = []
+        thermo_rows = []
         for name, item in self.thermostats.items():
             st = self.last_state.get(name) or {}
             type_cfg = self.thermostat_types.get(item.get('type'), {})
@@ -525,7 +520,7 @@ class Manager:
             temp = temp_state.get('temperature') if isinstance(temp_state, dict) else None
             state = (st.get('preset') or st.get('system_mode')
                      or st.get('running_state'))
-            rows.append([
+            thermo_rows.append([
                 name,
                 ("MANUAL" if manual else self._fmt(state)),
                 self._fmt(sp, "°C"),
@@ -533,13 +528,10 @@ class Manager:
                 self._fmt(st.get('battery'), "%"),
                 self._age(self.last_seen.get(name)),
             ])
-        lines.append("")
-        lines.append("  Thermostats")
-        lines += self._table(["room", "state", "set", "temp", "bat", "seen"], rows)
 
-        # Sensors table
+        sensor_rows = None
         if self.sensor_kind:
-            rows = []
+            sensor_rows = []
             for name, kind in self.sensor_kind.items():
                 st = self.sensor_state.get(name) or {}
                 if not st:
@@ -550,22 +542,112 @@ class Manager:
                     val = "LEAK" if st.get('water_leak') else "dry"
                 else:
                     val = self._fmt(st.get('temperature'), "°C")
-                rows.append([name, kind, val, self._fmt(st.get('battery'), "%"),
-                             self._age(self.sensor_seen.get(name))])
-            lines.append("")
-            lines.append("  Sensors")
-            lines += self._table(["sensor", "kind", "value", "bat", "seen"], rows)
+                sensor_rows.append([name, kind, val,
+                                    self._fmt(st.get('battery'), "%"),
+                                    self._age(self.sensor_seen.get(name))])
 
-        # Open items
-        if issues:
-            lines.append("")
-            lines.append("  Open items")
-            order = {'alert': 0, 'info': 1}
-            for i in sorted(issues, key=lambda x: order.get(x.severity, 2)):
-                tag = "ALERT" if i.severity == 'alert' else "note "
-                lines.append(f"    [{tag}] {i.subject}: {i.detail}")
+        order = {'alert': 0, 'info': 1}
+        issue_list = [(i.severity, i.subject, i.detail)
+                      for i in sorted(issues, key=lambda x: order.get(x.severity, 2))]
+
+        return {
+            'when': time.strftime('%a %Y-%m-%d %H:%M', now_lt),
+            'overall': overall, 'mode': mode,
+            'hp_line': hp_line, 'manual_line': manual_line,
+            'thermo': {'headers': ["room", "state", "set", "temp", "bat", "seen"],
+                       'rows': thermo_rows},
+            'sensors': ({'headers': ["sensor", "kind", "value", "bat", "seen"],
+                         'rows': sensor_rows} if sensor_rows is not None else None),
+            'issues': issue_list,
+        }
+
+    @staticmethod
+    def _render_text(d):
+        bar = "=" * 56
+        lines = [bar, "  Thermostat status report", f"  {d['when']}", bar,
+                 f"  Overall : {d['overall']}", f"  Mode    : {d['mode']}"]
+        if d['hp_line']:
+            lines.append(f"  Heatpump: {d['hp_line']}")
+        if d['manual_line']:
+            lines.append(f"  Manual valves -> {d['manual_line']}")
+        lines += ["", "  Thermostats"]
+        lines += Manager._table(d['thermo']['headers'], d['thermo']['rows'])
+        if d['sensors']:
+            lines += ["", "  Sensors"]
+            lines += Manager._table(d['sensors']['headers'], d['sensors']['rows'])
+        if d['issues']:
+            lines += ["", "  Open items"]
+            for sev, subject, detail in d['issues']:
+                tag = "ALERT" if sev == 'alert' else "note "
+                lines.append(f"    [{tag}] {subject}: {detail}")
         lines.append(bar)
         return "\n".join(lines)
+
+    @staticmethod
+    def _html_table(headers, rows):
+        """One scrollable HTML table (horizontal scroll on narrow screens)."""
+        th = "".join(
+            '<th style="text-align:left;padding:4px 12px 4px 0;'
+            'border-bottom:2px solid #999;white-space:nowrap">'
+            f'{html.escape(str(h))}</th>' for h in headers)
+        trs = []
+        for row in rows:
+            tds = "".join(
+                '<td style="padding:3px 12px 3px 0;border-bottom:1px solid #e2e2e2;'
+                f'white-space:nowrap">{html.escape(str(c))}</td>' for c in row)
+            trs.append(f"<tr>{tds}</tr>")
+        return ('<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;'
+                'margin:4px 0 16px">'
+                '<table style="border-collapse:collapse;font-size:14px">'
+                f'<thead><tr>{th}</tr></thead><tbody>{"".join(trs)}</tbody>'
+                '</table></div>')
+
+    @staticmethod
+    def _render_html(d):
+        esc = html.escape
+        p = ['<div style="font-family:Arial,Helvetica,sans-serif;color:#222;'
+             'max-width:100%">',
+             '<h2 style="margin:0 0 2px;font-size:18px">Thermostat status</h2>',
+             f'<div style="color:#777;font-size:13px;margin-bottom:10px">'
+             f'{esc(d["when"])}</div>',
+             '<table style="font-size:14px;margin-bottom:4px"><tbody>',
+             f'<tr><td style="padding-right:12px;color:#777">Overall</td>'
+             f'<td>{esc(d["overall"])}</td></tr>',
+             f'<tr><td style="padding-right:12px;color:#777">Mode</td>'
+             f'<td>{esc(d["mode"])}</td></tr>']
+        if d['hp_line']:
+            p.append('<tr><td style="padding-right:12px;color:#777;'
+                     f'vertical-align:top">Heat pump</td><td>{esc(d["hp_line"])}</td></tr>')
+        if d['manual_line']:
+            p.append('<tr><td style="padding-right:12px;color:#777;'
+                     f'vertical-align:top">Manual valves</td><td>{esc(d["manual_line"])}'
+                     '</td></tr>')
+        p.append('</tbody></table>')
+        p.append('<h3 style="font-size:15px;margin:14px 0 2px">Thermostats</h3>')
+        p.append(Manager._html_table(d['thermo']['headers'], d['thermo']['rows']))
+        if d['sensors']:
+            p.append('<h3 style="font-size:15px;margin:14px 0 2px">Sensors</h3>')
+            p.append(Manager._html_table(d['sensors']['headers'], d['sensors']['rows']))
+        if d['issues']:
+            p.append('<h3 style="font-size:15px;margin:14px 0 2px">Open items</h3>')
+            p.append('<ul style="margin:2px 0;padding-left:18px;font-size:14px">')
+            for sev, subject, detail in d['issues']:
+                color = '#b00020' if sev == 'alert' else '#777'
+                tag = 'ALERT' if sev == 'alert' else 'note'
+                p.append(f'<li style="margin:3px 0"><span style="color:{color};'
+                         f'font-weight:bold">[{tag}]</span> {esc(subject)}: '
+                         f'{esc(detail)}</li>')
+            p.append('</ul>')
+        p.append('</div>')
+        return "".join(p)
+
+    def status_report(self, mode=None, hp=None):
+        """Plain-text overview (terminal / mail text part)."""
+        return self._render_text(self._report_data(mode, hp))
+
+    def status_report_html(self, mode=None, hp=None):
+        """Mobile-friendly HTML overview (scrollable tables) for mail."""
+        return self._render_html(self._report_data(mode, hp))
 
     def _apply_cooling(self, client, mode, issues):
         want = 'cooling' if mode == 'cooling' else 'heating'
@@ -627,10 +709,12 @@ def main():
     if args.report:
         # give the broker a moment to deliver retained/periodic device states
         time.sleep(max(mgr.mqtt_cfg.get('check_timeout', 5), 5))
-        report = mgr.status_report()
+        d = mgr._report_data()
+        report = mgr._render_text(d)
         print(report)
         if args.mail:
-            mgr.alerter.notify("[thermostat] status report", report)
+            mgr.alerter.notify("[thermostat] status report", report,
+                               html_body=mgr._render_html(d))
         client.loop_stop()
         client.disconnect()
         return

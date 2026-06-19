@@ -74,7 +74,7 @@ def test_mode_change_notifies_manual_valves():
     mgr = tm.Manager(cfg)
     sent = []
     mgr.alerter.enabled = True
-    mgr.alerter._sender = lambda subj, body: sent.append((subj, body)) or True
+    mgr.alerter._sender = lambda subj, body, html=None: sent.append((subj, body)) or True
 
     mgr._notify_mode_change('heating', 'cooling')
     assert len(sent) == 1
@@ -86,7 +86,7 @@ def test_mode_change_silent_without_manual_valves():
     mgr = make_mgr()
     sent = []
     mgr.alerter.enabled = True
-    mgr.alerter._sender = lambda subj, body: sent.append((subj, body)) or True
+    mgr.alerter._sender = lambda subj, body, html=None: sent.append((subj, body)) or True
     mgr._notify_mode_change('cooling', 'heating')
     assert sent == []
 
@@ -101,3 +101,13 @@ def test_status_report_contains_overview():
     assert 'Mode' in report and 'heating' in report
     # battery filled, missing fields render as a dash rather than '?'
     assert '8%' in report and '—' in report
+
+
+def test_status_report_html_has_scrollable_tables():
+    mgr = make_mgr()
+    mgr.last_state['Bad OG'] = {'preset': 'manual', 'battery': 8}
+    html = mgr.status_report_html()
+    assert '<table' in html and 'overflow-x:auto' in html
+    assert 'Bad OG' in html
+    # HTML is escaped (no raw angle brackets injected from data)
+    assert '<script' not in html
