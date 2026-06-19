@@ -64,7 +64,7 @@ heatpump:
     temp_topic: ems-esp/thermostat/hc1/remotetemp
     hum_topic: ems-esp/thermostat/hc1/remotehum
     interval: 60                # seconds between republishes of the last known value
-    stale_after: 1800           # alert if the source sensor hasn't updated in this long
+    stale_after: 3600           # alert if the source sensor hasn't updated for this long (1 h)
 
 
 # --- Season / cooling control ---
