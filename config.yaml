@@ -81,6 +81,13 @@ season:
 comfort_grace_minutes: 30
 
 
+# Expected pace at which a room works off a temperature deviation. While the
+# room is closing the gap at least this fast, the deviation stays a quiet note;
+# slower than this (stalled or merely crawling) escalates to a loud alert.
+# Default 60 = 1 °C per hour, so a 2 °C deviation should clear within ~2 h.
+comfort_minutes_per_degree: 60
+
+
 sensors:
   battery_limit: 20
   unseen_interval: 7200       # contact/temp sensors report less often than TRVs

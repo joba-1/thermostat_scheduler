@@ -110,6 +110,39 @@ def test_sensor_value_shows_humidity():
     assert '22.3°C' in report and '55%RH' in report
 
 
+def _seed_history(mgr, name, temps, step_min=5):
+    """Push (ts, running_state, temp) samples spaced step_min apart, oldest first."""
+    import time
+    now = time.time()
+    n = len(temps)
+    for i, t in enumerate(temps):
+        ts = now - (n - 1 - i) * step_min * 60
+        mgr.history[name].append((ts, 'cool', t))
+
+
+def test_improving_within_grace_is_quiet():
+    mgr = make_mgr()
+    # only 15 min of history (< 30 min grace) -> too soon to judge
+    _seed_history(mgr, 'Bad OG', [26.0, 25.8, 25.6, 25.4])  # 4 * 5 min = 15 min
+    assert mgr._temp_improving('Bad OG', 21.0, 'cooling') is True
+
+
+def test_fast_enough_cooling_stays_quiet():
+    mgr = make_mgr()
+    # 60 min span, fell 1.2 °C -> 1.2 °C/h >= required 1 °C/h
+    _seed_history(mgr, 'Bad OG', [26.2, 25.9, 25.6, 25.3, 25.2, 25.1, 25.0],
+                  step_min=10)
+    assert mgr._temp_improving('Bad OG', 21.0, 'cooling') is True
+
+
+def test_too_slow_cooling_escalates():
+    mgr = make_mgr()
+    # 60 min span, fell only 0.3 °C -> 0.3 °C/h < required 1 °C/h -> loud
+    _seed_history(mgr, 'Bad OG', [26.0, 25.95, 25.9, 25.85, 25.8, 25.75, 25.7],
+                  step_min=10)
+    assert mgr._temp_improving('Bad OG', 21.0, 'cooling') is False
+
+
 def test_status_report_html_has_scrollable_tables():
     mgr = make_mgr()
     mgr.last_state['Bad OG'] = {'preset': 'manual', 'battery': 8}

@@ -475,12 +475,15 @@ class Manager:
             return {'temperature': st.get('local_temperature')}
         return None
 
-    def _temp_improving(self, name, setpoint, mode, epsilon=0.2):
-        """True if the room temp is trending toward `setpoint`, or there isn't
-        yet enough history to judge (e.g. just after a target/mode change).
+    def _temp_improving(self, name, setpoint, mode):
+        """True if the room is closing the gap to `setpoint` fast enough, or
+        there isn't yet enough history to judge (e.g. just after a change).
 
-        Keeps a fresh deviation as a quiet note instead of an immediate alert:
-        only a deviation that is *stuck* (enough history, no progress) is loud.
+        Keeps a deviation as a quiet note while it is being worked off at the
+        expected rate; once progress falls below that rate (stalled *or* merely
+        crawling toward target) it escalates to a loud alert. The expected rate
+        is 1 °C per `comfort_minutes_per_degree` minutes (default 60 -> 1 °C/h),
+        so a deviation that won't clear in ~1 h per °C gets surfaced.
         History samples are (ts, running_state, temp), oldest first.
         """
         if setpoint is None:
@@ -489,14 +492,15 @@ class Manager:
                 if isinstance(h[2], (int, float))]
         if len(hist) < 2:
             return True
-        span = hist[-1][0] - hist[0][0]
-        grace = self.cfg.get('comfort_grace_minutes', 30) * 60
-        if span < grace:
+        span_min = (hist[-1][0] - hist[0][0]) / 60.0
+        grace = self.cfg.get('comfort_grace_minutes', 30)
+        if span_min < grace:
             return True  # still settling after a recent change
         first, last = hist[0][1], hist[-1][1]
-        if mode == 'cooling':
-            return (first - last) > epsilon   # temperature falling
-        return (last - first) > epsilon       # temperature rising
+        progress = (first - last) if mode == 'cooling' else (last - first)
+        rate = progress / span_min            # °C/min toward target
+        required = 1.0 / self.cfg.get('comfort_minutes_per_degree', 60)
+        return rate >= required
 
     def _record_history(self, name, item, reported, temp_state, now_ts):
         running = reported.get('running_state') if isinstance(reported, dict) else None

@@ -77,6 +77,10 @@ season:
 # minutes ago), the deviation is only a quiet digest note, not an alert.
 comfort_grace_minutes: 30
 
+# Expected pace for working off a deviation: 1 °C per this many minutes (60 =
+# 1 °C/h). Closing the gap slower than this escalates the note to a loud alert.
+comfort_minutes_per_degree: 60
+
 sensors:
   battery_limit: 20
   unseen_interval: 7200
