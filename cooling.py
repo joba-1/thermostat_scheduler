@@ -17,6 +17,56 @@ those payloads; it hard-codes nothing device-specific.
 """
 
 
+# Fields that set a thermostat's *mode / target* (as opposed to stored config
+# like the weekly schedule strings or calibration). When a device is in manual
+# override or off, these are left untouched so we don't drag it out of that
+# state or overwrite the user's manual setpoint.
+CONTROL_FIELDS = frozenset({
+    'system_mode', 'preset',
+    'occupied_heating_setpoint', 'current_heating_setpoint', 'comfort_temperature',
+})
+
+
+def is_off(reported_state):
+    """True if the thermostat reports it is switched off (e.g. window open)."""
+    if not isinstance(reported_state, dict):
+        return False
+    return str(reported_state.get('system_mode')).strip().lower() == 'off'
+
+
+def build_intended_payload(name, cfg_item, thermostat_types, mqtt_cfg, mode,
+                           reported, control_fields=CONTROL_FIELDS):
+    """Build the payload that reinstates a thermostat's *currently intended* state.
+
+    Season-aware: in cooling the intended active state is `cooling_open`; in
+    heating it is the weekly `schedule_mode`. Either way the stored weekly
+    schedule strings + calibration come along.
+
+    Exceptions — a device in **manual override** or **off** keeps that mode: we
+    strip every control field (mode/preset/setpoint) and push only the stored
+    schedule + calibration, so manual/off and the user's manual setpoint stay.
+
+    Returns (payload, topic, note). When the device's state is unknown (no
+    daemon running / dry-run) manual/off can't be detected, so it falls back to
+    the season-intended payload and says so in the note.
+    """
+    from common import build_expected_payload
+    base, topic = build_expected_payload(name, cfg_item, thermostat_types, mqtt_cfg)
+    type_cfg = thermostat_types.get(cfg_item.get('type'), {})
+    config_only = {k: v for k, v in base.items() if k not in control_fields}
+
+    if isinstance(reported, dict) and is_manual_override(type_cfg, reported):
+        return config_only, topic, "manual override — schedule/calibration only"
+    if isinstance(reported, dict) and is_off(reported):
+        return config_only, topic, "off (e.g. window open) — schedule/calibration only"
+    suffix = "" if isinstance(reported, dict) else " [state unknown]"
+    if mode == 'cooling':
+        payload = dict(config_only)
+        payload.update(build_open_payload(type_cfg) or {})
+        return payload, topic, "cooling: open" + suffix
+    return base, topic, "heating: schedule" + suffix
+
+
 def desired_mode(season_cfg, heatpump_state):
     """Return 'heating' or 'cooling'.
 

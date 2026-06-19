@@ -129,6 +129,78 @@ def request_status(cfg, client, userdata, mail=False, timeout=None):
     return report
 
 
+def detect_mode(cfg, client, userdata, timeout):
+    """Determine the active season + collect per-device state from the daemon.
+
+    Subscribes to the (retained) heat-pump topics, asks `thermostat_monitor` for
+    current device state, and derives the desired mode. Returns
+    (mode, hp_state, checked) where checked is {name: {'state', 'last_seen'}}.
+    """
+    hp_cfg = cfg.get('heatpump', {})
+    season_cfg = cfg.get('season', {})
+    if hp_cfg.get('enabled') and hp_cfg.get('boiler_topic'):
+        try:
+            client.subscribe(hp_cfg['boiler_topic'])
+            if hp_cfg.get('thermostat_topic'):
+                client.subscribe(hp_cfg['thermostat_topic'])
+        except Exception:
+            pass
+    checked = query_monitor(client, userdata, timeout)
+    responses = userdata.get('responses', {}) if isinstance(userdata, dict) else {}
+    hp_state = None
+    if hp_cfg.get('enabled'):
+        boiler = responses.get(hp_cfg.get('boiler_topic'))
+        thermo = responses.get(hp_cfg.get('thermostat_topic'))
+        if boiler is not None or thermo is not None:
+            hp_state = heatpump.parse(boiler, thermo, hp_cfg)
+    mode = cooling.desired_mode(season_cfg, hp_state)
+    return mode, hp_state, checked
+
+
+def configure_intended(cfg, client, userdata, dry_run=False, timeout=None):
+    """Reinstate every thermostat's currently intended state (season-aware).
+
+    Heating -> weekly schedule; cooling -> valves open. Devices in manual
+    override or off keep that state (only their stored schedule/calibration is
+    refreshed). Uses the running manager daemon for live state + heat-pump mode.
+    """
+    if timeout is None:
+        timeout = max(cfg.get('mqtt', {}).get('check_timeout', 5), 4)
+    mqtt_cfg = cfg.get('mqtt', {})
+    thermostats = cfg.get('thermostats', {})
+    thermostat_types = cfg.get('thermostat_types', {})
+
+    mode, hp_state, checked = detect_mode(cfg, client, userdata, timeout)
+    print(f"\nIntended mode: {mode}"
+          + (f" (heat pump: {hp_state['mode']})" if hp_state else "")
+          + ("  [no daemon — can't detect manual/off per device]" if not checked else ""))
+
+    for i, (name, cfg_item) in enumerate(thermostats.items()):
+        reported = (checked.get(name) or {}).get('state')
+        try:
+            payload, topic, note = cooling.build_intended_payload(
+                name, cfg_item, thermostat_types, mqtt_cfg, mode, reported)
+        except Exception as e:
+            print(f"{name}: error building payload: {e}")
+            continue
+        if not payload:
+            print(f"{name}: {note}")
+            continue
+        print(f"\n{name} [{note}]\n  {topic}\n  {pretty_payload(payload, indent=2)}")
+        if dry_run or client is None:
+            continue
+        try:
+            info = client.publish(topic, json.dumps(payload), qos=1, retain=False)
+            try:
+                info.wait_for_publish(timeout=10)
+            except Exception:
+                pass
+            print(f"  {'✓ sent' if getattr(info, 'is_published', lambda: False)() else '✗ not confirmed'}")
+        except Exception as e:
+            print(f"  publish error: {e}")
+        time.sleep(mqtt_cfg.get('delay_between_messages', 1))
+
+
 def check_thermostats(cfg, client, userdata, timeout=None):
     """Query `thermostat_monitor` for per-device status and collect responses.
 
@@ -141,31 +213,11 @@ def check_thermostats(cfg, client, userdata, timeout=None):
     if timeout is None:
         timeout = cfg.get('mqtt', {}).get('check_timeout', 5)
 
-    # Determine the active season first: in cooling mode the manager
-    # deliberately forces every valve open, so comparing against the heating
-    # schedule would report false violations for every device. Subscribe to the
-    # heat-pump topics (retained) before query_monitor's wait so they arrive.
-    hp_cfg = cfg.get('heatpump', {})
-    season_cfg = cfg.get('season', {})
-    if hp_cfg.get('enabled') and hp_cfg.get('boiler_topic'):
-        try:
-            client.subscribe(hp_cfg['boiler_topic'])
-            if hp_cfg.get('thermostat_topic'):
-                client.subscribe(hp_cfg['thermostat_topic'])
-        except Exception:
-            pass
-
-    checked = query_monitor(client, userdata, timeout)
+    # Determine the active season first: in cooling mode the valves are
+    # deliberately forced open, so comparing against the heating schedule would
+    # report false violations for every device.
+    mode, hp_state, checked = detect_mode(cfg, client, userdata, timeout)
     print()
-
-    responses = userdata.get('responses', {}) if isinstance(userdata, dict) else {}
-    hp_state = None
-    if hp_cfg.get('enabled'):
-        boiler = responses.get(hp_cfg.get('boiler_topic'))
-        thermo = responses.get(hp_cfg.get('thermostat_topic'))
-        if boiler is not None or thermo is not None:
-            hp_state = heatpump.parse(boiler, thermo, hp_cfg)
-    mode = cooling.desired_mode(season_cfg, hp_state)
     print(f"Mode: {mode}"
           + (f" (heat pump: {hp_state['mode']})" if hp_state else ""))
     print()
@@ -381,15 +433,12 @@ def main():
                                      thermostat_types, mqtt_cfg, dry_run=False)
                 time.sleep(mqtt_cfg.get('delay_between_messages', 1))
         else:
-            for i, (thermostat_name, config) in enumerate(thermostats.items()):
-                configure_thermostat(client, thermostat_name, config, i+1, thermostat_types, mqtt_cfg, dry_run=args.dry_run)
-                if not args.dry_run:
-                    time.sleep(mqtt_cfg.get('delay_between_messages', 1))
-
-            if args.dry_run:
-                print("Dry run complete")
-            else:
-                print("All thermostats configured")
+            # Reinstate each thermostat's currently intended state (season-aware,
+            # honouring manual/off). In --dry-run with no broker we can't read
+            # live state, so it falls back to the heating schedule per device.
+            configure_intended(cfg, client, userdata if not args.dry_run else {},
+                               dry_run=args.dry_run)
+            print("Dry run complete" if args.dry_run else "All thermostats reconciled")
 
     except Exception as e:
         print(f"Error: {e}")

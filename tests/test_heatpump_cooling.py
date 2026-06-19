@@ -72,6 +72,65 @@ def test_is_open_matches_cooling_open_payload():
     assert not cooling.is_open({}, {'preset': 'comfort'})
 
 
+INTENDED_TYPES = {
+    'VNTH-T2_v2': {
+        'schedule_mode': {'system_mode': 'heat', 'preset': 'schedule',
+                          'temperature_sensitivity': 0.5},
+        'cooling_open': {'preset': 'comfort', 'comfort_temperature': 34},
+        'manual_marker': {'field': 'preset', 'equals': 'manual'},
+    },
+}
+INTENDED_ITEM = {'type': 'VNTH-T2_v2', 'day_hour': '05:00', 'day_temperature': 21.5,
+                 'night_hour': '23:00', 'night_temperature': 19.5}
+MQTT = {'base_topic': 'zigbee2mqtt'}
+
+
+def test_intended_heating_pushes_schedule():
+    payload, topic, note = cooling.build_intended_payload(
+        'Bad OG', INTENDED_ITEM, INTENDED_TYPES, MQTT, 'heating',
+        {'preset': 'schedule'})
+    assert payload['preset'] == 'schedule'
+    assert payload['system_mode'] == 'heat'
+    assert any(k.startswith('schedule_') for k in payload)
+    assert 'heating' in note
+
+
+def test_intended_cooling_pushes_open():
+    payload, topic, note = cooling.build_intended_payload(
+        'Bad OG', INTENDED_ITEM, INTENDED_TYPES, MQTT, 'cooling',
+        {'preset': 'schedule'})
+    assert payload['preset'] == 'comfort' and payload['comfort_temperature'] == 34
+    assert 'system_mode' not in payload          # heating mode field stripped
+    assert payload['temperature_sensitivity'] == 0.5   # calibration kept
+    assert any(k.startswith('schedule_') for k in payload)  # stored schedule kept
+
+
+def test_intended_manual_keeps_only_config():
+    payload, topic, note = cooling.build_intended_payload(
+        'Bad OG', INTENDED_ITEM, INTENDED_TYPES, MQTT, 'cooling',
+        {'preset': 'manual'})
+    # no mode/preset/setpoint fields -> manual state preserved
+    assert not (cooling.CONTROL_FIELDS & set(payload))
+    assert payload['temperature_sensitivity'] == 0.5
+    assert any(k.startswith('schedule_') for k in payload)
+    assert 'manual' in note
+
+
+def test_intended_off_keeps_only_config():
+    payload, topic, note = cooling.build_intended_payload(
+        'Bad OG', INTENDED_ITEM, INTENDED_TYPES, MQTT, 'cooling',
+        {'system_mode': 'off'})
+    assert not (cooling.CONTROL_FIELDS & set(payload))
+    assert 'off' in note
+
+
+def test_intended_unknown_state_falls_back_to_season():
+    payload, topic, note = cooling.build_intended_payload(
+        'Bad OG', INTENDED_ITEM, INTENDED_TYPES, MQTT, 'cooling', None)
+    assert payload['preset'] == 'comfort'        # season-intended, best effort
+    assert 'state unknown' in note
+
+
 def test_open_and_restore_payloads():
     tcfg = {'cooling_open': {'preset': 'comfort', 'comfort_temperature': 30},
             'cooling_restore': {'preset': 'schedule'}}

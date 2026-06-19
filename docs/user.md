@@ -2,13 +2,22 @@
 
 ## Everyday tasks
 
-Push the schedules after editing `config.yaml`:
+Reinstate the intended state after editing `config.yaml`:
 
 ```bash
-python3 thermostat_scheduler.py            # send schedules to all thermostats
+python3 thermostat_scheduler.py            # reinstate intended state on all thermostats
 python3 thermostat_scheduler.py --dry-run  # preview payloads, send nothing
-python3 thermostat_scheduler.py --check    # compare live state vs config (needs the daemon)
+python3 thermostat_scheduler.py --check    # compare live state vs intended (needs the daemon)
 ```
+
+A plain run is **season-aware**: in heating it pushes the weekly schedule, in
+cooling it forces the valves open (the heat pump decides which — see below). It
+also reads each device's live state from the running manager daemon, so two
+kinds of room are left in place: those in **manual override** and those switched
+**off** (`system_mode: off`, e.g. a window is open). For those it refreshes only
+the stored schedule + calibration, never the mode/preset/setpoint — so the room
+stays manual/off. (Without the daemon it can't see per-device state and falls
+back to the season-intended payload for every room.)
 
 ### Manual overrides
 
