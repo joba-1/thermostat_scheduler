@@ -71,7 +71,9 @@ heatpump:
 season:
   mode: auto                  # auto | heating | cooling
   source: heatpump            # when mode==auto: heatpump | config
-  control: true               # let the manager drive thermostats for cooling
+  control: false              # report-only: another controller (HA/z2m/cron?) keeps
+                              # resetting the valves, so we don't fight it — we only
+                              # flag thermostats that aren't open (cooling_not_open)
   cool_target: 21             # reference room temp used by the comfort check in cooling
 
 

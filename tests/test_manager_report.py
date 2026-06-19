@@ -9,6 +9,7 @@ CFG = {
     'season': {'mode': 'heating'},
     'thermostat_types': {
         'VNTH-T2_v2': {'schedule_mode': {'system_mode': 'heat', 'preset': 'schedule'},
+                       'cooling_open': {'preset': 'comfort', 'comfort_temperature': 34},
                        'manual_marker': {'field': 'preset', 'equals': 'manual'}},
     },
     'thermostats': {
@@ -141,6 +142,26 @@ def test_too_slow_cooling_escalates():
     _seed_history(mgr, 'Bad OG', [26.0, 25.95, 25.9, 25.85, 25.8, 25.75, 25.7],
                   step_min=10)
     assert mgr._temp_improving('Bad OG', 21.0, 'cooling') is False
+
+
+def test_cooling_not_open_is_reported():
+    import time
+    mgr = make_mgr()
+    # Bad OG (VNTH-T2_v2) drifted back to its schedule preset in cooling mode
+    mgr.last_state['Bad OG'] = {'preset': 'schedule', 'comfort_temperature': 34}
+    issues = mgr.collect_issues('cooling', time.time(), time.localtime(), None)
+    keys = [i.key for i in issues]
+    assert 'Bad OG:notopen' in keys
+    iss = next(i for i in issues if i.key == 'Bad OG:notopen')
+    assert iss.severity == 'info'      # report-only, not a loud alert
+
+
+def test_cooling_open_room_not_flagged():
+    import time
+    mgr = make_mgr()
+    mgr.last_state['Bad OG'] = {'preset': 'comfort', 'comfort_temperature': 34}
+    issues = mgr.collect_issues('cooling', time.time(), time.localtime(), None)
+    assert 'Bad OG:notopen' not in [i.key for i in issues]
 
 
 def test_status_report_html_has_scrollable_tables():

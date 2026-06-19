@@ -13,6 +13,7 @@ Delivery uses the `send-mail` helper (`~/bin/send-mail.py`). A custom sender
 callable can be injected for testing.
 """
 
+import html
 import json
 import os
 import sys
@@ -156,25 +157,53 @@ class Alerter:
         self._save()
         return to_mail, cleared
 
+    @staticmethod
+    def html_message(intro, items, outro=None):
+        """A clean proportional-font HTML body: intro paragraph + bulleted list.
+
+        Used so alert/digest/recovery mails read like normal email instead of
+        the monospace `<pre>` block (which renders as a 'strange font' with odd
+        line breaks in many clients). `items` may be plain strings or
+        (prefix, text) tuples where the prefix is shown bold/coloured.
+        """
+        esc = html.escape
+        p = ['<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;'
+             'color:#222;line-height:1.4">',
+             f'<p style="margin:0 0 10px">{esc(intro)}</p>',
+             '<ul style="margin:0 0 10px;padding-left:20px">']
+        for it in items:
+            if isinstance(it, tuple):
+                prefix, text = it
+                color = '#b00020' if str(prefix).upper() == 'ALERT' else '#777'
+                p.append(f'<li style="margin:3px 0"><span style="color:{color};'
+                         f'font-weight:bold">[{esc(str(prefix))}]</span> {esc(text)}</li>')
+            else:
+                p.append(f'<li style="margin:3px 0">{esc(it)}</li>')
+        p.append('</ul>')
+        if outro:
+            p.append(f'<p style="margin:0;color:#555">{esc(outro)}</p>')
+        p.append('</div>')
+        return "".join(p)
+
     def _mail_issues(self, issues):
         n = len(issues)
         subject = (f"[thermostat] {issues[0].subject}: {issues[0].detail}"
                    if n == 1 else f"[thermostat] {n} new alerts")
-        lines = ["The thermostat manager detected the following new issue(s):", ""]
-        for iss in issues:
-            lines.append(f"  - {iss.subject}: {iss.detail}")
-        lines += ["", "You will get a daily digest while these remain open,",
-                  "and another mail if an issue persists past the cooldown."]
-        self._sender(subject, "\n".join(lines))
+        intro = "The thermostat manager detected the following new issue(s):"
+        items = [f"{iss.subject}: {iss.detail}" for iss in issues]
+        outro = ("You will get a daily digest while these remain open, "
+                 "and another mail if an issue persists past the cooldown.")
+        text = "\n".join([intro, ""] + [f"  - {it}" for it in items] + ["", outro])
+        self._sender(subject, text, self.html_message(intro, items, outro))
 
     def _mail_resolved(self, resolved):
         n = len(resolved)
         subject = (f"[thermostat] resolved: {resolved[0]['subject']}"
                    if n == 1 else f"[thermostat] {n} issues resolved")
-        lines = ["The following thermostat issue(s) have cleared:", ""]
-        for st in resolved:
-            lines.append(f"  - {st.get('subject')}: {st.get('detail')} — now OK")
-        self._sender(subject, "\n".join(lines))
+        intro = "The following thermostat issue(s) have cleared:"
+        items = [f"{st.get('subject')}: {st.get('detail')} — now OK" for st in resolved]
+        text = "\n".join([intro, ""] + [f"  - {it}" for it in items])
+        self._sender(subject, text, self.html_message(intro, items))
 
     def maybe_send_digest(self, localtime_fn=time.localtime):
         """Send the daily digest once, when the configured hour is reached."""
@@ -217,12 +246,16 @@ class Alerter:
         if not open_issues:
             # Nothing open: a quiet "all clear" once a day is reassuring but
             # easy to filter; keep it short.
-            self._sender(f"[thermostat] daily digest {day}: all clear",
-                         "No open thermostat/sensor/heat-pump issues. All good.")
+            msg = "No open thermostat/sensor/heat-pump issues. All good."
+            self._sender(f"[thermostat] daily digest {day}: all clear", msg,
+                         self.html_message(msg, []))
             return
-        lines = [f"Open thermostat issues as of {day}:", ""]
+        intro = f"Open thermostat issues as of {day}:"
+        items, text_lines = [], [intro, ""]
         for key, st in sorted(open_issues.items()):
             sev = st.get('severity', 'info').upper()
-            lines.append(f"  [{sev}] {st.get('subject')}: {st.get('detail')}")
+            text = f"{st.get('subject')}: {st.get('detail')}"
+            items.append((sev, text))
+            text_lines.append(f"  [{sev}] {text}")
         self._sender(f"[thermostat] daily digest {day}: {len(open_issues)} open",
-                     "\n".join(lines))
+                     "\n".join(text_lines), self.html_message(intro, items))

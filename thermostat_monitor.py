@@ -382,6 +382,17 @@ class Manager:
             setpoint = current_setpoint(item, now_lt, mode, self.season_cfg)
             temp_state = self._room_temp_state(name)
             self._record_history(name, item, reported, temp_state, now_ts)
+            # In cooling, flag a non-manual thermostat that isn't actually fully
+            # open: it drifted back to its schedule, so some other controller
+            # (HA / zigbee2mqtt / a stray cron) is resetting it. Report only —
+            # we don't fight it (see season.control).
+            if (mode == 'cooling' and not manual and isinstance(reported, dict)
+                    and not cooling.is_open(type_cfg, reported)):
+                issues.append(make_issue(
+                    f"{name}:notopen", 'cooling_not_open', f"{name} thermostat",
+                    "not fully open in cooling mode — reset by another controller?",
+                    severity='info'))
+
             if not manual:
                 windows = {w: self.sensor_state.get(w) for w in self.room_windows.get(name, [])}
                 improving = self._temp_improving(name, setpoint, mode)
@@ -514,12 +525,13 @@ class Manager:
             return  # nothing actionable to remind about
         action = ("OPEN fully (for cooling)" if new == 'cooling'
                   else "set back to normal heating")
-        lines = [f"House operating mode changed: {old} -> {new}.", "",
-                 f"Please {action} these manual (non-controllable) thermostats:"]
-        lines += [f"  - {loc}" for loc in self.manual_thermostats]
+        intro = (f"House operating mode changed: {old} -> {new}. "
+                 f"Please {action} these manual (non-controllable) thermostats:")
+        lines = [intro] + [f"  - {loc}" for loc in self.manual_thermostats]
         log.warning("mode change %s -> %s; manual valves to %s: %s",
                     old, new, action, ", ".join(self.manual_thermostats))
-        self.alerter.notify(f"[thermostat] mode changed to {new}", "\n".join(lines))
+        self.alerter.notify(f"[thermostat] mode changed to {new}", "\n".join(lines),
+                            html_body=Alerter.html_message(intro, self.manual_thermostats))
 
     def manual_overrides(self):
         """List rooms whose thermostat currently reports a manual override."""

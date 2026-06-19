@@ -45,6 +45,21 @@ def build_restore_payload(type_cfg):
     return dict(payload) if isinstance(payload, dict) else None
 
 
+def is_open(type_cfg, reported_state):
+    """True if the device's reported state already matches its cooling_open payload.
+
+    Used to detect whether a thermostat is actually fully open in cooling mode
+    (vs. having drifted back to its schedule because some other controller — HA,
+    zigbee2mqtt, a stray cron — reset it).
+    """
+    if not isinstance(reported_state, dict):
+        return False
+    op = type_cfg.get('cooling_open')
+    if not isinstance(op, dict):
+        return False
+    return all(str(reported_state.get(k)) == str(v) for k, v in op.items())
+
+
 def is_manual_override(type_cfg, reported_state):
     """True if the end user has taken manual control of this thermostat.
 

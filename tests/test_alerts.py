@@ -73,6 +73,17 @@ def test_resolved_not_sent_for_info_only(tmp_path):
     assert sent == []
 
 
+def test_alert_mail_has_clean_html(tmp_path):
+    now_box = [1000.0]
+    a, sent = make_alerter(tmp_path, now_box)
+    a.process([make_issue('d:battery', 'battery_low', 'D thermostat', 'battery 13%')])
+    subj, body, html = sent[0]
+    assert html is not None
+    # proportional font + list, not the monospace <pre> block
+    assert '<ul' in html and '<pre' not in html
+    assert 'battery 13%' in html
+
+
 def test_state_persists_across_restart(tmp_path):
     now_box = [1000.0]
     a, sent = make_alerter(tmp_path, now_box)

@@ -69,7 +69,9 @@ heatpump:
 season:
   mode: auto                   # auto | heating | cooling
   source: heatpump             # when auto: derive from heatpump | config
-  control: true                # manager drives thermostats open in cooling
+  control: true                # true: manager drives thermostats open in cooling;
+                               # false: report-only (flag thermostats not open, but
+                               # don't write — e.g. if another controller owns them)
   cool_target: 24              # comfort-check reference temperature in cooling
 
 # Grace before a room-temperature deviation becomes a loud alert. While the

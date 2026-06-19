@@ -63,6 +63,15 @@ def test_cooling_open_state_not_seen_as_manual():
     assert cooling.is_manual_override(tcfg, {'system_mode': 'heat', 'current_heating_setpoint': 22})
 
 
+def test_is_open_matches_cooling_open_payload():
+    tcfg = {'cooling_open': {'preset': 'comfort', 'comfort_temperature': 34}}
+    assert cooling.is_open(tcfg, {'preset': 'comfort', 'comfort_temperature': 34})
+    # drifted back to schedule (comfort_temperature lingers) -> not open
+    assert not cooling.is_open(tcfg, {'preset': 'schedule', 'comfort_temperature': 34})
+    assert not cooling.is_open(tcfg, None)
+    assert not cooling.is_open({}, {'preset': 'comfort'})
+
+
 def test_open_and_restore_payloads():
     tcfg = {'cooling_open': {'preset': 'comfort', 'comfort_temperature': 30},
             'cooling_restore': {'preset': 'schedule'}}
