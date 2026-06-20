@@ -178,7 +178,7 @@ thermostats:
     night_temperature: 19.5
     type: ME168_1
     sensors:
-      temperature: "Marshall Klima"   # dedicated temp/humidity sensor in Arbeitszimmer
+      temperature: "Arbeitszimmer Bewegungsmelder"   # motion sensor (temp+humidity); more reliable than Marshall Klima here
       windows: ["Arbeitszimmer Fenster"]
   "Bad OG":
     day_hour: "05:00"
