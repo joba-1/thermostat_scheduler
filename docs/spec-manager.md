@@ -35,13 +35,19 @@ cooling. The manager feeds this from a Zigbee room sensor (`heatpump.remote_feed
 - On every (re)connect, `on_connect` publishes `control_value` (e.g. `RC100H`) to
   `control_topic` once, registering the remote thermostat type. Idempotent.
 - A dedicated daemon thread (`publish_remote_feed`, every `interval` s, default
-  60) republishes the source sensor's last `temperature`→`temp_topic` and
-  `humidity`→`hum_topic`. The last known value is always sent so the pump never
-  loses its remote reading.
+  60) selects a source and republishes its `temperature`→`temp_topic` and
+  `humidity`→`hum_topic`. **Multiple candidates are merged** (`remote_feed.sensors`,
+  each `{sensor, room}`; the legacy single `sensor:` is still accepted):
+  `_remote_feed_select` picks the candidate with the **highest temperature** among
+  those that (a) report both temp+humidity, (b) aren't older than `stale_after`,
+  and (c) whose room has no open window. temp+humidity always come from the **same**
+  sensor (coherent dew point). The warmest room gives the most conservative limit.
+  A source change is logged. If no candidate qualifies, the last good value keeps
+  being published so the pump never loses its reading.
 - Freshness is a **safety** check, not cosmetic: `_remote_feed_issue` raises an
-  **alert**-severity issue (mail + recovery mail via the `Alerter`) when the
-  source sensor has not updated within `stale_after` s, or reports no humidity —
-  because a stale/absent humidity makes the dew-point guard run blind.
+  **alert**-severity issue (mail + recovery via the `Alerter`) when **no** candidate
+  can supply a fresh, coherent temp+humidity (all stale / window-open / no humidity)
+  — because a stale/absent humidity makes the dew-point guard run blind.
 
 Equivalent manual commands (for reference / one-off testing):
 

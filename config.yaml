@@ -55,17 +55,27 @@ heatpump:
       pressure: [1.0, 2.5]
   # Feed a Zigbee room sensor's temperature + humidity to the heat pump as its
   # remote thermostat reading. The pump uses humidity for its dew-point guard
-  # (the real lever gating cooling), so a fresh value matters: if the source
-  # sensor goes stale we keep publishing the last value AND raise an alert.
+  # (the real lever gating cooling), so a fresh value matters.
+  #
+  # Multiple candidate sensors are merged: each republish picks the one with the
+  # HIGHEST temperature among those that (a) report both temp and humidity, (b)
+  # aren't completely stale (within stale_after), and (c) whose room has no open
+  # window. The warmest room drives the most conservative dew-point limit. temp
+  # AND humidity always come from the same sensor (coherent dew point). If none
+  # qualify we keep publishing the last value AND raise an alert.
   remote_feed:
     enabled: true
-    sensor: "Wohnzimmer Luft"   # Zigbee temp/humidity sensor providing the values
+    sensors:                    # candidates; highest fresh temp (window closed) wins
+      - {sensor: "Wohnzimmer Luft", room: "Wohnzimmer"}
+      - {sensor: "Arbeitszimmer Bewegungsmelder", room: "Arbeitszimmer"}
+      # Schlafzimmer has no temp+humidity sensor (TRV reports temperature only),
+      # so it cannot drive the dew-point feed; add one here once it exists.
     control_topic: ems-esp/thermostat/hc1/control
     control_value: RC100H       # published once per connect: sets remote thermostat type
     temp_topic: ems-esp/thermostat/hc1/remotetemp
     hum_topic: ems-esp/thermostat/hc1/remotehum
-    interval: 60                # seconds between republishes of the last known value
-    stale_after: 3600           # alert if the source sensor hasn't updated for this long (1 h)
+    interval: 60                # seconds between republishes of the selected value
+    stale_after: 3600           # a candidate older than this (1 h) is "completely stale" -> excluded
 
 
 # --- Season / cooling control ---

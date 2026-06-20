@@ -55,14 +55,13 @@ def test_publish_remote_feed_sends_temp_and_humidity():
     assert topics['ems-esp/thermostat/hc1/remotehum'] == '53'
 
 
-def test_publish_skips_missing_fields():
+def test_temp_only_sensor_is_not_eligible():
+    # dew point needs temp AND humidity from the same sensor -> temp-only is skipped
     mgr = make_mgr()
-    mgr.sensor_state['Wohnzimmer Luft'] = {'temperature': 24.0}  # no humidity yet
+    mgr.sensor_state['Wohnzimmer Luft'] = {'temperature': 24.0}  # no humidity
     c = FakeClient()
     mgr.publish_remote_feed(c)
-    topics = dict(c.published)
-    assert 'ems-esp/thermostat/hc1/remotetemp' in topics
-    assert 'ems-esp/thermostat/hc1/remotehum' not in topics
+    assert c.published == []
 
 
 def test_no_publish_when_disabled():
@@ -101,4 +100,74 @@ def test_missing_humidity_raises_alert():
     mgr.sensor_seen['Wohnzimmer Luft'] = tm.iso_now()
     mgr.sensor_state['Wohnzimmer Luft'] = {'temperature': 26.5}   # no humidity
     iss = mgr._remote_feed_issue(now)
-    assert iss is not None and iss.kind == 'remote_feed_nohum'
+    assert iss is not None and iss.kind == 'remote_feed_stale'
+
+
+def _multi_mgr():
+    cfg = {
+        'mqtt': {'base_topic': 'zigbee2mqtt'},
+        'alerts': {'enabled': False},
+        'season': {'mode': 'cooling'},
+        'heatpump': {'enabled': True, 'remote_feed': {
+            'enabled': True,
+            'sensors': [
+                {'sensor': 'Wohnzimmer Luft', 'room': 'Wohnzimmer'},
+                {'sensor': 'Arbeitszimmer Bewegungsmelder', 'room': 'Arbeitszimmer'},
+            ],
+            'temp_topic': 'ems-esp/thermostat/hc1/remotetemp',
+            'hum_topic': 'ems-esp/thermostat/hc1/remotehum',
+            'stale_after': 1800,
+        }},
+        'thermostats': {
+            'Wohnzimmer': {'day_hour': '05:00', 'day_temperature': 22, 'night_hour': '23:00',
+                           'night_temperature': 20, 'type': 'X',
+                           'sensors': {'windows': ['Wohnzimmer Fenster']}},
+            'Arbeitszimmer': {'day_hour': '05:00', 'day_temperature': 22, 'night_hour': '23:00',
+                              'night_temperature': 20, 'type': 'X',
+                              'sensors': {'windows': ['Arbeitszimmer Fenster']}},
+        },
+        'thermostat_types': {'X': {}},
+        'device_state_file': tempfile.mkdtemp() + '/devices.json',
+    }
+    return tm.Manager(cfg)
+
+
+def test_highest_temp_candidate_is_selected():
+    mgr = _multi_mgr()
+    mgr.sensor_state['Wohnzimmer Luft'] = {'temperature': 25.1, 'humidity': 52}
+    mgr.sensor_state['Arbeitszimmer Bewegungsmelder'] = {'temperature': 28.5, 'humidity': 46}
+    c = FakeClient()
+    mgr.publish_remote_feed(c)
+    topics = dict(c.published)
+    assert topics['ems-esp/thermostat/hc1/remotetemp'] == '28.5'   # the warmer room
+    assert topics['ems-esp/thermostat/hc1/remotehum'] == '46'      # its own humidity
+
+
+def test_window_open_candidate_is_excluded():
+    mgr = _multi_mgr()
+    mgr.sensor_state['Wohnzimmer Luft'] = {'temperature': 25.1, 'humidity': 52}
+    mgr.sensor_state['Arbeitszimmer Bewegungsmelder'] = {'temperature': 28.5, 'humidity': 46}
+    mgr.sensor_state['Arbeitszimmer Fenster'] = {'contact': False}   # window OPEN
+    c = FakeClient()
+    mgr.publish_remote_feed(c)
+    topics = dict(c.published)
+    assert topics['ems-esp/thermostat/hc1/remotetemp'] == '25.1'   # warmer one excluded
+    assert topics['ems-esp/thermostat/hc1/remotehum'] == '52'
+
+
+def test_no_eligible_candidate_keeps_last_value_and_alerts():
+    mgr = _multi_mgr()
+    now = time.time()
+    mgr.start_ts = now - 10_000
+    # one good reading establishes a last-good value
+    mgr.sensor_seen['Wohnzimmer Luft'] = tm.iso_now()
+    mgr.sensor_state['Wohnzimmer Luft'] = {'temperature': 25.0, 'humidity': 50}
+    c = FakeClient()
+    mgr.publish_remote_feed(c)
+    # now both go stale (open windows on both rooms)
+    mgr.sensor_state['Wohnzimmer Fenster'] = {'contact': False}
+    mgr.sensor_state['Arbeitszimmer Fenster'] = {'contact': False}
+    c2 = FakeClient()
+    mgr.publish_remote_feed(c2)
+    assert dict(c2.published)['ems-esp/thermostat/hc1/remotetemp'] == '25.0'  # last good
+    assert mgr._remote_feed_issue(now) is not None     # and an alert is raised

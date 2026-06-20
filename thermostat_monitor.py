@@ -83,6 +83,8 @@ class Manager:
         self.season_cfg = cfg.get('season', {})
         self.sensors_cfg = cfg.get('sensors', {})
         self.remote_feed_cfg = self.heatpump_cfg.get('remote_feed', {}) or {}
+        self._remote_feed_selected = None     # sensor name currently feeding the pump
+        self._remote_feed_last = None         # (temp, hum) last good value published
         self.manual_thermostats = cfg.get('manual_thermostats', []) or []
         self.last_mode = None        # for heating<->cooling transition detection
         self.base = self.mqtt_cfg.get('base_topic')
@@ -150,10 +152,10 @@ class Manager:
                 self._register_sensor(leak, 'leak')
         for extra in self.cfg.get('extra_sensors') or []:
             self._register_sensor(extra.get('name'), extra.get('kind', 'temperature'))
-        # Track the heat-pump remote-feed source sensor so the daemon subscribes
-        # to it, shows it in the report, and can warn when it goes stale.
-        if self.remote_feed_cfg.get('enabled') and self.remote_feed_cfg.get('sensor'):
-            self._register_sensor(self.remote_feed_cfg['sensor'], 'temperature')
+        # Track the heat-pump remote-feed candidate sensors so the daemon
+        # subscribes to them, shows them in the report, and can warn when stale.
+        for cand in self._remote_feed_candidates():
+            self._register_sensor(cand['sensor'], 'temperature')
 
     def _register_sensor(self, name, kind):
         if not name or name in self.sensor_kind:
@@ -308,65 +310,84 @@ class Manager:
                            json.dumps(resp, indent=2, ensure_ascii=False), qos=1)
 
     # ---- heat-pump remote sensor feed --------------------------------
-    def _remote_feed_values(self):
-        """Last known (temperature, humidity) from the configured source sensor.
-
-        Either may be None if the sensor hasn't reported it. Returns None when
-        the feed is disabled or no sensor is configured.
-        """
+    def _remote_feed_candidates(self):
+        """Normalized list of {sensor, room} candidates (supports the legacy
+        single `sensor:` form and the multi `sensors:` list)."""
         rf = self.remote_feed_cfg
-        if not rf.get('enabled') or not rf.get('sensor'):
-            return None
-        st = self.sensor_state.get(rf['sensor'])
-        if not isinstance(st, dict):
-            return None, None
-        return st.get('temperature'), st.get('humidity')
+        if not rf.get('enabled'):
+            return []
+        out = []
+        for s in rf.get('sensors') or []:
+            if isinstance(s, dict) and s.get('sensor'):
+                out.append({'sensor': s['sensor'], 'room': s.get('room')})
+            elif isinstance(s, str):
+                out.append({'sensor': s, 'room': None})
+        if not out and rf.get('sensor'):       # backward-compatible single sensor
+            out.append({'sensor': rf['sensor'], 'room': None})
+        return out
+
+    def _remote_feed_select(self, now_ts):
+        """Pick the candidate with the HIGHEST temperature among those that have
+        both temp+humidity, aren't completely stale, and whose room has no open
+        window. Returns {sensor, room, temp, hum} or None if none qualify."""
+        stale_after = self.remote_feed_cfg.get('stale_after', 1800)
+        best = None
+        for cand in self._remote_feed_candidates():
+            st = self.sensor_state.get(cand['sensor'])
+            if not isinstance(st, dict):
+                continue
+            temp, hum = st.get('temperature'), st.get('humidity')
+            if temp is None or hum is None:        # dew point needs both, same sensor
+                continue
+            if now_ts - self._effective_seen(self.sensor_seen.get(cand['sensor'])) > stale_after:
+                continue                            # completely stale
+            if cand.get('room') and self._room_window_open(cand['room']):
+                continue                            # window open -> not representative
+            if best is None or temp > best['temp']:
+                best = {'sensor': cand['sensor'], 'room': cand.get('room'),
+                        'temp': temp, 'hum': hum}
+        return best
 
     def publish_remote_feed(self, client):
-        """Publish the last known room temp/humidity to the heat pump.
+        """Publish the warmest eligible room's temp+humidity to the heat pump.
 
-        We always send the last value (the pump must not lose its remote
-        reading); a stale source is surfaced as an alert by `collect_issues`,
-        not by withholding the feed.
+        temp and humidity always come from the same sensor (coherent dew point).
+        If no candidate qualifies we republish the last good value so the pump
+        never loses its reading; the staleness is surfaced as an alert.
         """
         rf = self.remote_feed_cfg
-        vals = self._remote_feed_values()
-        if not vals or client is None:
+        if not rf.get('enabled') or client is None:
             return
-        temp, hum = vals
+        sel = self._remote_feed_select(time.time())
+        if sel is None:
+            if self._remote_feed_last is None:
+                return
+            temp, hum = self._remote_feed_last      # keep the pump fed with last good
+        else:
+            if sel['sensor'] != self._remote_feed_selected:
+                log.info("remote feed: source -> %s (%s, %.1f°C %s%%RH)",
+                         sel['sensor'], sel.get('room') or '?', sel['temp'], sel['hum'])
+                self._remote_feed_selected = sel['sensor']
+            temp, hum = sel['temp'], sel['hum']
+            self._remote_feed_last = (temp, hum)
         if temp is not None and rf.get('temp_topic'):
             client.publish(rf['temp_topic'], str(temp), qos=1)
         if hum is not None and rf.get('hum_topic'):
             client.publish(rf['hum_topic'], str(hum), qos=1)
 
     def _remote_feed_issue(self, now_ts):
-        """Alert if the remote-feed source sensor has gone stale.
-
-        Dew-point protection depends on a fresh humidity reading, so a stale
-        source is a real (alert-severity) problem, not a quiet note.
-        """
-        rf = self.remote_feed_cfg
-        if not rf.get('enabled') or not rf.get('sensor'):
+        """Alert when NO candidate can feed a fresh, coherent temp+humidity (all
+        stale, window-open, or missing humidity). Dew-point protection then runs
+        on a stale value, so this is alert-severity, not a quiet note."""
+        if not self._remote_feed_candidates():
             return None
-        name = rf['sensor']
-        subject = f"{name} (heat-pump remote feed)"
-        seen_ts = self._effective_seen(self.sensor_seen.get(name))
-        stale_after = rf.get('stale_after', 1800)
-        if now_ts - seen_ts > stale_after:
-            mins = int((now_ts - seen_ts) / 60)
-            return make_issue(
-                'remotefeed:stale', 'remote_feed_stale', subject,
-                f"no fresh reading for {mins} min; heat-pump dew-point "
-                f"protection is running on a stale value")
-        # Only complain about a missing humidity once the sensor has actually
-        # reported (a dict payload). A cold start with no reading yet is covered
-        # by the staleness check above (which has restart grace), not here.
-        st = self.sensor_state.get(name)
-        if isinstance(st, dict) and st.get('humidity') is None:
-            return make_issue(
-                'remotefeed:nohum', 'remote_feed_nohum', subject,
-                "sensor reports no humidity; dew-point protection has no live value")
-        return None
+        if self._remote_feed_select(now_ts) is not None:
+            return None
+        return make_issue(
+            'remotefeed:stale', 'remote_feed_stale', 'heat-pump remote feed',
+            "no fresh room temp+humidity to feed the pump (every candidate is "
+            "stale, has an open window, or reports no humidity); dew-point "
+            "protection is running on a stale value")
 
     # ---- evaluation --------------------------------------------------
     def heatpump_state(self):
@@ -1052,8 +1073,9 @@ def main():
                     log.exception("remote feed error: %s", e)
                 time.sleep(interval)
         threading.Thread(target=_feed_loop, daemon=True).start()
-        log.info("remote feed: republishing %s every %ds",
-                 rf.get('sensor'), interval)
+        cands = ", ".join(c['sensor'] for c in mgr._remote_feed_candidates())
+        log.info("remote feed: %d candidate(s) [%s], republishing warmest every %ds",
+                 len(mgr._remote_feed_candidates()), cands, interval)
 
     try:
         # let initial retained/periodic messages arrive before first pass
