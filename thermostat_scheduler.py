@@ -262,6 +262,11 @@ def check_thermostats(cfg, client, userdata, timeout=None):
             print(f"{name}: MANUAL override — comfort control suspended{battery_note}")
             continue
 
+        # A switched-off device (e.g. window open) is intended, not a mismatch.
+        if cooling.is_off(reported):
+            print(f"{name}: OFF (e.g. window open) — left as-is{battery_note}")
+            continue
+
         # Compare against what *should* be applied for the active season.
         if mode == 'cooling':
             expected = cooling.build_open_payload(type_cfg)
@@ -286,6 +291,9 @@ def check_thermostats(cfg, client, userdata, timeout=None):
             print_mismatch_table(mismatches, indent=2)
 
     print()
+    print("Note: a TRV applies a /set and reports back only after several seconds")
+    print("(battery Zigbee devices longest), so mismatches seen right after a")
+    print("reconcile may be a stale report — re-check in ~30 s to confirm.")
     return checked
 
 
