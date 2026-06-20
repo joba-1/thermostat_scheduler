@@ -119,6 +119,13 @@ class Manager:
         # window is open (room -> iso ts), persisted so a restart keeps the latch
         # and only restores rooms we closed (never a user's manual off).
         self.window_cfg = cfg.get('window_control', {}) or {}
+
+        # Optional read-only status web page. The eval loop caches the latest
+        # report data here; the HTTP server only renders this snapshot (it never
+        # recomputes, so it has no side effects and can't race the MQTT thread).
+        self.web_cfg = cfg.get('web', {}) or {}
+        self._last_report = None
+
         self.window_off = {}
         self.window_rooms = defaultdict(list)   # window sensor name -> [rooms]
         self._win_timers = {}                   # room -> threading.Timer (debounce)
@@ -515,10 +522,14 @@ class Manager:
             log.info("cleared: %s", key)
         self.alerter.maybe_send_digest()
 
+        # Cache the overview for the status web page (rendered on demand from
+        # this snapshot, so the HTTP thread never recomputes / records history).
+        d = self._report_data(mode, hp, issues=issues)
+        self._last_report = d
+
         # periodic full status overview (not just problems)
         interval = self.alerts_cfg.get('report_interval_hours', 24) * 3600
         if interval > 0 and self.alerter.due('status_report', interval):
-            d = self._report_data(mode, hp)
             self.alerter.notify("[thermostat] status report",
                                 self._render_text(d), html_body=self._render_html(d))
 
@@ -746,15 +757,21 @@ class Manager:
                                           for c, w in zip(row, widths)))
         return out
 
-    def _report_data(self, mode=None, hp=None):
-        """Gather the status overview once as structured data for rendering."""
+    def _report_data(self, mode=None, hp=None, issues=None):
+        """Gather the status overview once as structured data for rendering.
+
+        Pass `issues` (already gathered by the eval loop) to avoid re-running
+        `collect_issues` — it records temperature history as a side effect, so it
+        must not be called a second time per pass.
+        """
         now_ts = time.time()
         now_lt = time.localtime(now_ts)
         if hp is None:
             hp = self.heatpump_state()
         if mode is None:
             mode = cooling.desired_mode(self.season_cfg, hp)
-        issues = self.collect_issues(mode, now_ts, now_lt, hp)
+        if issues is None:
+            issues = self.collect_issues(mode, now_ts, now_lt, hp)
         n_alert = sum(1 for i in issues if i.severity == 'alert')
         n_info = sum(1 for i in issues if i.severity == 'info')
         overall = ("OK — nothing to report" if n_alert == 0 and n_info == 0
@@ -867,7 +884,8 @@ class Manager:
 
         return {
             'when': time.strftime('%a %Y-%m-%d %H:%M', now_lt),
-            'overall': overall, 'mode': mode,
+            'overall': overall, 'n_alert': n_alert, 'n_info': n_info,
+            'mode': mode,
             'hp_line': hp_line, 'manual_line': manual_line,
             'window_line': window_line, 'set_line': set_line,
             'thermo': {'headers': thermo_headers,
@@ -1005,6 +1023,136 @@ class Manager:
         """Mobile-friendly HTML overview (scrollable tables) for mail."""
         return self._render_html(self._report_data(mode, hp))
 
+    def web_page(self):
+        """Full standalone HTML page for the status web server, from the cached
+        snapshot. Returns a 'warming up' placeholder until the first eval pass."""
+        return self._render_web(self._last_report,
+                                refresh=self.web_cfg.get('refresh', 60))
+
+    # --- status web page (standalone, class-based layout) -------------------
+
+    _WEB_CSS = """
+:root{color-scheme:light dark}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+ background:#f4f5f7;color:#1f2329;line-height:1.45}
+.wrap{max-width:920px;margin:0 auto;padding:20px 16px 48px}
+header{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:4px}
+h1{font-size:22px;margin:0;font-weight:650}
+.when{color:#6b7280;font-size:13px}
+.pill{display:inline-block;padding:3px 12px;border-radius:999px;font-size:13px;
+ font-weight:650;color:#fff;margin:10px 0 18px}
+.pill.ok{background:#1a7f37}.pill.note{background:#bf8700}.pill.alert{background:#b42318}
+.card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:16px 18px;
+ margin:0 0 16px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+.card h2{font-size:14px;text-transform:uppercase;letter-spacing:.04em;color:#6b7280;
+ margin:0 0 12px;font-weight:650}
+.kv{display:grid;grid-template-columns:max-content 1fr;gap:6px 18px;font-size:14px}
+.kv .k{color:#6b7280}
+.tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th{text-align:left;font-weight:650;color:#6b7280;border-bottom:2px solid #e5e7eb;
+ padding:6px 14px 6px 0;white-space:nowrap}
+td{padding:7px 14px 7px 0;border-bottom:1px solid #f0f1f3;white-space:nowrap}
+tbody tr:last-child td{border-bottom:none}
+ul.issues{list-style:none;margin:0;padding:0;font-size:14px}
+ul.issues li{padding:7px 0;border-bottom:1px solid #f0f1f3}
+ul.issues li:last-child{border-bottom:none}
+.tag{display:inline-block;min-width:46px;text-align:center;padding:1px 7px;border-radius:6px;
+ font-size:12px;font-weight:700;margin-right:8px}
+.tag.alert{background:#fde7e4;color:#b42318}.tag.note{background:#eef1f4;color:#57606a}
+footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
+@media(prefers-color-scheme:dark){
+ body{background:#0f1115;color:#e6e8eb}
+ .card{background:#181b21;border-color:#2a2f37;box-shadow:none}
+ th{border-color:#2a2f37}td{border-color:#23272e}ul.issues li{border-color:#23272e}
+ .kv .k,.when,.card h2,footer{color:#9aa3ad}
+ .tag.note{background:#23272e;color:#aeb6bf}.tag.alert{background:#3a1d1a;color:#ff8a7a}}
+"""
+
+    @staticmethod
+    def _web_table(headers, rows, styles=None):
+        esc = html.escape
+        th = "".join(f'<th>{esc(str(h))}</th>' for h in headers)
+        trs = []
+        for ri, row in enumerate(rows):
+            cs = styles[ri] if styles else {}
+            tds = "".join(
+                (f'<td style="{cs[h]}">{esc(str(c))}</td>' if cs.get(h)
+                 else f'<td>{esc(str(c))}</td>')
+                for h, c in zip(headers, row))
+            trs.append(f"<tr>{tds}</tr>")
+        return (f'<div class="tbl-wrap"><table><thead><tr>{th}</tr></thead>'
+                f'<tbody>{"".join(trs)}</tbody></table></div>')
+
+    @classmethod
+    def _render_web(cls, d, refresh=60):
+        esc = html.escape
+        head = ['<!doctype html><html lang="en"><head><meta charset="utf-8">',
+                '<meta name="viewport" content="width=device-width,initial-scale=1">']
+        if refresh and refresh > 0:
+            head.append(f'<meta http-equiv="refresh" content="{int(refresh)}">')
+        head.append('<title>Thermostat status</title>')
+        head.append(f'<style>{cls._WEB_CSS}</style></head><body><div class="wrap">')
+
+        if not d:
+            head.append('<header><h1>Thermostat status</h1></header>'
+                        '<div class="card">Starting up — no data yet. '
+                        'This page refreshes automatically.</div>'
+                        '</div></body></html>')
+            return "".join(head)
+
+        cls_pill = ('alert' if d['n_alert'] else 'note' if d['n_info'] else 'ok')
+        p = head
+        p.append(f'<header><h1>Thermostat status</h1>'
+                 f'<span class="when">{esc(d["when"])}</span></header>')
+        p.append(f'<div class="pill {cls_pill}">{esc(d["overall"])}</div>')
+
+        # summary card
+        p.append('<div class="card"><h2>Overview</h2><div class="kv">')
+        p.append(f'<div class="k">Mode</div><div>{esc(d["mode"])}</div>')
+        if d['hp_line']:
+            p.append(f'<div class="k">Heat pump</div><div>{esc(d["hp_line"])}</div>')
+        if d.get('set_line'):
+            p.append(f'<div class="k">Set point</div>'
+                     f'<div>{esc(d["set_line"])} (all rooms)</div>')
+        if d['manual_line']:
+            p.append(f'<div class="k">Manual valves</div>'
+                     f'<div>{esc(d["manual_line"])}</div>')
+        if d.get('window_line'):
+            p.append(f'<div class="k">Off (window open)</div>'
+                     f'<div>{esc(d["window_line"])}</div>')
+        p.append('</div></div>')
+
+        p.append('<div class="card"><h2>Thermostats</h2>')
+        p.append(cls._web_table(d['thermo']['headers'], d['thermo']['rows'],
+                                d['thermo'].get('styles')))
+        p.append('</div>')
+
+        if d['sensors']:
+            p.append('<div class="card"><h2>Sensors</h2>')
+            p.append(cls._web_table(d['sensors']['headers'], d['sensors']['rows'],
+                                    d['sensors'].get('styles')))
+            p.append('</div>')
+
+        p.append('<div class="card"><h2>Open items</h2>')
+        if d['issues']:
+            p.append('<ul class="issues">')
+            for sev, subject, detail in d['issues']:
+                tag = 'alert' if sev == 'alert' else 'note'
+                label = 'ALERT' if sev == 'alert' else 'note'
+                p.append(f'<li><span class="tag {tag}">{label}</span>'
+                         f'<strong>{esc(subject)}</strong>: {esc(detail)}</li>')
+            p.append('</ul>')
+        else:
+            p.append('<div style="color:#6b7280;font-size:14px">'
+                     'Nothing to report.</div>')
+        p.append('</div>')
+
+        p.append(f'<footer>auto-refreshes every {int(refresh)}s</footer>')
+        p.append('</div></body></html>')
+        return "".join(p)
+
     def _apply_cooling(self, client, mode, issues):
         want = 'cooling' if mode == 'cooling' else 'heating'
         for name, item in self.thermostats.items():
@@ -1032,6 +1180,42 @@ class Manager:
                 log.info("cooling: set %s -> %s (%s)", name, want, payload)
             except Exception as e:
                 log.error("cooling publish failed for %s: %s", name, e)
+
+
+def start_web_server(mgr):
+    """Start a background HTTP server that serves the status page (read-only).
+
+    Serves the manager's cached snapshot, so requests never touch MQTT state or
+    record history. Returns the server (or None if disabled / failed to bind)."""
+    import http.server
+
+    host = mgr.web_cfg.get('host', '0.0.0.0')
+    port = int(mgr.web_cfg.get('port', 8099))
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path not in ('/', '/index.html', '/status'):
+                self.send_error(404)
+                return
+            body = mgr.web_page().encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Content-Length', str(len(body)))
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass   # don't spam the journal with one line per request
+
+    try:
+        httpd = http.server.ThreadingHTTPServer((host, port), Handler)
+    except OSError as e:
+        log.error("status web server: cannot bind %s:%s (%s)", host, port, e)
+        return None
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    log.info("status web page at http://%s:%s/", host, port)
+    return httpd
 
 
 def main():
@@ -1089,6 +1273,9 @@ def main():
     def _graceful(signum, frame):
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, _graceful)
+
+    if mgr.web_cfg.get('enabled'):
+        start_web_server(mgr)
 
     # Heat-pump remote feed runs on its own (faster) cadence than the eval loop.
     rf = mgr.remote_feed_cfg

@@ -48,6 +48,15 @@ manual valves, and the open issues. The daemon also mails this automatically
 every `report_interval_hours`. Mail arrives from the sender name
 `thermostat_monitor`.
 
+### Status web page
+
+If `web.enabled` is set (see config), the daemon serves the same overview as a
+self-refreshing web page at `http://<host>:<port>/` (default port `8099`). It is
+**read-only** and shows the daemon's latest cached snapshot — opening it never
+changes anything. The page re-fetches itself every `web.refresh` seconds and
+adapts to light/dark mode. There is **no authentication**, so bind it to a
+trusted LAN only (set `web.host: 127.0.0.1` for local-only access).
+
 ## Email alerts
 
 The manager mails you (low-noise):

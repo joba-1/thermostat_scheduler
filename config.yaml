@@ -29,6 +29,14 @@ alerts:
 device_state_file: ~/.local/state/thermostat_manager/devices.json
 
 
+# Read-only status web page (serves the latest cached overview; no auth).
+web:
+  enabled: true
+  host: "0.0.0.0"      # bind address; 0.0.0.0 = reachable on the LAN
+  port: 8099
+  refresh: 60          # client auto-refresh interval (seconds)
+
+
 # --- EMS-ESP heat pump (read directly from MQTT, not Home Assistant) ---
 heatpump:
   enabled: true

@@ -32,6 +32,15 @@ alerts:
 # no-life-sign grace window after startup.
 device_state_file: ~/.local/state/thermostat_manager/devices.json
 
+# Read-only status web page. Serves the latest cached status overview (the same
+# data as the mailed report) on a tiny built-in HTTP server. No authentication,
+# so only expose it on a trusted LAN. Omit or set enabled:false to disable.
+web:
+  enabled: false
+  host: "0.0.0.0"      # bind address; 0.0.0.0 = reachable on the LAN, 127.0.0.1 = local only
+  port: 8099
+  refresh: 60          # client-side auto-refresh interval in seconds (0 = no refresh)
+
 heatpump:
   enabled: true
   boiler_topic: ems-esp/boiler_data

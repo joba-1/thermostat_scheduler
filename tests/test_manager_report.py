@@ -133,6 +133,35 @@ def test_setpoint_stays_a_column_when_rooms_differ():
     assert 'set' in d['thermo']['headers']
 
 
+def test_web_page_renders_full_document():
+    cfg = {k: (dict(v) if isinstance(v, dict) else v) for k, v in CFG.items()}
+    cfg['season'] = {'mode': 'cooling', 'cool_target': 21}
+    cfg['web'] = {'enabled': True, 'refresh': 45}
+    cfg['device_state_file'] = tempfile.mkdtemp() + '/devices.json'
+    mgr = tm.Manager(cfg)
+    mgr.last_state['Bad OG'] = {'preset': 'comfort', 'comfort_temperature': 34}
+    # before the first eval pass the page is a placeholder, not a crash
+    warm = mgr.web_page()
+    assert '<!doctype html>' in warm and 'Starting up' in warm
+    # after a snapshot is cached, the real page renders
+    mgr._last_report = mgr._report_data()
+    page = mgr.web_page()
+    assert '<title>Thermostat status' in page
+    assert 'Bad OG' in page and 'open' in page
+    assert 'content="45"' in page          # honours the configured refresh
+    assert 'class="pill' in page
+
+
+def test_report_data_reuses_passed_issues():
+    # passing issues must skip collect_issues (which records history as a side
+    # effect) — verify no history is recorded when issues are supplied.
+    mgr = make_mgr()
+    mgr.last_state['Bad OG'] = {'preset': 'schedule'}
+    d = mgr._report_data(mode='heating', hp=None, issues=[])
+    assert d['n_alert'] == 0 and d['n_info'] == 0
+    assert not mgr.history            # collect_issues was not called
+
+
 def test_sensor_value_shows_humidity():
     mgr = make_mgr()
     mgr.sensor_state['Bad OG Luft'] = {'temperature': 22.3, 'humidity': 55}
