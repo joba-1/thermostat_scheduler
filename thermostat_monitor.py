@@ -383,14 +383,17 @@ class Manager:
             temp_state = self._room_temp_state(name)
             self._record_history(name, item, reported, temp_state, now_ts)
             # In cooling, flag a non-manual thermostat that isn't actually fully
-            # open: it drifted back to its schedule, so some other controller
-            # (HA / zigbee2mqtt / a stray cron) is resetting it. Report only —
-            # we don't fight it (see season.control).
+            # open. A room switched *off* (e.g. window open) is intended, not a
+            # drift, so it is excluded. Note: a Tuya/battery TRV takes several
+            # seconds to apply a /set and report back, so a freshly-commanded
+            # valve can read its old state briefly — this flag may lag reality
+            # by a report cycle. Report only; we don't fight it (season.control).
             if (mode == 'cooling' and not manual and isinstance(reported, dict)
+                    and not cooling.is_off(reported)
                     and not cooling.is_open(type_cfg, reported)):
                 issues.append(make_issue(
                     f"{name}:notopen", 'cooling_not_open', f"{name} thermostat",
-                    "not fully open in cooling mode — reset by another controller?",
+                    "not fully open in cooling mode (drifted from the open setpoint)",
                     severity='info'))
 
             if not manual:

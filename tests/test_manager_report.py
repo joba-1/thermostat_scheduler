@@ -164,6 +164,16 @@ def test_cooling_open_room_not_flagged():
     assert 'Bad OG:notopen' not in [i.key for i in issues]
 
 
+def test_cooling_off_room_not_flagged_as_drift():
+    import time
+    mgr = make_mgr()
+    # Switched off (e.g. window open) is intended, not a drift -> no notopen flag
+    mgr.last_state['Bad OG'] = {'system_mode': 'off', 'preset': 'schedule',
+                                'comfort_temperature': 34}
+    issues = mgr.collect_issues('cooling', time.time(), time.localtime(), None)
+    assert 'Bad OG:notopen' not in [i.key for i in issues]
+
+
 def test_status_report_html_has_scrollable_tables():
     mgr = make_mgr()
     mgr.last_state['Bad OG'] = {'preset': 'manual', 'battery': 8}
