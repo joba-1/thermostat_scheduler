@@ -136,6 +136,11 @@ thermostat_types:
       equals: manual
     builtin_window_off:       # disable the TRV's own window detection (monitor drives)
       window_detection: "OFF"
+    off_signature:            # "our" window-off: off + frost guard (distinct from a user's plain off)
+      system_mode: "off"
+      frost_protection: "ON"
+    off_clear:                # undo the off marker when restoring
+      frost_protection: "OFF"
   TR-M3Z:
     schedule_mode:
       system_mode: heat
@@ -150,6 +155,11 @@ thermostat_types:
       equals: manual
     builtin_window_off:
       window_detection: "OFF"
+    off_signature:
+      system_mode: "off"
+      frost_protection: "ON"
+    off_clear:
+      frost_protection: "OFF"
   ME168_1:
     schedule_mode:
       system_mode: auto
@@ -161,6 +171,11 @@ thermostat_types:
     manual_marker:
       field: system_mode
       equals: heat
+    off_signature:
+      system_mode: "off"
+      frost_protection: "ON"
+    off_clear:
+      frost_protection: "OFF"
   ME167:
     schedule_mode:
       system_mode: auto
@@ -172,6 +187,11 @@ thermostat_types:
     manual_marker:
       field: system_mode
       equals: heat
+    off_signature:
+      system_mode: "off"
+      frost_protection: "ON"
+    off_clear:
+      frost_protection: "OFF"
   TRVZB:
     schedule_mode:
       system_mode: auto
@@ -187,6 +207,10 @@ thermostat_types:
       equals: heat
     builtin_window_off:
       open_window: "OFF"
+    off_signature:            # SONOFF has no frost_protection boolean -> setpoint sentinel
+      system_mode: "off"
+      occupied_heating_setpoint: 4
+    # off_clear not needed: the restore payload overwrites occupied_heating_setpoint.
   # ME168_1 / ME167 (AVATTO) have no built-in window detection -> nothing to disable.
 
 

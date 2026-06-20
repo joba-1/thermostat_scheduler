@@ -48,9 +48,25 @@ def test_desired_mode_forced_and_auto():
 
 
 def test_manual_override_detection():
-    vnth = {'manual_marker': {'field': 'preset', 'equals': 'manual'}}
+    vnth = {'schedule_mode': {'preset': 'schedule'},
+            'manual_marker': {'field': 'preset', 'equals': 'manual'}}
     assert cooling.is_manual_override(vnth, {'preset': 'manual'})
     assert not cooling.is_manual_override(vnth, {'preset': 'schedule'})
+
+
+def test_classify_state_signatures():
+    t = {'schedule_mode': {'system_mode': 'auto'},
+         'cooling_open': {'system_mode': 'heat', 'current_heating_setpoint': 34},
+         'off_signature': {'system_mode': 'off', 'frost_protection': 'ON'},
+         'manual_marker': {'field': 'system_mode', 'equals': 'heat'}}
+    assert cooling.classify_state(t, {'system_mode': 'heat', 'current_heating_setpoint': 34}) == 'open'
+    assert cooling.classify_state(t, {'system_mode': 'off', 'frost_protection': 'ON'}) == 'off'
+    assert cooling.classify_state(t, {'system_mode': 'auto'}) == 'schedule'
+    assert cooling.classify_state(t, {'system_mode': 'heat', 'current_heating_setpoint': 21.5}) == 'manual'
+    assert cooling.classify_state(t, {'system_mode': 'off'}) == 'manual'   # user plain off
+    assert cooling.classify_state(t, None) == 'unknown'
+    assert cooling.is_our_off(t, {'system_mode': 'off', 'frost_protection': 'ON'})
+    assert not cooling.is_our_off(t, {'system_mode': 'off'})
 
 
 def test_cooling_open_state_not_seen_as_manual():

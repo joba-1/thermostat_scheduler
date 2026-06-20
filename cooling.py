@@ -28,10 +28,60 @@ CONTROL_FIELDS = frozenset({
 
 
 def is_off(reported_state):
-    """True if the thermostat reports it is switched off (e.g. window open)."""
+    """True if the thermostat reports it is switched off (any off — ours or the
+    user's). For 'off that *we* set' use `is_our_off`."""
     if not isinstance(reported_state, dict):
         return False
     return str(reported_state.get('system_mode')).strip().lower() == 'off'
+
+
+def _matches(reported_state, signature):
+    """True if every field in `signature` equals the reported value (string-compared)."""
+    if not isinstance(reported_state, dict) or not isinstance(signature, dict) or not signature:
+        return False
+    return all(str(reported_state.get(k)) == str(v) for k, v in signature.items())
+
+
+def _is_schedule(type_cfg, reported_state):
+    """True if the device is in its normal weekly-schedule mode. Derived from the
+    type's schedule_mode using the same field the manual_marker keys on (so VNTH
+    -> preset==schedule, AVATTO/SONOFF -> system_mode==auto), no extra config."""
+    sm = type_cfg.get('schedule_mode') or {}
+    field = (type_cfg.get('manual_marker') or {}).get('field')
+    if field and field in sm:
+        return str(reported_state.get(field)) == str(sm[field])
+    return False
+
+
+def classify_state(type_cfg, reported_state):
+    """Classify a reported TRV state as one of OUR signatures, else manual.
+
+    We cannot read who set a state (it can change from the device buttons, the
+    z2m web UI, a raw MQTT /set, this software, ...). So instead of detecting
+    'manual' positively, we define the exact state-combos *we* produce and treat
+    anything else as manual:
+
+      - 'open'     -> matches `cooling_open` (e.g. heat / preset comfort + setpoint 34)
+      - 'off'      -> matches `off_signature` (our window-off, e.g. off + frost_protection ON)
+      - 'schedule' -> in the weekly-schedule mode
+      - 'manual'   -> none of the above (a user/other controller did it) -> leave alone
+      - 'unknown'  -> no reported state yet
+    """
+    if not isinstance(reported_state, dict):
+        return 'unknown'
+    if _matches(reported_state, type_cfg.get('cooling_open')):
+        return 'open'
+    if _matches(reported_state, type_cfg.get('off_signature')):
+        return 'off'
+    if _is_schedule(type_cfg, reported_state):
+        return 'schedule'
+    return 'manual'
+
+
+def is_our_off(type_cfg, reported_state):
+    """True if the device is in the off state *we* set for an open window
+    (matches the type's `off_signature`), not a user's plain off."""
+    return _matches(reported_state, type_cfg.get('off_signature'))
 
 
 def build_intended_payload(name, cfg_item, thermostat_types, mqtt_cfg, mode,
@@ -55,10 +105,12 @@ def build_intended_payload(name, cfg_item, thermostat_types, mqtt_cfg, mode,
     type_cfg = thermostat_types.get(cfg_item.get('type'), {})
     config_only = {k: v for k, v in base.items() if k not in control_fields}
 
-    if isinstance(reported, dict) and is_manual_override(type_cfg, reported):
-        return config_only, topic, "manual override — schedule/calibration only"
+    # Off (any off — ours or the user's) is left off; checked before manual so an
+    # off device reads as "off" rather than the broader "manual" classification.
     if isinstance(reported, dict) and is_off(reported):
         return config_only, topic, "off (e.g. window open) — schedule/calibration only"
+    if isinstance(reported, dict) and is_manual_override(type_cfg, reported):
+        return config_only, topic, "manual override — schedule/calibration only"
     suffix = "" if isinstance(reported, dict) else " [state unknown]"
     if mode == 'cooling':
         payload = dict(config_only)
@@ -102,42 +154,16 @@ def is_open(type_cfg, reported_state):
     (vs. having drifted back to its schedule because some other controller — HA,
     zigbee2mqtt, a stray cron — reset it).
     """
-    if not isinstance(reported_state, dict):
-        return False
-    op = type_cfg.get('cooling_open')
-    if not isinstance(op, dict):
-        return False
-    return all(str(reported_state.get(k)) == str(v) for k, v in op.items())
+    return classify_state(type_cfg, reported_state) == 'open'
 
 
 def is_manual_override(type_cfg, reported_state):
-    """True if the end user has taken manual control of this thermostat.
+    """True if the device is in a state we did NOT produce (= a user/other
+    controller took manual control). Defined as: not one of our signatures
+    (`cooling_open`, `off_signature`, the weekly schedule). Such devices are
+    left untouched and surfaced as a low-priority warning. See `classify_state`
+    for why we detect manual by exclusion rather than a positive marker.
 
-    The per-type `manual_marker` describes the reported field+value that
-    indicates manual operation (e.g. preset == 'manual', or system_mode ==
-    'heat' on a device we normally drive in 'auto'). Such devices must NOT be
-    touched by cooling control, but should be surfaced as a low-priority
-    warning so the operator knows comfort control is partly suspended.
+    A device that has reported nothing yet (`unknown`) is not treated as manual.
     """
-    if not isinstance(reported_state, dict):
-        return False
-    # If the reported state matches our own cooling-open payload, it is the
-    # manager's cooling action, not a user manual override. This disambiguates
-    # the system_mode=heat that both cooling and a manual override produce on
-    # AVATTO/SONOFF types — important across daemon restarts mid-cooling.
-    op = type_cfg.get('cooling_open')
-    if isinstance(op, dict) and all(
-            str(reported_state.get(k)) == str(v) for k, v in op.items()):
-        return False
-    marker = type_cfg.get('manual_marker')
-    if not isinstance(marker, dict):
-        return False
-    field = marker.get('field')
-    if field is None or field not in reported_state:
-        return False
-    val = reported_state.get(field)
-    if 'equals' in marker:
-        return str(val).strip().lower() == str(marker['equals']).strip().lower()
-    if 'in' in marker:
-        return str(val).strip().lower() in [str(x).strip().lower() for x in marker['in']]
-    return False
+    return classify_state(type_cfg, reported_state) == 'manual'

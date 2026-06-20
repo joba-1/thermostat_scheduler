@@ -44,6 +44,41 @@ it never directly drives a valve.
 A heating TRV opens its valve when the room is **below** setpoint; giving it a high
 "open" setpoint (34 °C) while cold water is in the loop makes it open and cool.
 
+## Manual is detected by exclusion (signature model)
+
+We **cannot** read who set a state — it can change from the device buttons, the
+z2m web UI, a raw MQTT `/set`, this software, or (formerly) HA, and none of those
+leave a provenance tag. So rather than detect "manual" positively, we **define the
+exact state-combos we produce** (`cooling.classify_state`) and treat anything else
+as manual:
+
+| Classified as | Matches |
+|---|---|
+| `open` | the type's `cooling_open` (e.g. heat / preset comfort **+ setpoint 34**) |
+| `off` | the type's `off_signature` — **our** window-off (see below) |
+| `schedule` | the weekly-schedule mode (preset schedule / system_mode auto) |
+| `manual` | none of the above → leave it alone, surface as info |
+
+So `is_manual_override` = "classified manual", `is_open` = "classified open".
+A stuck state like `heat/21.5` is manual (not one of ours); the defined recovery
+is to push one of our signatures (e.g. the no-arg scheduler pushes open/schedule).
+
+## "Our off" vs a user's off (`off_signature`)
+
+Window-control switches a TRV off, and must later restore **only** the rooms *it*
+turned off — not a radiator the user switched off by hand. Since a plain
+`system_mode: off` is indistinguishable, our off is a **signature combo**:
+
+| Type | `off_signature` | `off_clear` (undo on restore) |
+|---|---|---|
+| VNTH-T2_v2, TR-M3Z, ME168/ME167 | `system_mode: off` + `frost_protection: ON` | `frost_protection: OFF` |
+| TRVZB (no frost boolean) | `system_mode: off` + `occupied_heating_setpoint: 4` | — (overwritten by restore) |
+
+`is_our_off` matches this signature. On window close we restore if the device
+still shows our off (or we still have it latched and it is off); a user's plain
+off (`frost_protection` not ON) is left alone. The signature is **self-describing
+on the device**, so it survives a restart / lost latch.
+
 ## The AVATTO/SONOFF ambiguity (important)
 
 On **ME168/ME167 (AVATTO)** and **TRVZB (SONOFF)** the cooling-open mode and the

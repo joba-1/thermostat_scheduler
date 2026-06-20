@@ -8,8 +8,12 @@ TYPES = {
     'VNTH-T2_v2': {'schedule_mode': {'system_mode': 'heat', 'preset': 'schedule'},
                    'cooling_open': {'preset': 'comfort', 'comfort_temperature': 34},
                    'manual_marker': {'field': 'preset', 'equals': 'manual'},
-                   'builtin_window_off': {'window_detection': 'OFF'}},
+                   'builtin_window_off': {'window_detection': 'OFF'},
+                   'off_signature': {'system_mode': 'off', 'frost_protection': 'ON'},
+                   'off_clear': {'frost_protection': 'OFF'}},
 }
+
+OUR_OFF = {'system_mode': 'off', 'frost_protection': 'ON'}   # the off_signature we set
 
 CFG = {
     'mqtt': {'base_topic': 'zigbee2mqtt'},
@@ -67,19 +71,20 @@ def test_window_open_switches_off_and_latches():
     mgr.last_state['Esszimmer'] = {'preset': 'schedule'}
     _open(mgr, 'Esszimmer Terrasse')
     mgr._apply_window_control('Esszimmer', c)
-    assert {'system_mode': 'off'} in sent(c, ESS_SET)
+    assert OUR_OFF in sent(c, ESS_SET)                 # off_signature, not a plain off
     assert 'Esszimmer' in mgr.window_off
 
 
 def test_window_close_restores_heating_schedule():
     mgr, c = make_mgr(), FakeClient()
     mgr.window_off['Esszimmer'] = '2026-06-20T10:00:00'
-    mgr.last_state['Esszimmer'] = {'system_mode': 'off'}
+    mgr.last_state['Esszimmer'] = dict(OUR_OFF)        # device is in our off signature
     _closed(mgr, 'Esszimmer Terrasse')
     mgr._apply_window_control('Esszimmer', c)
     payloads = sent(c, ESS_SET)
     assert payloads and payloads[0].get('preset') == 'schedule'
     assert payloads[0].get('system_mode') == 'heat'    # turned back on
+    assert payloads[0].get('frost_protection') == 'OFF'   # off marker cleared
     assert 'Esszimmer' not in mgr.window_off
 
 
@@ -87,20 +92,36 @@ def test_window_close_restores_cooling_open_with_system_mode():
     mgr, c = make_mgr(), FakeClient()
     mgr.season_cfg = {'mode': 'cooling'}               # force cooling
     mgr.window_off['Esszimmer'] = '2026-06-20T10:00:00'
-    mgr.last_state['Esszimmer'] = {'system_mode': 'off'}
+    mgr.last_state['Esszimmer'] = dict(OUR_OFF)
     _closed(mgr, 'Esszimmer Terrasse')
     mgr._apply_window_control('Esszimmer', c)
     p = sent(c, ESS_SET)[0]
     assert p.get('preset') == 'comfort' and p.get('comfort_temperature') == 34
     assert p.get('system_mode') == 'heat'              # off valve actually turned on
+    assert p.get('frost_protection') == 'OFF'          # off marker cleared
 
 
-def test_closed_room_we_did_not_close_is_untouched():
+def test_user_plain_off_not_restored():
+    # A user's plain off (no frost_protection) is not our signature -> left alone,
+    # even if we happen to have it latched (user took control mid-window).
     mgr, c = make_mgr(), FakeClient()
-    mgr.last_state['Esszimmer'] = {'system_mode': 'off'}   # user turned it off
+    mgr.window_off['Esszimmer'] = '2026-06-20T10:00:00'
+    mgr.last_state['Esszimmer'] = {'system_mode': 'heat', 'current_heating_setpoint': 22}  # user manual
     _closed(mgr, 'Esszimmer Terrasse')
-    mgr._apply_window_control('Esszimmer', c)              # not in window_off
+    mgr._apply_window_control('Esszimmer', c)
     assert c.published == []
+    assert 'Esszimmer' not in mgr.window_off           # latch dropped, we stop tracking
+
+
+def test_our_off_signature_restored_even_without_latch():
+    # The off_signature is self-describing: if the device shows OUR off (off +
+    # frost ON) we restore on close even if the in-memory latch was lost (e.g.
+    # state-file wiped / restart) — the device itself tells us it's ours.
+    mgr, c = make_mgr(), FakeClient()
+    mgr.last_state['Esszimmer'] = dict(OUR_OFF)            # our off, but not latched
+    _closed(mgr, 'Esszimmer Terrasse')
+    mgr._apply_window_control('Esszimmer', c)             # not in window_off
+    assert sent(c, ESS_SET)
 
 
 def test_manual_override_is_skipped():
@@ -128,7 +149,7 @@ def test_humidity_guard_allows_off_when_dry():
     _open(mgr, 'Waschküche Fenster')
     mgr.sensor_state['Waschküche Luft'] = {'humidity': 40}   # < 50 -> ventilate
     mgr._apply_window_control('Waschküche', c)
-    assert {'system_mode': 'off'} in sent(c, WAS_SET)
+    assert OUR_OFF in sent(c, WAS_SET)
 
 
 def test_humidity_guard_unknown_blocks_off():

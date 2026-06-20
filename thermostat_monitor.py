@@ -574,34 +574,53 @@ class Manager:
         reported = self.last_state.get(room)
         any_open = self._room_window_open(room)
 
-        if cooling.is_manual_override(type_cfg, reported):
+        # Do we own this room's off? Either the device shows our off_signature, or
+        # we have it latched and it is still off (covers a plain off we set with an
+        # older version, before it's upgraded to the signature).
+        own_off = (cooling.is_our_off(type_cfg, reported)
+                   or (room in self.window_off and cooling.is_off(reported)))
+
+        # A user/other controller took manual control (and it isn't our off) ->
+        # leave it alone and stop tracking it.
+        if cooling.is_manual_override(type_cfg, reported) and not own_off:
             log.info("window-control %s: window=%s — skip (manual override)",
                      room, "open" if any_open else "closed")
+            if self.window_off.pop(room, None) is not None:
+                self._save_device_state()
             return
 
+        topic = f"{self.base}/{device_topic_name(room)}/set"
         if any_open:
-            if room in self.window_off and isinstance(reported, dict) \
-                    and cooling.is_off(reported):
-                return  # already handled and confirmed off
+            if cooling.is_our_off(type_cfg, reported):
+                return  # already in our off signature
             if not self._humidity_guard_ok(room):
                 log.info("window-control %s: window open but humidity guard blocks "
                          "ventilation — leaving heating on", room)
                 return
-            topic = f"{self.base}/{device_topic_name(room)}/set"
-            log.info("window-control %s: window OPEN -> system_mode off%s",
-                     room, "" if act else " (act=false, not sent)")
+            # "our off" = the type's off_signature (e.g. off + frost_protection ON),
+            # distinct from a user's plain off so we only auto-restore what we set.
+            off_payload = type_cfg.get('off_signature') or {'system_mode': 'off'}
+            log.info("window-control %s: window OPEN -> off %s%s",
+                     room, off_payload, "" if act else " (act=false, not sent)")
             if act and client is not None:
-                client.publish(topic, json.dumps({'system_mode': 'off'}), qos=1)
+                client.publish(topic, json.dumps(off_payload), qos=1)
             self.window_off[room] = iso_now()
             self._save_device_state()
         else:
-            if room not in self.window_off:
-                return  # we didn't turn it off — leave whatever state it's in
+            # Restore only what WE switched off.
+            if not own_off:
+                if room in self.window_off:
+                    log.info("window-control %s: window closed but state isn't our "
+                             "off — leaving it (user took over)", room)
+                    self.window_off.pop(room, None)
+                    self._save_device_state()
+                return
             mode = cooling.desired_mode(self.season_cfg, self.heatpump_state())
-            payload, topic, _ = cooling.build_intended_payload(
+            payload, _, _ = cooling.build_intended_payload(
                 room, item, self.thermostat_types, self.mqtt_cfg, mode, None)
             if mode == 'cooling':
                 payload.setdefault('system_mode', 'heat')  # ensure the valve turns on
+            payload.update(type_cfg.get('off_clear') or {})  # undo the off marker
             log.info("window-control %s: window CLOSED -> restore (%s)%s",
                      room, mode, "" if act else " (act=false, not sent)")
             if act and client is not None:

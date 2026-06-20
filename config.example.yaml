@@ -110,12 +110,18 @@ default_no_reaction_minutes: 60
 # Per type: how to push the schedule, force fully open for cooling, restore, and
 # detect end-user manual override. cooling_open/cooling_restore mirror schedule_mode.
 thermostat_types:
+  # off_signature = "our" window-off, made distinct from a user's plain off so we
+  # only auto-restore what we set (off + a frost guard, or an off + setpoint
+  # sentinel). off_clear undoes the marker on restore. State is classified by
+  # matching these signatures; anything that matches none is treated as manual.
   VNTH-T2_v2:
     schedule_mode: {temperature_sensitivity: 0.5, system_mode: heat, preset: schedule}
     cooling_open: {preset: comfort, comfort_temperature: 34}
     cooling_restore: {preset: schedule}
     manual_marker: {field: preset, equals: manual}
     builtin_window_off: {window_detection: "OFF"}   # disabled so the monitor drives
+    off_signature: {system_mode: "off", frost_protection: "ON"}
+    off_clear: {frost_protection: "OFF"}
   TRVZB:
     schedule_mode: {system_mode: auto, temperature_accuracy: -0.6}
     schedule_prefix: weekly_schedule
@@ -123,6 +129,7 @@ thermostat_types:
     cooling_restore: {system_mode: auto}
     manual_marker: {field: system_mode, equals: heat}
     builtin_window_off: {open_window: "OFF"}
+    off_signature: {system_mode: "off", occupied_heating_setpoint: 4}   # no frost bool -> setpoint sentinel
   # AVATTO ME168/ME167 have no built-in window detection -> no builtin_window_off.
 
 thermostats:
