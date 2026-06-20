@@ -786,7 +786,15 @@ class Manager:
                      for k in ('vorlauf', 'ruecklauf', 'outdoor', 'power', 'pressure')
                      if k in t]
             act = 'running' if hp.get('active') else 'idle'
-            hp_line = f"{hp['mode']} ({act}) — " + ", ".join(parts)
+            # `hpactivity` is what the pump is doing *right now* (e.g. "hot
+            # water", "cooling", "heating", "off") — distinct from the season
+            # mode. During a domestic-hot-water charge it reverses to heating,
+            # so flow/return read hot even though the season is cooling; showing
+            # the activity stops that looking like a sensor fault.
+            activity = (hp.get('raw') or {}).get('hpactivity')
+            head = (f"{hp['mode']} season — {activity} ({act})"
+                    if activity else f"{hp['mode']} ({act})")
+            hp_line = f"{head}: " + ", ".join(parts)
 
         manual_line = None
         if self.manual_thermostats:

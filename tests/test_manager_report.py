@@ -152,6 +152,25 @@ def test_web_page_renders_full_document():
     assert 'class="pill' in page
 
 
+def test_hp_line_shows_current_activity():
+    mgr = make_mgr()
+    hp = {'mode': 'cooling', 'active': True,
+          'telemetry': {'vorlauf': 22.1, 'ruecklauf': 55.4},
+          'raw': {'hpactivity': 'hot water'}}
+    d = mgr._report_data(mode='cooling', hp=hp, issues=[])
+    # the DHW interlude is labelled so a hot return doesn't look like a fault
+    assert d['hp_line'] == ('cooling season — hot water (running): '
+                            'vorlauf 22.1°C, ruecklauf 55.4°C')
+
+
+def test_hp_line_without_activity_field():
+    mgr = make_mgr()
+    hp = {'mode': 'heating', 'active': False,
+          'telemetry': {'vorlauf': 35.0}, 'raw': {}}
+    d = mgr._report_data(mode='heating', hp=hp, issues=[])
+    assert d['hp_line'] == 'heating (idle): vorlauf 35°C'
+
+
 def test_report_data_reuses_passed_issues():
     # passing issues must skip collect_issues (which records history as a side
     # effect) — verify no history is recorded when issues are supplied.
