@@ -193,9 +193,10 @@ def test_hp_line_shows_dew_point_limit():
     mgr = make_mgr()
     hp = {'mode': 'cooling', 'active': True,
           'telemetry': {'vorlauf': 18.0},
-          'raw': {'dewtemperature': 16.7}}
+          'raw': {'dewtemperature': 16.7, 'rftemp': 28.2, 'airhumidity': 50}}
     d = mgr._report_data(mode='cooling', hp=hp, issues=[])
-    assert 'dew 16.7°C' in d['hp_line']
+    # the pump's dew point with the temp+humidity it derived it from
+    assert 'dew 16.7°C (ems-esp 28.2°C 50%RH)' in d['hp_line']
 
 
 def _seed_history(mgr, name, temps, step_min=5):

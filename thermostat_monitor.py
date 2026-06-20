@@ -785,11 +785,19 @@ class Manager:
             parts = [f"{k} {self._fmt(t[k], units.get(k, ''))}"
                      for k in ('vorlauf', 'ruecklauf', 'outdoor', 'power', 'pressure')
                      if k in t]
-            # the pump's own dew-point limit (flow floor = dewtemperature +
-            # dewoffset) — the binding constraint on how cold it can cool
-            dewt = (hp.get('raw') or {}).get('dewtemperature')
+            # the pump's own dew-point view (flow floor = dewtemperature +
+            # dewoffset) — the binding constraint on how cold it can cool. Show
+            # the temp+humidity ems-esp derived it from (the values we feed it as
+            # remotetemp/remotehum, echoed back as rftemp/currtemp + airhumidity).
+            raw = hp.get('raw') or {}
+            dewt = raw.get('dewtemperature')
             if dewt is not None:
-                parts.append(f"dew {self._fmt(dewt, '°C')}")
+                seg = f"dew {self._fmt(dewt, '°C')}"
+                rt = raw.get('rftemp', raw.get('currtemp'))
+                ah = raw.get('airhumidity')
+                if rt is not None and ah is not None:
+                    seg += f" (ems-esp {self._fmt(rt, '°C')} {self._fmt(ah, '%RH')})"
+                parts.append(seg)
             act = 'running' if hp.get('active') else 'idle'
             # `hpactivity` is what the pump is doing *right now* (e.g. "hot
             # water", "cooling", "heating", "off") — distinct from the season
