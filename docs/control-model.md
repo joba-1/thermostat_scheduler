@@ -72,12 +72,23 @@ turned off — not a radiator the user switched off by hand. Since a plain
 | Type | `off_signature` | `off_clear` (undo on restore) |
 |---|---|---|
 | VNTH-T2_v2, TR-M3Z, ME168/ME167 | `system_mode: off` + `frost_protection: ON` | `frost_protection: OFF` |
-| TRVZB (no frost boolean) | `system_mode: off` + `occupied_heating_setpoint: 4` | — (overwritten by restore) |
+| TRVZB | *none* — latch-based (see below) | — |
 
 `is_our_off` matches this signature. On window close we restore if the device
-still shows our off (or we still have it latched and it is off); a user's plain
+still shows our off **or** we still have it latched and it is off; a user's plain
 off (`frost_protection` not ON) is left alone. The signature is **self-describing
 on the device**, so it survives a restart / lost latch.
+
+**TRVZB has no usable off-signature**: writing `occupied_heating_setpoint` flips
+`system_mode` back to `heat` (the setpoint write implies heat mode), so a setpoint
+sentinel won't hold, and there's no frost_protection boolean. So TRVZB window-off
+is a plain `system_mode: off` and "ours" is tracked **only by the `window_off`
+latch** (persisted). The status report shows `off (window)` for any latched room
+regardless of how its plain-off state would otherwise classify.
+
+Window control also **reconciles every eval pass** (not just on contact events),
+so a room left in a stale state after a restart, or one whose contact rarely
+reports, self-heals within an eval interval.
 
 ## The AVATTO/SONOFF ambiguity (important)
 
