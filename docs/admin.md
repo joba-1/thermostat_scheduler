@@ -31,6 +31,20 @@ sudo systemctl restart thermostat_monitor.service
 To confirm a change is actually live, diff the deployed file against your commit
 (`sudo diff /home/thermostat/thermostat_scheduler/thermostat_monitor.py <repo>/thermostat_monitor.py`).
 
+### `config.yaml` is NOT synced — edit it on the target
+
+`install.sh` rsyncs with `--exclude config.yaml` (and `--exclude venv`), so it
+**never overwrites the deployed config**. Any *new* config block (e.g. the `web:`
+section) must be added by hand to the deployed file
+`/home/thermostat/thermostat_scheduler/config.yaml` — syncing code alone will not
+enable it. The repo's `config.yaml` / `config.example.yaml` are only references.
+After editing the deployed config, keep its owner and restart:
+
+```bash
+sudoedit /home/thermostat/thermostat_scheduler/config.yaml   # or edit + chown thermostat:thermostat
+sudo systemctl restart thermostat_monitor.service
+```
+
 ### State files are per-user
 
 Persisted device state lives under the service user's home:
