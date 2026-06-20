@@ -134,7 +134,8 @@ thermostat_types:
     cooling_restore: {system_mode: auto}
     manual_marker: {field: system_mode, equals: heat}
     builtin_window_off: {open_window: "OFF"}
-    off_signature: {system_mode: "off", occupied_heating_setpoint: 4}   # no frost bool -> setpoint sentinel
+    # No off_signature: SONOFF flips system_mode->heat on a setpoint write, so
+    # window-off uses plain system_mode:off tracked by the software latch.
   # AVATTO ME168/ME167 have no built-in window detection -> no builtin_window_off.
 
 thermostats:

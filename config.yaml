@@ -217,10 +217,9 @@ thermostat_types:
       equals: heat
     builtin_window_off:
       open_window: "OFF"
-    off_signature:            # SONOFF has no frost_protection boolean -> setpoint sentinel
-      system_mode: "off"
-      occupied_heating_setpoint: 4
-    # off_clear not needed: the restore payload overwrites occupied_heating_setpoint.
+    # No off_signature: SONOFF flips system_mode->heat when occupied_heating_setpoint
+    # is written, so a setpoint sentinel can't mark "our off". Window-off uses a
+    # plain system_mode:off and is tracked by the software latch instead.
   # ME168_1 / ME167 (AVATTO) have no built-in window detection -> nothing to disable.
 
 

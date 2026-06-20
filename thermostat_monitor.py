@@ -497,6 +497,17 @@ class Manager:
         if client is not None and self.season_cfg.get('control', True):
             self._apply_cooling(client, mode, issues)
 
+        # window control is event-driven, but reconcile every pass too so a room
+        # left in a stale state (e.g. after a restart, or a sleepy contact that
+        # rarely reports) is corrected within an eval interval rather than waiting
+        # for the next window event.
+        if client is not None and self.window_cfg.get('enabled'):
+            for room in self.thermostats:
+                try:
+                    self._apply_window_control(room, client)
+                except Exception as e:
+                    log.exception("window-control reconcile error for %s: %s", room, e)
+
         mailed, cleared = self.alerter.process(issues)
         for iss in mailed:
             log.warning("ALERT %s: %s", iss.subject, iss.detail)
@@ -612,8 +623,8 @@ class Manager:
 
         topic = f"{self.base}/{device_topic_name(room)}/set"
         if any_open:
-            if cooling.is_our_off(type_cfg, reported):
-                return  # already in our off signature
+            if own_off:
+                return  # already off and ours (signature or latched)
             if not self._humidity_guard_ok(room):
                 log.info("window-control %s: window open but humidity guard blocks "
                          "ventilation — leaving heating on", room)
@@ -781,8 +792,8 @@ class Manager:
             temp = temp_state.get('temperature') if isinstance(temp_state, dict) else None
             state = (st.get('preset') or st.get('system_mode')
                      or st.get('running_state'))
-            if not manual and name in self.window_off:
-                state_cell = "off (window)"
+            if name in self.window_off:
+                state_cell = "off (window)"   # we hold it off (latch wins over classify)
             elif manual:
                 state_cell = "MANUAL"
             else:
