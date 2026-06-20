@@ -873,7 +873,7 @@ class Manager:
                         val = f"{val} {self._fmt(hum, '%RH')}"
                 if self._battery_low(st, sensor_bat_limit):
                     style['bat'] = self._CSS_BAD
-                sensor_rows.append([name, kind, val,
+                sensor_rows.append([name, val, kind,
                                     self._fmt(st.get('battery'), "%"),
                                     self._age(self.sensor_seen.get(name))])
                 sensor_styles.append(style)
@@ -890,7 +890,7 @@ class Manager:
             'window_line': window_line, 'set_line': set_line,
             'thermo': {'headers': thermo_headers,
                        'rows': thermo_rows, 'styles': thermo_styles},
-            'sensors': ({'headers': ["sensor", "kind", "value", "bat", "seen"],
+            'sensors': ({'headers': ["sensor", "value", "kind", "bat", "seen"],
                          'rows': sensor_rows, 'styles': sensor_styles}
                         if sensor_rows is not None else None),
             'issues': issue_list,
