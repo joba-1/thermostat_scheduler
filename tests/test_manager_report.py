@@ -181,11 +181,21 @@ def test_report_data_reuses_passed_issues():
     assert not mgr.history            # collect_issues was not called
 
 
-def test_sensor_value_shows_humidity():
+def test_sensor_value_shows_humidity_and_dew_point():
     mgr = make_mgr()
     mgr.sensor_state['Bad OG Luft'] = {'temperature': 22.3, 'humidity': 55}
     report = mgr.status_report()
     assert '22.3°C' in report and '55%RH' in report
+    assert 'dp 12.8°C' in report          # Magnus dew point for 22.3°C/55%RH
+
+
+def test_hp_line_shows_dew_point_limit():
+    mgr = make_mgr()
+    hp = {'mode': 'cooling', 'active': True,
+          'telemetry': {'vorlauf': 18.0},
+          'raw': {'dewtemperature': 16.7}}
+    d = mgr._report_data(mode='cooling', hp=hp, issues=[])
+    assert 'dew 16.7°C' in d['hp_line']
 
 
 def _seed_history(mgr, name, temps, step_min=5):

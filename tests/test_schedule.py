@@ -3,7 +3,21 @@ from common import (
     compare_schedule_strings,
     compare_and_collect_mismatches,
     build_expected_payload,
+    dew_point,
 )
+
+
+def test_dew_point_basic_and_saturation():
+    assert round(dew_point(25, 52), 1) == 14.5
+    assert round(dew_point(20, 100), 1) == 20.0    # saturated -> dp == temp
+    assert dew_point(25, 50) < 25                   # always below air temp
+
+
+def test_dew_point_invalid_inputs():
+    assert dew_point(None, 50) is None
+    assert dew_point(25, None) is None
+    assert dew_point(25, 0) is None                 # nonphysical RH
+    assert dew_point(25, "bad") is None
 
 
 def test_schedule_has_midnight_and_six_points():

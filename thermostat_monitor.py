@@ -28,7 +28,7 @@ from collections import deque, defaultdict
 import paho.mqtt.client as mqtt
 
 from common import (setup_logging, log, load_config, time_to_minutes,
-                    device_topic_name, mqtt_credentials)
+                    device_topic_name, mqtt_credentials, dew_point)
 import heatpump
 import cooling
 import health
@@ -785,6 +785,11 @@ class Manager:
             parts = [f"{k} {self._fmt(t[k], units.get(k, ''))}"
                      for k in ('vorlauf', 'ruecklauf', 'outdoor', 'power', 'pressure')
                      if k in t]
+            # the pump's own dew-point limit (flow floor = dewtemperature +
+            # dewoffset) — the binding constraint on how cold it can cool
+            dewt = (hp.get('raw') or {}).get('dewtemperature')
+            if dewt is not None:
+                parts.append(f"dew {self._fmt(dewt, '°C')}")
             act = 'running' if hp.get('active') else 'idle'
             # `hpactivity` is what the pump is doing *right now* (e.g. "hot
             # water", "cooling", "heating", "off") — distinct from the season
@@ -878,7 +883,10 @@ class Manager:
                     val = self._fmt(st.get('temperature'), "°C")
                     hum = st.get('humidity')
                     if hum is not None:
+                        dp = dew_point(st.get('temperature'), hum)
                         val = f"{val} {self._fmt(hum, '%RH')}"
+                        if dp is not None:
+                            val = f"{val} dp {self._fmt(round(dp, 1), '°C')}"
                 if self._battery_low(st, sensor_bat_limit):
                     style['bat'] = self._CSS_BAD
                 sensor_rows.append([name, val, kind,

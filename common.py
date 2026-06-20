@@ -68,6 +68,26 @@ def time_to_minutes(time_str):
     return hours * 60 + minutes
 
 
+def dew_point(temp_c, rh):
+    """Dew point in °C from air temperature (°C) and relative humidity (%).
+
+    Magnus-Tetens approximation (a=17.625, b=243.04 °C), accurate to ~0.4 °C
+    over 0–60 °C / 1–100 %RH. Returns None for missing/invalid inputs."""
+    import math
+    if temp_c is None or rh is None:
+        return None
+    try:
+        rh = float(rh)
+        temp_c = float(temp_c)
+    except (TypeError, ValueError):
+        return None
+    if rh <= 0 or rh > 100:
+        return None
+    a, b = 17.625, 243.04
+    gamma = math.log(rh / 100.0) + a * temp_c / (b + temp_c)
+    return b * gamma / (a - gamma)
+
+
 def minutes_to_time(minutes):
     """Convert minutes since midnight to HH:MM format"""
     hours = minutes // 60
