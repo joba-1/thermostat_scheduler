@@ -165,7 +165,30 @@ def test_window_open_candidate_is_excluded():
     assert topics['ems-esp/thermostat/hc1/remotehum'] == '52'
 
 
-def test_no_eligible_candidate_keeps_last_value_and_alerts():
+def _iso_ago(seconds):
+    import datetime
+    return (datetime.datetime.now() - datetime.timedelta(seconds=seconds)).isoformat()
+
+
+def test_fresh_window_open_beats_stale_closed_room():
+    # a current reading from a window-open room is better dew data than a stale
+    # window-closed value -> feed the fresh open room, no blind-stale alert.
+    mgr = _multi_mgr()
+    now = time.time()
+    mgr.start_ts = now - 10_000
+    mgr.sensor_seen['Wohnzimmer Luft'] = _iso_ago(7200)              # stale (closed)
+    mgr.sensor_state['Wohnzimmer Luft'] = {'temperature': 25.0, 'humidity': 50}
+    mgr.sensor_seen['Arbeitszimmer Bewegungsmelder'] = tm.iso_now()  # fresh
+    mgr.sensor_state['Arbeitszimmer Bewegungsmelder'] = {'temperature': 28.5, 'humidity': 46}
+    mgr.sensor_state['Arbeitszimmer Fenster'] = {'contact': False}   # window OPEN
+    c = FakeClient()
+    mgr.publish_remote_feed(c)
+    topics = dict(c.published)
+    assert topics['ems-esp/thermostat/hc1/remotetemp'] == '28.5'     # fresh open, not stale closed
+    assert mgr._remote_feed_issue(now) is None                       # not a blind-stale alert
+
+
+def test_no_fresh_candidate_keeps_last_value_and_alerts():
     mgr = _multi_mgr()
     now = time.time()
     mgr.start_ts = now - 10_000
@@ -174,10 +197,9 @@ def test_no_eligible_candidate_keeps_last_value_and_alerts():
     mgr.sensor_state['Wohnzimmer Luft'] = {'temperature': 25.0, 'humidity': 50}
     c = FakeClient()
     mgr.publish_remote_feed(c)
-    # now both go stale (open windows on both rooms)
-    mgr.sensor_state['Wohnzimmer Fenster'] = {'contact': False}
-    mgr.sensor_state['Arbeitszimmer Fenster'] = {'contact': False}
+    # now every candidate is completely stale (not just window-open)
+    mgr.sensor_seen['Wohnzimmer Luft'] = _iso_ago(7200)
     c2 = FakeClient()
     mgr.publish_remote_feed(c2)
-    assert dict(c2.published)['ems-esp/thermostat/hc1/remotetemp'] == '25.0'  # last good
+    assert dict(c2.published)['ems-esp/thermostat/hc1/remotetemp'] == '25.0'  # last good held
     assert mgr._remote_feed_issue(now) is not None     # and an alert is raised

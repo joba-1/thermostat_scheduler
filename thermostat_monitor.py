@@ -334,11 +334,19 @@ class Manager:
         return out
 
     def _remote_feed_select(self, now_ts):
-        """Pick the candidate with the HIGHEST temperature among those that have
-        both temp+humidity, aren't completely stale, and whose room has no open
-        window. Returns {sensor, room, temp, hum} or None if none qualify."""
+        """Pick the warmest fresh candidate to feed the pump's dew-point guard.
+
+        Among candidates with both temp+humidity that aren't completely stale,
+        prefer the warmest **window-closed** room (most representative of the
+        sealed-house dew load). If none of those are fresh, fall back to the
+        warmest **window-open** room: a current reading, even with a window open,
+        is better dew-point data than a stale last-good value. Only when nothing
+        fresh remains does this return None (caller then holds the last value and
+        alerts). The result carries `window_open` so the caller can flag the
+        degraded (open-window) feed.
+        """
         stale_after = self.remote_feed_cfg.get('stale_after', 1800)
-        best = None
+        best_closed = best_fresh = None
         for cand in self._remote_feed_candidates():
             st = self.sensor_state.get(cand['sensor'])
             if not isinstance(st, dict):
@@ -347,13 +355,15 @@ class Manager:
             if temp is None or hum is None:        # dew point needs both, same sensor
                 continue
             if now_ts - self._effective_seen(self.sensor_seen.get(cand['sensor'])) > stale_after:
-                continue                            # completely stale
-            if cand.get('room') and self._room_window_open(cand['room']):
-                continue                            # window open -> not representative
-            if best is None or temp > best['temp']:
-                best = {'sensor': cand['sensor'], 'room': cand.get('room'),
-                        'temp': temp, 'hum': hum}
-        return best
+                continue                            # completely stale -> never use
+            win = bool(cand.get('room') and self._room_window_open(cand['room']))
+            entry = {'sensor': cand['sensor'], 'room': cand.get('room'),
+                     'temp': temp, 'hum': hum, 'window_open': win}
+            if best_fresh is None or temp > best_fresh['temp']:
+                best_fresh = entry
+            if not win and (best_closed is None or temp > best_closed['temp']):
+                best_closed = entry
+        return best_closed or best_fresh
 
     def publish_remote_feed(self, client):
         """Publish the warmest eligible room's temp+humidity to the heat pump.
@@ -380,8 +390,10 @@ class Manager:
             temp, hum = self._remote_feed_last      # keep the pump fed with last good
         else:
             if sel['sensor'] != self._remote_feed_selected:
-                log.info("remote feed: source -> %s (%s, %.1f°C %s%%RH)",
-                         sel['sensor'], sel.get('room') or '?', sel['temp'], sel['hum'])
+                degraded = " [window open - no fresh closed room]" if sel.get('window_open') else ""
+                log.info("remote feed: source -> %s (%s, %.1f°C %s%%RH)%s",
+                         sel['sensor'], sel.get('room') or '?', sel['temp'], sel['hum'],
+                         degraded)
                 self._remote_feed_selected = sel['sensor']
             temp, hum = sel['temp'], sel['hum']
             self._remote_feed_last = (temp, hum)
@@ -393,9 +405,11 @@ class Manager:
             client.publish(rf['hum_topic'], str(hum), qos=1)
 
     def _remote_feed_issue(self, now_ts):
-        """Alert when NO candidate can feed a fresh, coherent temp+humidity (all
-        stale, window-open, or missing humidity). Dew-point protection then runs
-        on a stale value, so this is alert-severity, not a quiet note."""
+        """Alert when NO candidate can feed a fresh, coherent temp+humidity (every
+        candidate is completely stale or reports no humidity — a fresh window-open
+        room is still used, so an open window alone no longer triggers this).
+        Dew-point protection then runs on a stale value, so this is alert-severity,
+        not a quiet note."""
         if not self._remote_feed_candidates():
             return None
         if self._remote_feed_select(now_ts) is not None:
@@ -403,8 +417,8 @@ class Manager:
         return make_issue(
             'remotefeed:stale', 'remote_feed_stale', 'heat-pump remote feed',
             "no fresh room temp+humidity to feed the pump (every candidate is "
-            "stale, has an open window, or reports no humidity); dew-point "
-            "protection is running on a stale value")
+            "completely stale or reports no humidity); dew-point protection is "
+            "running on a stale value")
 
     # ---- evaluation --------------------------------------------------
     def heatpump_state(self):
