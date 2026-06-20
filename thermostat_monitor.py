@@ -113,6 +113,15 @@ class Manager:
         # cooling control bookkeeping: thermostat name -> last applied mode
         self.applied_mode = {}
 
+        # window -> TRV control. window_off: rooms WE switched off because a
+        # window is open (room -> iso ts), persisted so a restart keeps the latch
+        # and only restores rooms we closed (never a user's manual off).
+        self.window_cfg = cfg.get('window_control', {}) or {}
+        self.window_off = {}
+        self.window_rooms = defaultdict(list)   # window sensor name -> [rooms]
+        self._win_timers = {}                   # room -> threading.Timer (debounce)
+        self._win_lock = threading.Lock()
+
         # Persisted device/sensor state so a restart starts with the last known
         # readings instead of a cold blank slate (no '?'/never in reports).
         self.device_state_file = os.path.expanduser(
@@ -135,6 +144,7 @@ class Manager:
                 self._register_sensor(temp, 'temperature')
             for w in sensors.get('windows') or []:
                 self.room_windows[name].append(w)
+                self.window_rooms[w].append(name)
                 self._register_sensor(w, 'window')
             for leak in sensors.get('leak') or []:
                 self._register_sensor(leak, 'leak')
@@ -179,6 +189,9 @@ class Manager:
                 self.sensor_seen[name] = data.get('sensor_seen', {}).get(name)
         self.hp_boiler = data.get('hp_boiler', self.hp_boiler)
         self.hp_thermostat = data.get('hp_thermostat', self.hp_thermostat)
+        # only keep window-off latches for rooms still in config
+        self.window_off = {r: ts for r, ts in (data.get('window_off') or {}).items()
+                           if r in self.thermostats}
         log.info("restored device state from %s", self.device_state_file)
 
     def _save_device_state(self):
@@ -190,6 +203,7 @@ class Manager:
             'sensor_state': self.sensor_state,
             'hp_boiler': self.hp_boiler,
             'hp_thermostat': self.hp_thermostat,
+            'window_off': self.window_off,
         }
         try:
             os.makedirs(os.path.dirname(self.device_state_file), exist_ok=True)
@@ -223,6 +237,18 @@ class Manager:
         if rf.get('enabled') and rf.get('control_topic') and rf.get('control_value'):
             client.publish(rf['control_topic'], str(rf['control_value']), qos=1)
             log.info("remote feed: sent %s=%s", rf['control_topic'], rf['control_value'])
+        # The monitor is the sole window controller: turn off each TRV's own
+        # window detection so the two don't fight. Idempotent, once per connect.
+        if self.window_cfg.get('enabled') and self.window_cfg.get('disable_builtin', True):
+            n = 0
+            for name, item in self.thermostats.items():
+                off = self.thermostat_types.get(item.get('type'), {}).get('builtin_window_off')
+                if isinstance(off, dict) and off:
+                    client.publish(f"{self.base}/{device_topic_name(name)}/set",
+                                   json.dumps(off), qos=1)
+                    n += 1
+            if n:
+                log.info("window-control: disabled built-in window detection on %d TRVs", n)
 
     def on_message(self, client, userdata, msg):
         t = msg.topic
@@ -261,6 +287,8 @@ class Manager:
         if sensor:
             self.sensor_seen[sensor] = iso_now()
             self.sensor_state[sensor] = self._safe_json(payload)
+            if self.sensor_kind.get(sensor) == 'window':
+                self._on_window_event(sensor, client)
 
     @staticmethod
     def _safe_json(payload):
@@ -489,6 +517,98 @@ class Manager:
             return {'temperature': st.get('local_temperature')}
         return None
 
+    # ---- window -> TRV control ---------------------------------------
+    def _room_window_open(self, room):
+        return any(sensors_mod.window_open(self.sensor_state.get(w))
+                   for w in self.room_windows.get(room, []))
+
+    def _window_debounce(self, room, opening):
+        wc = self.thermostats.get(room, {}).get('window') or {}
+        if 'debounce' in wc:
+            return wc['debounce']
+        return self.window_cfg.get('open_debounce' if opening else 'close_debounce', 5)
+
+    def _humidity_guard_ok(self, room):
+        """Rooms with a humidity_guard only ventilate (switch off) when dry
+        enough. If the guard sensor has no reading, ventilation is skipped — the
+        room keeps heating (matches the HA laundry-room behaviour)."""
+        guard = (self.thermostats.get(room, {}).get('window') or {}).get('humidity_guard')
+        if not isinstance(guard, dict):
+            return True
+        st = self.sensor_state.get(guard.get('sensor'))
+        hum = st.get('humidity') if isinstance(st, dict) else None
+        if hum is None:
+            return False
+        return hum < guard.get('below', 50)
+
+    def _on_window_event(self, sensor, client):
+        """A contact sensor changed: (re)arm the debounce timer for its room(s)."""
+        if not self.window_cfg.get('enabled'):
+            return
+        for room in self.window_rooms.get(sensor, []):
+            opening = self._room_window_open(room)
+            delay = self._window_debounce(room, opening)
+            with self._win_lock:
+                old = self._win_timers.pop(room, None)
+                if old:
+                    old.cancel()
+                timer = threading.Timer(delay, self._apply_window_control,
+                                        args=(room, client))
+                timer.daemon = True
+                self._win_timers[room] = timer
+                timer.start()
+
+    def _apply_window_control(self, room, client):
+        """Fired after the debounce: switch the room's TRV off (window open) or
+        restore its intended state (window closed), honouring manual override and
+        the 'only restore rooms we closed' latch."""
+        with self._win_lock:
+            self._win_timers.pop(room, None)
+        if not self.window_cfg.get('enabled'):
+            return
+        act = self.window_cfg.get('act', True)
+        item = self.thermostats.get(room)
+        if not item:
+            return
+        type_cfg = self.thermostat_types.get(item.get('type'), {})
+        reported = self.last_state.get(room)
+        any_open = self._room_window_open(room)
+
+        if cooling.is_manual_override(type_cfg, reported):
+            log.info("window-control %s: window=%s — skip (manual override)",
+                     room, "open" if any_open else "closed")
+            return
+
+        if any_open:
+            if room in self.window_off and isinstance(reported, dict) \
+                    and cooling.is_off(reported):
+                return  # already handled and confirmed off
+            if not self._humidity_guard_ok(room):
+                log.info("window-control %s: window open but humidity guard blocks "
+                         "ventilation — leaving heating on", room)
+                return
+            topic = f"{self.base}/{device_topic_name(room)}/set"
+            log.info("window-control %s: window OPEN -> system_mode off%s",
+                     room, "" if act else " (act=false, not sent)")
+            if act and client is not None:
+                client.publish(topic, json.dumps({'system_mode': 'off'}), qos=1)
+            self.window_off[room] = iso_now()
+            self._save_device_state()
+        else:
+            if room not in self.window_off:
+                return  # we didn't turn it off — leave whatever state it's in
+            mode = cooling.desired_mode(self.season_cfg, self.heatpump_state())
+            payload, topic, _ = cooling.build_intended_payload(
+                room, item, self.thermostat_types, self.mqtt_cfg, mode, None)
+            if mode == 'cooling':
+                payload.setdefault('system_mode', 'heat')  # ensure the valve turns on
+            log.info("window-control %s: window CLOSED -> restore (%s)%s",
+                     room, mode, "" if act else " (act=false, not sent)")
+            if act and client is not None:
+                client.publish(topic, json.dumps(payload), qos=1)
+            self.window_off.pop(room, None)
+            self._save_device_state()
+
     def _temp_improving(self, name, setpoint, mode):
         """True if the room is closing the gap to `setpoint` fast enough, or
         there isn't yet enough history to judge (e.g. just after a change).
@@ -605,6 +725,11 @@ class Manager:
             want = "OPEN fully" if mode == 'cooling' else "normal heating"
             manual_line = f"{want}: " + ", ".join(self.manual_thermostats)
 
+        window_line = None
+        if self.window_off:
+            window_line = ", ".join(f"{r} ({self._age(ts)})"
+                                    for r, ts in sorted(self.window_off.items()))
+
         thermo_bat_limit = self.alerts_cfg.get('battery_limit', 20)
         thermo_rows, thermo_styles = [], []
         for name, item in self.thermostats.items():
@@ -616,9 +741,15 @@ class Manager:
             temp = temp_state.get('temperature') if isinstance(temp_state, dict) else None
             state = (st.get('preset') or st.get('system_mode')
                      or st.get('running_state'))
+            if not manual and name in self.window_off:
+                state_cell = "off (window)"
+            elif manual:
+                state_cell = "MANUAL"
+            else:
+                state_cell = self._fmt(state)
             thermo_rows.append([
                 name,
-                ("MANUAL" if manual else self._fmt(state)),
+                state_cell,
                 self._fmt(sp, "°C"),
                 self._fmt(temp, "°C"),
                 self._fmt(st.get('battery'), "%"),
@@ -678,6 +809,7 @@ class Manager:
             'when': time.strftime('%a %Y-%m-%d %H:%M', now_lt),
             'overall': overall, 'mode': mode,
             'hp_line': hp_line, 'manual_line': manual_line,
+            'window_line': window_line,
             'thermo': {'headers': ["room", "state", "set", "temp", "bat", "seen"],
                        'rows': thermo_rows, 'styles': thermo_styles},
             'sensors': ({'headers': ["sensor", "kind", "value", "bat", "seen"],
@@ -710,6 +842,8 @@ class Manager:
             lines.append(f"  Heatpump: {d['hp_line']}")
         if d['manual_line']:
             lines.append(f"  Manual valves -> {d['manual_line']}")
+        if d.get('window_line'):
+            lines.append(f"  Off (window open) -> {d['window_line']}")
         lines += ["", "  Thermostats"]
         lines += Manager._table(d['thermo']['headers'], d['thermo']['rows'])
         if d['sensors']:
@@ -767,6 +901,10 @@ class Manager:
         if d['manual_line']:
             p.append('<tr><td style="padding-right:12px;color:#777;'
                      f'vertical-align:top">Manual valves</td><td>{esc(d["manual_line"])}'
+                     '</td></tr>')
+        if d.get('window_line'):
+            p.append('<tr><td style="padding-right:12px;color:#777;'
+                     f'vertical-align:top">Off (window open)</td><td>{esc(d["window_line"])}'
                      '</td></tr>')
         p.append('</tbody></table>')
         p.append('<h3 style="font-size:15px;margin:14px 0 2px">Thermostats</h3>')

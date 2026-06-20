@@ -88,6 +88,17 @@ sensors:
   battery_limit: 20
   unseen_interval: 21600       # 5 h quiet is common for battery sensors; flag at 6 h
 
+# Window/door -> TRV control. Open a room's contact -> switch its TRV off; close
+# it -> restore the intended (season-aware) state. Only rooms the monitor itself
+# switched off are restored, so a user's manual off is never overridden; manual-
+# override rooms are skipped. Per-room overrides under thermostats: window: {...}.
+window_control:
+  enabled: true
+  act: true                    # false = detect + log + show in status, don't publish
+  open_debounce: 5             # s a window must stay open before switching off
+  close_debounce: 5            # s closed before restoring
+  disable_builtin: true        # on connect, turn off each TRV's own window detection
+
 # Dumb / manual radiator valves the manager cannot control. On every
 # heating<->cooling change it mails a reminder to open them (cooling) or set
 # them back to normal (heating).
@@ -104,12 +115,15 @@ thermostat_types:
     cooling_open: {preset: comfort, comfort_temperature: 34}
     cooling_restore: {preset: schedule}
     manual_marker: {field: preset, equals: manual}
+    builtin_window_off: {window_detection: "OFF"}   # disabled so the monitor drives
   TRVZB:
     schedule_mode: {system_mode: auto, temperature_accuracy: -0.6}
     schedule_prefix: weekly_schedule
     cooling_open: {system_mode: heat, occupied_heating_setpoint: 34}
     cooling_restore: {system_mode: auto}
     manual_marker: {field: system_mode, equals: heat}
+    builtin_window_off: {open_window: "OFF"}
+  # AVATTO ME168/ME167 have no built-in window detection -> no builtin_window_off.
 
 thermostats:
   Wohnzimmer:
@@ -124,6 +138,9 @@ thermostats:
       temperature: "Wohnzimmer Luft"   # zigbee2mqtt friendly name of a temp sensor
       windows: ["Wohnzimmer Fenster"]  # contact sensor friendly names
       leak: []                          # optional water-leak sensors
+    window:                             # optional per-room window-control overrides
+      debounce: 5                       # override open/close debounce (s)
+      # humidity_guard: {sensor: "Wohnzimmer Luft", below: 50}  # only ventilate when dry
 
 # Sensors not tied to a heated room (still battery/life-sign monitored):
 # extra_sensors:

@@ -63,6 +63,29 @@ The manager mails you (low-noise):
 Window open while a room is cold/hot is reported as info, not an alert — it
 explains the deviation.
 
+## Window/door control
+
+When a room's contact sensor opens, the manager switches that room's TRV **off**;
+when it closes, it restores the room's intended state (season-aware: in cooling it
+re-opens the valve, in heating it restores the weekly schedule). This replaces the
+old Home Assistant "lüften/heizen" automations — control now lives here.
+
+- Only rooms the manager itself switched off are restored, so a TRV you turned
+  **off by hand** stays off, and a room in **manual override** is left untouched.
+- A short debounce (`window_control.open_debounce`/`close_debounce`, default 5 s;
+  2 s for the shower) avoids reacting to a brief open/close.
+- The laundry room only ventilates when it is dry (`humidity_guard`): if it's
+  humid (or the humidity sensor is silent) the heating stays on.
+- Each TRV's own built-in window detection is disabled on connect so the two
+  don't fight (`window_control.disable_builtin`).
+- Every decision is logged (`journalctl -u thermostat_monitor`), and the status
+  report lists rooms currently **Off (window open)** and shows `off (window)` in
+  the thermostat's state column.
+- Kill switch: `window_control.act: false` keeps detecting/logging/status without
+  touching any valve; `enabled: false` turns the feature off.
+
+Rooms without a contact sensor (e.g. Julians, Wohnzimmer) are not window-controlled.
+
 ## Cooling
 
 When `season.mode: auto` and the heat pump reports cooling (`coolingon: on`),

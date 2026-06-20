@@ -97,6 +97,19 @@ sensors:
                               # 5 h quiet is common, so don't flag until 6 h
 
 
+# --- Window/door -> TRV control (moved here from Home Assistant) ---
+# When a room's contact sensor opens, switch that room's TRV off; when it closes,
+# restore the room's intended state (season-aware: cooling -> open, heating ->
+# schedule). Only rooms the monitor itself switched off are restored, so a user's
+# manual off is never overridden; manual-override rooms are left untouched.
+window_control:
+  enabled: true
+  act: true                   # false = detect + log + show in status, but don't publish
+  open_debounce: 5            # seconds a window must stay open before switching off
+  close_debounce: 5           # seconds closed before restoring
+  disable_builtin: true       # on connect, turn off each TRV's own window detection
+
+
 # Dumb / manual radiator valves that cannot be controlled remotely. The manager
 # can't actuate these, so on every heating<->cooling change it mails a reminder
 # to OPEN them fully (cooling) or set them back to normal (heating).
@@ -121,6 +134,8 @@ thermostat_types:
     manual_marker:            # end user took control
       field: preset
       equals: manual
+    builtin_window_off:       # disable the TRV's own window detection (monitor drives)
+      window_detection: "OFF"
   TR-M3Z:
     schedule_mode:
       system_mode: heat
@@ -133,6 +148,8 @@ thermostat_types:
     manual_marker:
       field: preset
       equals: manual
+    builtin_window_off:
+      window_detection: "OFF"
   ME168_1:
     schedule_mode:
       system_mode: auto
@@ -168,6 +185,9 @@ thermostat_types:
     manual_marker:
       field: system_mode
       equals: heat
+    builtin_window_off:
+      open_window: "OFF"
+  # ME168_1 / ME167 (AVATTO) have no built-in window detection -> nothing to disable.
 
 
 thermostats:
@@ -205,6 +225,8 @@ thermostats:
     type: ME168_1
     sensors:
       windows: ["Dusche Fenster"]
+    window:
+      debounce: 2             # HA used a 2 s debounce for the shower window
   Esszimmer:
     day_hour: "05:00"
     day_temperature: 21.0
@@ -237,6 +259,13 @@ thermostats:
       temperature: "Waschküche Luft"
       windows: ["Waschküche Fenster"]
       leak: ["Waschküche Wasser"]
+    window:
+      # HA only switched the laundry-room heating off for ventilation when it was
+      # already dry; if the humidity sensor has no reading, ventilation is skipped
+      # (heating stays on to keep drying).
+      humidity_guard:
+        sensor: "Waschküche Luft"
+        below: 50
   "WC OG":
     day_hour: "05:00"
     day_temperature: 19.5

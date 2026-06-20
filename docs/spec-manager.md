@@ -51,6 +51,31 @@ mosquitto_pub -t ems-esp/thermostat/hc1/remotetemp -m 26.5     # every ~minute
 mosquitto_pub -t ems-esp/thermostat/hc1/remotehum  -m 53       # every ~minute
 ```
 
+## Window/door → TRV control (`window_control`)
+
+Replaces the former Home Assistant "lüften/heizen" automations; the manager is
+now the **sole** window controller. Event-driven, not on the eval timer:
+
+- `on_message` for a `window`-kind sensor calls `_on_window_event`, which (re)arms
+  a per-room `threading.Timer` debounce (`open_debounce`/`close_debounce`, default
+  5 s; per-room `window.debounce`, e.g. 2 s for Dusche). A flap that reverts within
+  the debounce is a no-op (state re-read at fire time).
+- `_apply_window_control(room)`:
+  - skip if the TRV is in **manual override**;
+  - **open** → publish `{system_mode: off}` (subject to a per-room `humidity_guard`:
+    only ventilate when humidity < threshold; unknown humidity → keep heating),
+    and latch `window_off[room] = now`;
+  - **closed** → only if `room in window_off` (a room *we* closed), restore the
+    season-aware intended payload via `cooling.build_intended_payload(..., reported=None)`
+    (cooling adds `system_mode: heat` so an off valve actually turns on), then clear
+    the latch. A user's manual off is never auto-restored.
+- `window_control.act: false` does everything except publish (detect + log + status).
+- `on_connect` publishes each type's `builtin_window_off` once
+  (`window_detection: OFF` / `open_window: OFF`) so the TRV's own detection doesn't
+  fight the manager (`disable_builtin`). AVATTO types have none.
+- `window_off` is persisted in the device-state file (survives restarts); the status
+  report shows an **Off (window open)** line and `off (window)` in the state column.
+
 ## State
 
 - `last_seen` / `last_state` (thermostats, keyed by room) and `sensor_seen` /
