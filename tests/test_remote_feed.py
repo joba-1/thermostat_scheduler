@@ -47,6 +47,7 @@ def test_feed_sensor_is_registered_and_subscribed():
 
 def test_publish_remote_feed_sends_temp_and_humidity():
     mgr = make_mgr()
+    mgr.sensor_seen['Wohnzimmer Luft'] = tm.iso_now()
     mgr.sensor_state['Wohnzimmer Luft'] = {'temperature': 26.5, 'humidity': 53}
     c = FakeClient()
     mgr.publish_remote_feed(c)
@@ -57,6 +58,7 @@ def test_publish_remote_feed_sends_temp_and_humidity():
 
 def test_temp_offset_lowers_fed_temperature_only():
     mgr = make_mgr(temp_offset=-5)
+    mgr.sensor_seen['Wohnzimmer Luft'] = tm.iso_now()
     mgr.sensor_state['Wohnzimmer Luft'] = {'temperature': 28.3, 'humidity': 50}
     c = FakeClient()
     mgr.publish_remote_feed(c)
@@ -144,6 +146,8 @@ def _multi_mgr():
 
 def test_highest_temp_candidate_is_selected():
     mgr = _multi_mgr()
+    mgr.sensor_seen['Wohnzimmer Luft'] = tm.iso_now()
+    mgr.sensor_seen['Arbeitszimmer Bewegungsmelder'] = tm.iso_now()
     mgr.sensor_state['Wohnzimmer Luft'] = {'temperature': 25.1, 'humidity': 52}
     mgr.sensor_state['Arbeitszimmer Bewegungsmelder'] = {'temperature': 28.5, 'humidity': 46}
     c = FakeClient()
@@ -153,8 +157,10 @@ def test_highest_temp_candidate_is_selected():
     assert topics['ems-esp/thermostat/hc1/remotehum'] == '46'      # its own humidity
 
 
-def test_window_open_candidate_is_excluded():
+def test_window_closed_preferred_over_warmer_open_room():
     mgr = _multi_mgr()
+    mgr.sensor_seen['Wohnzimmer Luft'] = tm.iso_now()
+    mgr.sensor_seen['Arbeitszimmer Bewegungsmelder'] = tm.iso_now()
     mgr.sensor_state['Wohnzimmer Luft'] = {'temperature': 25.1, 'humidity': 52}
     mgr.sensor_state['Arbeitszimmer Bewegungsmelder'] = {'temperature': 28.5, 'humidity': 46}
     mgr.sensor_state['Arbeitszimmer Fenster'] = {'contact': False}   # window OPEN

@@ -354,8 +354,12 @@ class Manager:
             temp, hum = st.get('temperature'), st.get('humidity')
             if temp is None or hum is None:        # dew point needs both, same sensor
                 continue
-            if now_ts - self._effective_seen(self.sensor_seen.get(cand['sensor'])) > stale_after:
-                continue                            # completely stale -> never use
+            # Use the *real* last-seen here, not the alert grace (`_effective_seen`):
+            # the dew-point guard must run on genuinely recent data, never on a
+            # 12 h-old value that only looks fresh because we just restarted.
+            seen = parse_iso(self.sensor_seen.get(cand['sensor']))
+            if seen is None or now_ts - seen > stale_after:
+                continue                            # no real recent reading -> never use
             win = bool(cand.get('room') and self._room_window_open(cand['room']))
             entry = {'sensor': cand['sensor'], 'room': cand.get('room'),
                      'temp': temp, 'hum': hum, 'window_open': win}
