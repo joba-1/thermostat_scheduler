@@ -104,6 +104,35 @@ def test_status_report_contains_overview():
     assert '8%' in report and '—' in report
 
 
+def test_state_uses_our_vocabulary_and_uniform_setpoint_in_header():
+    cfg = {k: (dict(v) if isinstance(v, dict) else v) for k, v in CFG.items()}
+    cfg['season'] = {'mode': 'cooling', 'cool_target': 21}
+    cfg['device_state_file'] = tempfile.mkdtemp() + '/devices.json'
+    mgr = tm.Manager(cfg)
+    # cooling-open signature -> classified as our 'open', not the raw 'comfort'
+    mgr.last_state['Bad OG'] = {'preset': 'comfort', 'comfort_temperature': 34}
+    d = mgr._report_data()
+    assert d['set_line'] == '21°C'                 # lifted to a header line
+    assert 'set' not in d['thermo']['headers']      # ...and dropped as a column
+    assert d['thermo']['rows'][0][1] == 'open'      # our state, not 'comfort'
+    report = mgr.status_report()
+    assert 'Set point: 21°C (all rooms)' in report
+
+
+def test_setpoint_stays_a_column_when_rooms_differ():
+    cfg = {k: (dict(v) if isinstance(v, dict) else v) for k, v in CFG.items()}
+    cfg['thermostats'] = dict(cfg['thermostats'])
+    cfg['thermostats']['WC OG'] = {
+        'day_hour': '05:00', 'day_temperature': 18.0, 'night_hour': '23:00',
+        'night_temperature': 16.0, 'type': 'VNTH-T2_v2',
+        'sensors': {'temperature': 'WC OG Luft'}}
+    cfg['device_state_file'] = tempfile.mkdtemp() + '/devices.json'
+    mgr = tm.Manager(cfg)   # heating: per-room schedule points differ
+    d = mgr._report_data()
+    assert d['set_line'] is None
+    assert 'set' in d['thermo']['headers']
+
+
 def test_sensor_value_shows_humidity():
     mgr = make_mgr()
     mgr.sensor_state['Bad OG Luft'] = {'temperature': 22.3, 'humidity': 55}

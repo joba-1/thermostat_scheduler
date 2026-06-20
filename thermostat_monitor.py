@@ -782,30 +782,20 @@ class Manager:
                                     for r, ts in sorted(self.window_off.items()))
 
         thermo_bat_limit = self.alerts_cfg.get('battery_limit', 20)
-        thermo_rows, thermo_styles = [], []
+        records, setpoints = [], []
         for name, item in self.thermostats.items():
             st = self.last_state.get(name) or {}
             type_cfg = self.thermostat_types.get(item.get('type'), {})
-            manual = cooling.is_manual_override(type_cfg, st)
             sp = current_setpoint(item, now_lt, mode, self.season_cfg)
+            setpoints.append(sp)
             temp_state = self._room_temp_state(name)
             temp = temp_state.get('temperature') if isinstance(temp_state, dict) else None
-            state = (st.get('preset') or st.get('system_mode')
-                     or st.get('running_state'))
+            # Show *our* state vocabulary, not the device's raw mode fields.
             if name in self.window_off:
                 state_cell = "off (window)"   # we hold it off (latch wins over classify)
-            elif manual:
-                state_cell = "MANUAL"
             else:
-                state_cell = self._fmt(state)
-            thermo_rows.append([
-                name,
-                state_cell,
-                self._fmt(sp, "°C"),
-                self._fmt(temp, "°C"),
-                self._fmt(st.get('battery'), "%"),
-                self._age(self.last_seen.get(name)),
-            ])
+                state_cell = self._OUR_STATE.get(
+                    cooling.classify_state(type_cfg, st), "—")
             style = {}
             tol = item.get('tolerance', self.cfg.get('default_tolerance', 1.5))
             if isinstance(temp, (int, float)) and isinstance(sp, (int, float)):
@@ -817,7 +807,26 @@ class Manager:
                     style['temp'] = self._CSS_COLD
             if self._battery_low(st, thermo_bat_limit):
                 style['bat'] = self._CSS_BAD
-            thermo_styles.append(style)
+            records.append((name, state_cell, sp, temp,
+                            st.get('battery'), self._age(self.last_seen.get(name)),
+                            style))
+
+        # The set point is the same for every room (cooling-open, or a single
+        # heating program point); when uniform, lift it to a header line instead
+        # of repeating one column value down the table.
+        seen_sp = [s for s in setpoints if s is not None]
+        uniform_sp = bool(seen_sp) and len(set(seen_sp)) == 1
+        set_line = self._fmt(seen_sp[0], "°C") if uniform_sp else None
+        if uniform_sp:
+            thermo_headers = ["room", "state", "temp", "bat", "seen"]
+            thermo_rows = [[n, sc, self._fmt(t, "°C"), self._fmt(b, "%"), age]
+                           for (n, sc, sp, t, b, age, _) in records]
+        else:
+            thermo_headers = ["room", "state", "set", "temp", "bat", "seen"]
+            thermo_rows = [[n, sc, self._fmt(sp, "°C"), self._fmt(t, "°C"),
+                            self._fmt(b, "%"), age]
+                           for (n, sc, sp, t, b, age, _) in records]
+        thermo_styles = [r[6] for r in records]
 
         sensor_rows = sensor_styles = None
         if self.sensor_kind:
@@ -860,14 +869,18 @@ class Manager:
             'when': time.strftime('%a %Y-%m-%d %H:%M', now_lt),
             'overall': overall, 'mode': mode,
             'hp_line': hp_line, 'manual_line': manual_line,
-            'window_line': window_line,
-            'thermo': {'headers': ["room", "state", "set", "temp", "bat", "seen"],
+            'window_line': window_line, 'set_line': set_line,
+            'thermo': {'headers': thermo_headers,
                        'rows': thermo_rows, 'styles': thermo_styles},
             'sensors': ({'headers': ["sensor", "kind", "value", "bat", "seen"],
                          'rows': sensor_rows, 'styles': sensor_styles}
                         if sensor_rows is not None else None),
             'issues': issue_list,
         }
+
+    # our state vocabulary (not the device's raw mode fields) for the report
+    _OUR_STATE = {'open': 'open', 'off': 'off', 'schedule': 'schedule',
+                  'manual': 'MANUAL', 'unknown': '—'}
 
     # cell highlight styles for the HTML report
     _CSS_BAD = 'color:#b00020;font-weight:bold'      # low battery / leak
@@ -895,6 +908,8 @@ class Manager:
             lines.append(f"  Manual valves -> {d['manual_line']}")
         if d.get('window_line'):
             lines.append(f"  Off (window open) -> {d['window_line']}")
+        if d.get('set_line'):
+            lines.append(f"  Set point: {d['set_line']} (all rooms)")
         lines += ["", "  Thermostats"]
         lines += Manager._table(d['thermo']['headers'], d['thermo']['rows'])
         if d['sensors']:
@@ -957,6 +972,10 @@ class Manager:
             p.append('<tr><td style="padding-right:12px;color:#777;'
                      f'vertical-align:top">Off (window open)</td><td>{esc(d["window_line"])}'
                      '</td></tr>')
+        if d.get('set_line'):
+            p.append('<tr><td style="padding-right:12px;color:#777">Set point</td>'
+                     f'<td>{esc(d["set_line"])} <span style="color:#777">'
+                     '(all rooms)</span></td></tr>')
         p.append('</tbody></table>')
         p.append('<h3 style="font-size:15px;margin:14px 0 2px">Thermostats</h3>')
         p.append(Manager._html_table(d['thermo']['headers'], d['thermo']['rows'],
