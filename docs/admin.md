@@ -11,6 +11,43 @@ sudo systemctl enable --now thermostat_monitor.service
 journalctl -u thermostat_monitor.service -f
 ```
 
+## Deployment topology (important)
+
+The live daemon does **not** run from the working copy you edit in. On job6 it runs
+as the **`thermostat`** service user from a **separate checkout at
+`/home/thermostat/thermostat_scheduler`** (its own venv), per the *installed* unit
+at `/etc/systemd/system/thermostat_monitor.service` (`User=thermostat`). The
+`thermostat_monitor.service` file in the repo is only a template and may show a
+different user/path — the installed unit wins.
+
+So **deploy = sync the code into `/home/thermostat/thermostat_scheduler`, then
+restart** — a restart alone reloads whatever is already there. `install.sh`
+performs the sync; after it (or any manual copy) run:
+
+```bash
+sudo systemctl restart thermostat_monitor.service
+```
+
+To confirm a change is actually live, diff the deployed file against your commit
+(`sudo diff /home/thermostat/thermostat_scheduler/thermostat_monitor.py <repo>/thermostat_monitor.py`).
+
+### State files are per-user
+
+Persisted device state lives under the service user's home:
+`/home/thermostat/.local/state/thermostat_manager/devices.json`
+(`last_state` = thermostats, `sensor_state` = sensors). A one-shot report run as a
+*different* user reads an empty/non-existent state file and shows all sensors as
+"never". Always run reports **as the service user, from its checkout**:
+
+```bash
+sudo -u thermostat bash -lc \
+  'source /home/thermostat/thermostat_scheduler/venv/bin/activate && \
+   exec python /home/thermostat/thermostat_scheduler/thermostat_monitor.py \
+     --config /home/thermostat/thermostat_scheduler/config.yaml --report --mail'
+```
+
+(`--report` prints a snapshot; add `--mail` to also send it.)
+
 ## Configuration
 
 All tunables live in `config.yaml`; `config.example.yaml` is the annotated
