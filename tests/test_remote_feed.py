@@ -55,6 +55,16 @@ def test_publish_remote_feed_sends_temp_and_humidity():
     assert topics['ems-esp/thermostat/hc1/remotehum'] == '53'
 
 
+def test_temp_offset_lowers_fed_temperature_only():
+    mgr = make_mgr(temp_offset=-5)
+    mgr.sensor_state['Wohnzimmer Luft'] = {'temperature': 28.3, 'humidity': 50}
+    c = FakeClient()
+    mgr.publish_remote_feed(c)
+    topics = dict(c.published)
+    assert topics['ems-esp/thermostat/hc1/remotetemp'] == '23.3'   # 28.3 - 5
+    assert topics['ems-esp/thermostat/hc1/remotehum'] == '50'      # humidity unchanged
+
+
 def test_temp_only_sensor_is_not_eligible():
     # dew point needs temp AND humidity from the same sensor -> temp-only is skipped
     mgr = make_mgr()

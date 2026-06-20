@@ -84,6 +84,9 @@ heatpump:
     hum_topic: ems-esp/thermostat/hc1/remotehum
     interval: 60                # seconds between republishes of the selected value
     stale_after: 3600           # a candidate older than this (1 h) is "completely stale" -> excluded
+    temp_offset: -5             # K added to the fed temperature: sensors sit high, air at
+                                # radiator/floor level is ~5K cooler. Lowers the pump's dew
+                                # floor -> colder flow (down to the hpminflowtemp=18 floor).
 
 
 # --- Season / cooling control ---

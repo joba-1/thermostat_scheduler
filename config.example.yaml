@@ -80,6 +80,10 @@ heatpump:
     hum_topic: ems-esp/thermostat/hc1/remotehum
     interval: 60                 # seconds between republishes of the selected value
     stale_after: 3600            # a candidate older than this (1 h) is excluded as "completely stale"
+    temp_offset: 0               # K added to the fed temperature (calibration). Comfort/dew
+                                 # sensors often sit high; air near the radiators is cooler, so a
+                                 # negative offset feeds a more representative temp and lowers the
+                                 # pump's dew-point floor (colder flow, bounded by hpminflowtemp).
 
 season:
   mode: auto                   # auto | heating | cooling

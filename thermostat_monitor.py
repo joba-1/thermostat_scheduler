@@ -361,6 +361,14 @@ class Manager:
         temp and humidity always come from the same sensor (coherent dew point).
         If no candidate qualifies we republish the last good value so the pump
         never loses its reading; the staleness is surfaced as an alert.
+
+        `temp_offset` (K, default 0) is added to the fed temperature before
+        publishing. The dew/comfort sensors sit high in the room while the
+        radiators (and the coldest surfaces) are lower and cooler, so a negative
+        offset feeds a temperature closer to the floor-level air. Because the
+        pump derives its dew-point floor from the fed temp+humidity, a lower fed
+        temp lowers `dewtemperature`, allowing a colder flow (down to the hard
+        `hpminflowtemp` floor).
         """
         rf = self.remote_feed_cfg
         if not rf.get('enabled') or client is None:
@@ -377,8 +385,10 @@ class Manager:
                 self._remote_feed_selected = sel['sensor']
             temp, hum = sel['temp'], sel['hum']
             self._remote_feed_last = (temp, hum)
-        if temp is not None and rf.get('temp_topic'):
-            client.publish(rf['temp_topic'], str(temp), qos=1)
+        offset = rf.get('temp_offset', 0) or 0
+        fed_temp = round(temp + offset, 1) if temp is not None else None
+        if fed_temp is not None and rf.get('temp_topic'):
+            client.publish(rf['temp_topic'], str(fed_temp), qos=1)
         if hum is not None and rf.get('hum_topic'):
             client.publish(rf['hum_topic'], str(hum), qos=1)
 
@@ -1315,8 +1325,10 @@ def main():
                 time.sleep(interval)
         threading.Thread(target=_feed_loop, daemon=True).start()
         cands = ", ".join(c['sensor'] for c in mgr._remote_feed_candidates())
-        log.info("remote feed: %d candidate(s) [%s], republishing warmest every %ds",
-                 len(mgr._remote_feed_candidates()), cands, interval)
+        offset = mgr.remote_feed_cfg.get('temp_offset', 0) or 0
+        off_note = f", temp_offset {offset:+g}K" if offset else ""
+        log.info("remote feed: %d candidate(s) [%s], republishing warmest every %ds%s",
+                 len(mgr._remote_feed_candidates()), cands, interval, off_note)
 
     try:
         # let initial retained/periodic messages arrive before first pass
