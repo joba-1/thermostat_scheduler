@@ -19,7 +19,8 @@ alerts:
   cooldown_hours: 24          # re-mail an ongoing issue at most this often
   digest_hour: 7             # send the daily digest of open issues at this local hour
   battery_limit: 20          # percent; below this -> battery_low
-  eval_interval: 300         # seconds between evaluation passes
+  eval_interval: 60          # seconds between evaluation passes (cheap, all in-memory;
+                             # matches the web page's 60s refresh so it shows fresh data)
   state_file: ~/.local/state/thermostat_manager/alerts.json
 
 
