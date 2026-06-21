@@ -1087,6 +1087,22 @@ class Manager:
                                 refresh=self.web_cfg.get('refresh', 60),
                                 link_rooms=True)
 
+    # Project logo (also attached to the ThermostatScheduler Trac page). Served at
+    # /logo.svg and shown in the web UI header + as favicon (coding standard §5).
+    _LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              'docs', 'thermostat.svg')
+    _logo_cache = None
+
+    @classmethod
+    def logo_svg(cls):
+        if cls._logo_cache is None:
+            try:
+                with open(cls._LOGO_PATH, encoding='utf-8') as f:
+                    cls._logo_cache = f.read()
+            except OSError:
+                cls._logo_cache = ''      # missing logo must never break the page
+        return cls._logo_cache
+
     @staticmethod
     def room_url(room, hours=history.DEFAULT_HOURS):
         return '/room?' + urllib.parse.urlencode({'name': room, 'hours': hours})
@@ -1118,10 +1134,12 @@ class Manager:
         p = ['<!doctype html><html lang="en"><head><meta charset="utf-8">',
              '<meta name="viewport" content="width=device-width,initial-scale=1">',
              f'<title>{esc(room)} history</title>',
+             '<link rel="icon" type="image/svg+xml" href="/logo.svg">',
              f'<style>{self._WEB_CSS}.toggles{{font-size:13px;margin:0 0 14px}}'
              '.toggles a{margin-right:10px}.toggles strong{margin-right:10px}'
              '.back{font-size:13px}</style></head><body><div class="wrap">',
-             f'<header><h1>{esc(room)}</h1>'
+             f'<header><img class="logo" src="/logo.svg" alt="">'
+             f'<h1>{esc(room)}</h1>'
              f'<span class="when">last {int(hours)}h</span></header>',
              f'<div class="toggles">range: {toggles} '
              f'&nbsp;·&nbsp; <a class="back" href="/">← all rooms</a></div>',
@@ -1138,7 +1156,8 @@ class Manager:
 body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
  background:#f4f5f7;color:#1f2329;line-height:1.45}
 .wrap{max-width:920px;margin:0 auto;padding:20px 16px 48px}
-header{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:4px}
+header{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:4px}
+header .logo{height:30px;width:30px;flex:0 0 auto}
 h1{font-size:22px;margin:0;font-weight:650}
 .when{color:#6b7280;font-size:13px}
 .pill{display:inline-block;padding:3px 12px;border-radius:999px;font-size:13px;
@@ -1201,10 +1220,12 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
         if refresh and refresh > 0:
             head.append(f'<meta http-equiv="refresh" content="{int(refresh)}">')
         head.append('<title>Thermostat status</title>')
+        head.append('<link rel="icon" type="image/svg+xml" href="/logo.svg">')
         head.append(f'<style>{cls._WEB_CSS}</style></head><body><div class="wrap">')
+        logo = '<img class="logo" src="/logo.svg" alt="">'
 
         if not d:
-            head.append('<header><h1>Thermostat status</h1></header>'
+            head.append(f'<header>{logo}<h1>Thermostat status</h1></header>'
                         '<div class="card">Starting up — no data yet. '
                         'This page refreshes automatically.</div>'
                         '</div></body></html>')
@@ -1212,7 +1233,7 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
 
         cls_pill = ('alert' if d['n_alert'] else 'note' if d['n_info'] else 'ok')
         p = head
-        p.append(f'<header><h1>Thermostat status</h1>'
+        p.append(f'<header>{logo}<h1>Thermostat status</h1>'
                  f'<span class="when">{esc(d["when"])}</span></header>')
         p.append(f'<div class="pill {cls_pill}">{esc(d["overall"])}</div>')
 
@@ -1317,6 +1338,15 @@ def start_web_server(mgr):
 
         def do_GET(self):
             parsed = urllib.parse.urlparse(self.path)
+            if parsed.path == '/logo.svg':
+                body = mgr.logo_svg().encode('utf-8')
+                self.send_response(200)
+                self.send_header('Content-Type', 'image/svg+xml; charset=utf-8')
+                self.send_header('Content-Length', str(len(body)))
+                self.send_header('Cache-Control', 'max-age=86400')
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if parsed.path == '/room':
                 qs = urllib.parse.parse_qs(parsed.query)
                 room = (qs.get('name') or [''])[0]

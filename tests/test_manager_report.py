@@ -152,6 +152,9 @@ def test_web_page_renders_full_document():
     assert 'class="pill' in page
     # the room's temperature links to its history chart
     assert 'href="/room?name=Bad+OG' in page
+    # project icon: favicon + header logo, served at /logo.svg (coding standard §5)
+    assert 'rel="icon"' in page and 'src="/logo.svg"' in page
+    assert mgr.logo_svg().lstrip().startswith('<?xml') or '<svg' in mgr.logo_svg()
 
 
 def test_room_page_has_chart_back_and_toggles(monkeypatch):
