@@ -292,6 +292,8 @@ thermostats:
     night_temperature: 20.5
     type: VNTH-T2_v2
     ieee: '0xa4c1388bb393c230'
+    sensors:
+      windows: [{ieee: '0xa4c1380eede748c6', name: "Balkon"}]   # added from HA area map
   Schlafzimmer:
     day_hour: "05:00"
     day_temperature: 19.5
