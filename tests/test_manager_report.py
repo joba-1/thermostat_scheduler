@@ -190,7 +190,7 @@ def test_web_page_renders_full_document():
     # after a snapshot is cached, the real page renders
     mgr._last_report = mgr._report_data()
     page = mgr.web_page()
-    assert '<title>Thermostat status' in page
+    assert '<title>Klima Status' in page
     assert 'Bad OG' in page and 'open' in page
     assert 'content="45"' in page          # honours the configured refresh
     assert 'class="pill' in page

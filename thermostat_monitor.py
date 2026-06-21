@@ -1235,7 +1235,7 @@ class Manager:
     # favicon + iOS home-screen icon + web-app title; shared by every page <head>
     _ICON_LINKS = ('<link rel="icon" type="image/svg+xml" href="/logo.svg">'
                    '<link rel="apple-touch-icon" href="/apple-touch-icon.png">'
-                   '<meta name="apple-mobile-web-app-title" content="Thermostat">'
+                   '<meta name="apple-mobile-web-app-title" content="Klima Status">'
                    '<meta name="apple-mobile-web-app-capable" content="yes">')
 
     @classmethod
@@ -1409,13 +1409,13 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
                 '<meta name="viewport" content="width=device-width,initial-scale=1">']
         if refresh and refresh > 0:
             head.append(f'<meta http-equiv="refresh" content="{int(refresh)}">')
-        head.append('<title>Thermostat status</title>')
+        head.append('<title>Klima Status</title>')
         head.append(cls._ICON_LINKS)
         head.append(f'<style>{cls._WEB_CSS}</style></head><body><div class="wrap">')
         logo = '<img class="logo" src="/logo.svg" alt="">'
 
         if not d:
-            head.append(f'<header>{logo}<h1>Thermostat status</h1></header>'
+            head.append(f'<header>{logo}<h1>Klima Status</h1></header>'
                         '<div class="card">Starting up — no data yet. '
                         'This page refreshes automatically.</div>'
                         '</div></body></html>')
@@ -1423,7 +1423,7 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
 
         cls_pill = ('alert' if d['n_alert'] else 'note' if d['n_info'] else 'ok')
         p = head
-        p.append(f'<header>{logo}<h1>Thermostat status</h1>'
+        p.append(f'<header>{logo}<h1>Klima Status</h1>'
                  f'<span class="when">{esc(d["when"])}</span></header>')
         p.append(f'<div class="pill {cls_pill}">{esc(d["overall"])}</div>')
 
