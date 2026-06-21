@@ -154,18 +154,27 @@ def test_state_uses_our_vocabulary_and_uniform_setpoint_in_header():
     assert 'Set point: 21°C (all rooms)' in report
 
 
-def test_setpoint_stays_a_column_when_rooms_differ():
+def test_per_room_setpoints_fold_when_rooms_differ():
     cfg = {k: (dict(v) if isinstance(v, dict) else v) for k, v in CFG.items()}
+    cfg['web'] = {'enabled': True}
     cfg['thermostats'] = dict(cfg['thermostats'])
     cfg['thermostats']['WC OG'] = {
         'day_hour': '05:00', 'day_temperature': 18.0, 'night_hour': '23:00',
         'night_temperature': 16.0, 'type': 'VNTH-T2_v2',
         'sensors': {'temperature': 'WC OG Luft'}}
     cfg['device_state_file'] = tempfile.mkdtemp() + '/devices.json'
-    mgr = tm.Manager(cfg)   # heating: per-room schedule points differ
+    mgr = tm.Manager(cfg)   # heating: per-room schedule points differ (Bad OG 21.5, WC OG 18)
     d = mgr._report_data()
+    # never a table column now; uniform line absent, range summary + per-room detail
+    assert 'set' not in d['thermo']['headers']
     assert d['set_line'] is None
-    assert 'set' in d['thermo']['headers']
+    assert d['set_head'] == '18–21.5°C'
+    assert ('WC OG', '18°C') in d['set_rows'] and ('Bad OG', '21.5°C') in d['set_rows']
+    # web: a collapsed fold; text/mail: a compact line
+    mgr._last_report = d
+    assert '<details class="fold"><summary><span class="k">Set point</span> 18–21.5°C' \
+        in mgr.web_page()
+    assert 'Set points (18–21.5°C):' in mgr.status_report()
 
 
 def test_web_page_renders_full_document():

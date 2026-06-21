@@ -1006,22 +1006,24 @@ class Manager:
                             st.get('battery'), self._age(self.last_seen.get(name)),
                             style))
 
-        # The set point is the same for every room (cooling-open, or a single
-        # heating program point); when uniform, lift it to a header line instead
-        # of repeating one column value down the table.
+        # Set points live in the overview, not as a table column: uniform (cooling's
+        # single open target) -> one summary line; per-room (heating's day/night
+        # schedule points) -> a collapsible fold (range summary + per-room detail).
+        thermo_headers = ["room", "state", "temp", "bat", "seen"]
+        thermo_rows = [[n, sc, self._fmt(t, "°C"), self._fmt(b, "%"), age]
+                       for (n, sc, sp, t, b, age, _) in records]
+        thermo_styles = [r[6] for r in records]
+
         seen_sp = [s for s in setpoints if s is not None]
         uniform_sp = bool(seen_sp) and len(set(seen_sp)) == 1
-        set_line = self._fmt(seen_sp[0], "°C") if uniform_sp else None
+        set_line = set_head = None
+        set_rows = []
         if uniform_sp:
-            thermo_headers = ["room", "state", "temp", "bat", "seen"]
-            thermo_rows = [[n, sc, self._fmt(t, "°C"), self._fmt(b, "%"), age]
-                           for (n, sc, sp, t, b, age, _) in records]
-        else:
-            thermo_headers = ["room", "state", "set", "temp", "bat", "seen"]
-            thermo_rows = [[n, sc, self._fmt(sp, "°C"), self._fmt(t, "°C"),
-                            self._fmt(b, "%"), age]
-                           for (n, sc, sp, t, b, age, _) in records]
-        thermo_styles = [r[6] for r in records]
+            set_line = self._fmt(seen_sp[0], "°C")
+        elif seen_sp:
+            set_head = f"{min(seen_sp):g}–{max(seen_sp):g}°C"
+            set_rows = [(n, self._fmt(sp, "°C")) for (n, sc, sp, t, b, age, _)
+                        in records if sp is not None]
 
         sensor_rows = sensor_styles = None
         if self.sensor_kind:
@@ -1070,7 +1072,8 @@ class Manager:
             'hp_line': hp_line, 'hp_head': hp_head, 'hp_rows': hp_rows,
             'manual_line': manual_line,
             'window_line': window_line, 'window_head': window_head,
-            'window_rows': window_rows, 'set_line': set_line,
+            'window_rows': window_rows,
+            'set_line': set_line, 'set_head': set_head, 'set_rows': set_rows,
             'thermo': {'headers': thermo_headers,
                        'rows': thermo_rows, 'styles': thermo_styles},
             'sensors': ({'headers': ["sensor", "value", "kind", "bat", "seen"],
@@ -1111,6 +1114,9 @@ class Manager:
             lines.append(f"  Off (window open) -> {d['window_line']}")
         if d.get('set_line'):
             lines.append(f"  Set point: {d['set_line']} (all rooms)")
+        elif d.get('set_head'):
+            lines.append(f"  Set points ({d['set_head']}): "
+                         + ", ".join(f"{r} {v}" for r, v in d['set_rows']))
         lines += ["", "  Thermostats"]
         lines += Manager._table(d['thermo']['headers'], d['thermo']['rows'])
         if d['sensors']:
@@ -1177,6 +1183,11 @@ class Manager:
             p.append('<tr><td style="padding-right:12px;color:#777">Set point</td>'
                      f'<td>{esc(d["set_line"])} <span style="color:#777">'
                      '(all rooms)</span></td></tr>')
+        elif d.get('set_head'):
+            detail = ", ".join(f"{r} {v}" for r, v in d['set_rows'])
+            p.append('<tr><td style="padding-right:12px;color:#777;vertical-align:top">'
+                     f'Set points</td><td>{esc(d["set_head"])} '
+                     f'<span style="color:#777">({esc(detail)})</span></td></tr>')
         p.append('</tbody></table>')
         p.append('<h3 style="font-size:15px;margin:14px 0 2px">Thermostats</h3>')
         p.append(Manager._html_table(d['thermo']['headers'], d['thermo']['rows'],
@@ -1436,6 +1447,8 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
                     f'</span> {esc(head)}</summary>'
                     f'<table class="fold-tbl">{body}</table></details>')
 
+        if d.get('set_head'):       # per-room set points (heating schedule)
+            p.append(_fold('Set point', d['set_head'], d.get('set_rows') or []))
         if d.get('hp_head'):
             p.append(_fold('Heat pump', d['hp_head'], d.get('hp_rows') or []))
         if d.get('window_head'):
