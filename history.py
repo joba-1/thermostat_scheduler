@@ -1,18 +1,19 @@
 """Per-room history charts for the status web page.
 
-Pulls the last few hours of room temperature, heat-pump activity, window-open and
-window state from Home Assistant's InfluxDB (job4, db `homeassistant`) and renders a
+Pulls the last few hours of room temperature, heat-pump activity and window-open
+state from Home Assistant's InfluxDB (job4, db `homeassistant`) and renders a
 dependency-free inline SVG. All InfluxDB access goes through `InfluxClient`, whose
 `_fetch` can be replaced in tests so nothing here ever needs a live database.
 
-Entity ids are derived from the friendly names already in the thermostat config by
-the same slug rule Home Assistant uses (lowercase, umlauts transliterated). Anything
-that doesn't slugify cleanly can be overridden per room in `web.history.entities`.
+A device's HA entity id is resolved from its zigbee ieee (stable) + friendly name
+(see devices.ha_entity_candidates): the caller passes an ordered list of candidate
+entity ids per signal and the query uses whichever returns data — so a sensor that
+HA logged under its raw ieee (no friendly name) still resolves. The chart `spec`
+(candidate lists) is built by the Manager from its registry-resolved device maps.
 """
 import html
 import json
 import time
-import unicodedata
 import urllib.parse
 import urllib.request
 
@@ -26,55 +27,6 @@ HP_OUTDOOR_TEMP = 'ems_esp_thermostat_damped_outdoor_temperature'
 # Allowed chart windows (hours). Whitelisted so no caller-supplied value reaches a query.
 HOURS_CHOICES = (6, 24, 72)
 DEFAULT_HOURS = 24
-
-_TRANSLIT = {'ä': 'a', 'ö': 'o', 'ü': 'u', 'ß': 'ss',
-             'á': 'a', 'à': 'a', 'é': 'e', 'è': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u'}
-
-
-def slugify(name):
-    """Home Assistant entity-id slug for a friendly name.
-
-    Lowercase, transliterate German umlauts / common accents to ASCII, then map any
-    run of non-alphanumeric characters to a single underscore. Verified against the
-    live db: 'Waschküche' -> 'waschkuche', 'Arbeitszimmer Fenster' -> 'arbeitszimmer_fenster'.
-    """
-    s = (name or '').strip().lower()
-    s = ''.join(_TRANSLIT.get(ch, ch) for ch in s)
-    s = unicodedata.normalize('NFKD', s).encode('ascii', 'ignore').decode('ascii')
-    out = []
-    prev_us = False
-    for ch in s:
-        if ch.isalnum():
-            out.append(ch)
-            prev_us = False
-        elif not prev_us:
-            out.append('_')
-            prev_us = True
-    return ''.join(out).strip('_')
-
-
-def room_entities(room, item, overrides=None):
-    """Derive the InfluxDB entity ids for one room from its existing config wiring.
-
-    `item` is the `thermostats[room]` config dict. `overrides` is an optional
-    `{field: entity_id}` map (from `web.history.entities[room]`) that wins per field.
-    """
-    sensors = (item or {}).get('sensors', {}) or {}
-    temp = sensors.get('temperature')
-    windows = sensors.get('windows') or []
-    # Prefer the configured room sensor; otherwise fall back to the TRV's own
-    # local_temperature (the app's comfort fallback for rooms without a sensor).
-    temp_entity = (slugify(temp) + '_temperature' if temp
-                   else slugify(f"{room} Thermostat") + '_local_temperature')
-    ent = {
-        'temperature': temp_entity,
-        'windows': [slugify(w) + '_contact' for w in windows],
-        'activity': HP_ACTIVITY,
-        'outdoor': HP_OUTDOOR_TEMP,
-    }
-    for k, v in (overrides or {}).items():
-        ent[k] = v
-    return ent
 
 
 # --- interval algebra (pure, testable) -------------------------------------------
@@ -211,30 +163,53 @@ class InfluxClient:
         rows.sort(key=lambda r: r[0])
         return fold_intervals(rows, t_start, t_end, truthy=lambda s: s in match)
 
+    def series_first(self, candidates, hours):
+        """series() for the first candidate entity id that returns data."""
+        for ent in candidates or []:
+            s = self.series(ent, hours)
+            if s:
+                return s
+        return []
+
+    def state_intervals_first(self, candidates, hours, t_start, t_end):
+        """state_intervals() for the first candidate entity id that has any samples."""
+        for ent in candidates or []:
+            e = self._esc(ent)
+            if self._fetch(f"SELECT value FROM /.*/ WHERE entity_id='{e}' "
+                           f'AND time>now()-{int(hours)}h LIMIT 1'):
+                return self.state_intervals(ent, hours, t_start, t_end)
+        return []
+
     @staticmethod
     def _step(hours):
         return '5m' if hours <= 6 else '15m' if hours <= 24 else '1h'
 
 
-def collect_room_history(client, ent, hours, now=None):
-    """Gather everything one room chart needs. Returns a dict of series + interval bands."""
+def collect_room_history(client, spec, hours, now=None):
+    """Gather everything one room chart needs from a `spec` of entity candidates.
+
+    spec = {'temp': [cand,...], 'outdoor': id, 'activity': id,
+            'windows': [[cand,...], ...]}  — each candidate list is tried in order
+    (named slug first, then the device's 0x<ieee> form). Returns series + bands.
+    """
     now = int(now if now is not None else time.time())
     t_start = now - int(hours) * 3600
 
-    temp = client.series(ent.get('temperature'), hours)
-    outdoor = client.series(ent.get('outdoor'), hours)
+    temp = client.series_first(spec.get('temp'), hours)
+    outdoor = client.series(spec.get('outdoor'), hours)
 
     # Cooling vs heating from the authoritative compressor_activity string. 'hot water'
     # (DHW) and 'off' are not room conditioning, so they're excluded from hp_active.
-    act = ent.get('activity')
+    act = spec.get('activity')
     hp_cooling = client.string_state_intervals(act, hours, t_start, now, {'cooling'})
     hp_heating = client.string_state_intervals(act, hours, t_start, now,
                                                {'heating', 'warm water heating'})
     hp_active = union_intervals(hp_cooling, hp_heating)
 
     window = union_intervals(*[
-        client.state_intervals(w, hours, t_start, now) for w in ent.get('windows', [])
-    ]) if ent.get('windows') else []
+        client.state_intervals_first(cands, hours, t_start, now)
+        for cands in spec.get('windows', [])
+    ]) if spec.get('windows') else []
 
     # "Actually conditioning": heat pump producing AND the room's window closed (the
     # valves are forced open in cooling). We deliberately do NOT gate on the TRV's

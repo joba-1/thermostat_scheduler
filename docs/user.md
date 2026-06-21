@@ -64,9 +64,10 @@ temperature (dashed) with stripe rows below: **HP cooling / heating**, **window
 open**, and **conditioned** (heat pump producing *and* the window closed — i.e. the
 room was actually being cooled/heated). The history is read on demand from Home
 Assistant's InfluxDB (`web.history.influx_url`, default `http://job4:8086`); if it's
-unreachable the chart degrades gracefully ("no temperature history"). Entity ids are
-derived from the friendly names in `thermostats`; override per room under
-`web.history.entities` if a name doesn't map cleanly.
+unreachable the chart degrades gracefully ("no temperature history"). Each device's HA
+entity is resolved from its **ieee + friendly name** (named slug first, then HA's
+`0x<ieee>_<property>` fallback), so a sensor HA logged under its raw ieee still
+resolves — no per-room overrides.
 
 ## Email alerts
 

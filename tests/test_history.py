@@ -1,28 +1,5 @@
-"""Per-room history charts: slug/entity mapping, interval algebra, SVG (no DB)."""
+"""Per-room history charts: interval algebra, candidate resolution, SVG (no DB)."""
 import history
-
-
-def test_slugify_handles_umlauts_and_spaces():
-    assert history.slugify('Waschküche') == 'waschkuche'
-    assert history.slugify('Arbeitszimmer Fenster') == 'arbeitszimmer_fenster'
-    assert history.slugify('WC OG') == 'wc_og'
-    assert history.slugify('Caro Fenster') == 'caro_fenster'
-
-
-def test_room_entities_from_config_and_override():
-    item = {'sensors': {'temperature': 'Arbeitszimmer Bewegungsmelder',
-                        'windows': ['Arbeitszimmer Fenster']}}
-    ent = history.room_entities('Arbeitszimmer', item)
-    assert ent['temperature'] == 'arbeitszimmer_bewegungsmelder_temperature'
-    assert ent['windows'] == ['arbeitszimmer_fenster_contact']
-    assert ent['outdoor'] == history.HP_OUTDOOR_TEMP
-    # override wins per field
-    ent2 = history.room_entities('Arbeitszimmer', item,
-                                 {'temperature': 'custom_temp'})
-    assert ent2['temperature'] == 'custom_temp'
-    # no configured sensor -> fall back to the TRV's local_temperature
-    ent3 = history.room_entities('Schlafzimmer', {'sensors': {'windows': []}})
-    assert ent3['temperature'] == 'schlafzimmer_thermostat_local_temperature'
 
 
 def test_fold_intervals_runs_and_trailing_open():
@@ -58,21 +35,23 @@ class FakeInflux(history.InfluxClient):
 
 def test_collect_room_history_conditioned_excludes_window():
     now = 10_000
-    # heat pump cooling the whole window; window open in the middle
+    # heat pump cooling the whole window; window open in the middle. The window's
+    # named-slug entity has NO data; only its ieee-form candidate does — the
+    # resolver must fall through to it (the Schlafzimmer case).
     responses = {
         "entity_id='temp_ent'": [[now - 3600, 24.0], [now - 1800, 23.0]],
         f"entity_id='{history.HP_OUTDOOR_TEMP}'": [[now - 3600, 30.0]],
-        # compressor_activity: SELECT state ... -> string values
         f"SELECT state FROM \"state\" WHERE entity_id='{history.HP_ACTIVITY}' AND time>now()-6h":
             [[now - 3600, 'cooling'], [now, 'cooling']],
-        "entity_id='win_ent'": [[now - 3000, 1], [now - 2000, 0]],
+        "entity_id='0xwin_contact'": [[now - 3000, 1], [now - 2000, 0]],
     }
     client = FakeInflux(responses)
-    ent = {'temperature': 'temp_ent', 'outdoor': history.HP_OUTDOOR_TEMP,
-           'activity': history.HP_ACTIVITY, 'windows': ['win_ent']}
-    data = history.collect_room_history(client, ent, 6, now=now)
+    spec = {'temp': ['missing_temp', 'temp_ent'],     # first candidate has no data
+            'outdoor': history.HP_OUTDOOR_TEMP, 'activity': history.HP_ACTIVITY,
+            'windows': [['win_named_contact', '0xwin_contact']]}
+    data = history.collect_room_history(client, spec, 6, now=now)
     assert data['temp'] and data['hp_cooling'] and not data['hp_heating']
-    # the open-window span is cut out of the conditioned band
+    # resolved temp via the 2nd candidate; window via its ieee-form candidate
     assert any(a <= now - 3000 and b >= now - 3000 for a, b in data['window'])
     assert all(not (s < now - 2000 and e > now - 3000)
                for s, e in data['conditioned'])

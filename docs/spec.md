@@ -49,6 +49,7 @@ is not involved, by design (fewer moving parts, no HA dependency).
 | `zigbee2mqtt/<Room> Thermostat` | in | thermostat state |
 | `zigbee2mqtt/<Room> Thermostat/set` | out | schedule / cooling / reset payloads |
 | `zigbee2mqtt/<Sensor friendly name>` | in | temperature / contact / leak / battery |
+| `zigbee2mqtt/bridge/devices` | in | retained ieee ↔ friendly-name registry (device identity) |
 | `ems-esp/boiler_data`, `ems-esp/thermostat_data` | in | heat-pump mode + telemetry |
 | `thermostat_monitor` | in | `get` request |
 | `thermostat_monitor/<Room>` | out | per-device state reply (for `--check`) |
@@ -70,9 +71,20 @@ is not involved, by design (fewer moving parts, no HA dependency).
   used for the status report, not valve control — and `coolingon` was observed
   to stay `off` even while actively cooling; `hp4way` reads "cooling & defrost"
   from a resting valve even in winter. All configurable via `heatpump.cooling_when`.
+- **Device identity = zigbee ieee, display = friendly name** (`devices.py`).
+  Friendly names are mutable and differ between zigbee2mqtt and Home Assistant, so
+  each device is anchored on its **ieee address** (the one stable id shared by both).
+  Config gives each device an `ieee` + human `name`; the daemon caches z2m's retained
+  `zigbee2mqtt/bridge/devices` registry on connect, resolves `ieee → current friendly
+  name` to build the MQTT topic, and **re-subscribes if a device is renamed** in z2m
+  (no restart). HA chart entities are resolved by trying the named slug first, then the
+  `0x<ieee>_<property>` form. Every step **falls back to the configured `name`**, so a
+  missing/late registry degrades to plain friendly-name topics — identity-by-ieee is an
+  added anchor, never a hard dependency for valve control. A bare-string device ref
+  (legacy) still works (ieee looked up by name), but isn't rename-proof.
 - **Thermostats and sensors are separate state namespaces.** A contact sensor
   may share a friendly name with a thermostat room (e.g. `Bad OG`); separate
-  dicts prevent one clobbering the other.
+  dicts (now ieee-anchored) prevent one clobbering the other.
 - **Manual override is respected, not fought.** Detected via a per-type
   `manual_marker`; such rooms are skipped by cooling control and excluded from
   comfort/mismatch checks, and surfaced as a low-priority note.

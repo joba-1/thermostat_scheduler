@@ -43,12 +43,9 @@ web:
   history:             # per-room history charts (click a room's temperature on the page)
     influx_url: http://job4:8086   # Home Assistant's InfluxDB (read-only, on demand)
     database: homeassistant
-    # Entity ids are derived from the friendly names in `thermostats` (HA's slug rule).
-    # Override per room only when a sensor isn't logged under the expected slug — e.g.
-    # a contact that rejoined without a friendly name in HA logs under its raw ieee:
-    # entities:
-    #   Wohnzimmer: { temperature: wohnzimmer_luft_temperature }
-    #   Schlafzimmer: { windows: ["0xa4c138251f74d9ed_contact"] }
+    # HA entity ids are resolved from each device's ieee + friendly name: the named
+    # slug is tried first, then HA's 0x<ieee>_<property> fallback (used when HA never
+    # got a friendly name). No per-room overrides needed.
 
 heatpump:
   enabled: true
@@ -80,9 +77,9 @@ heatpump:
   remote_feed:
     enabled: false               # set true once the source sensors are confirmed
     sensors:                     # candidates; highest fresh temp (window closed) wins
-      - {sensor: "Wohnzimmer Luft", room: "Wohnzimmer"}
-      - {sensor: "Schlafzimmer Luft", room: "Schlafzimmer"}
-    # sensor: "Wohnzimmer Luft"  # legacy single-sensor form is still accepted
+      - { ieee: 0xa4c13835190efbf5, name: "Wohnzimmer Luft", room: "Wohnzimmer" }
+      - { ieee: 0xa4c1381f896f8d67, name: "Schlafzimmer Luft", room: "Schlafzimmer" }
+    # legacy forms still accepted: {sensor: "Wohnzimmer Luft", room: ...} or a bare string
     control_topic: ems-esp/thermostat/hc1/control
     control_value: RC100H        # sent once per connect: registers the remote thermostat type
     temp_topic: ems-esp/thermostat/hc1/remotetemp
@@ -160,6 +157,12 @@ thermostat_types:
     # window-off uses plain system_mode:off tracked by the software latch.
   # AVATTO ME168/ME167 have no built-in window detection -> no builtin_window_off.
 
+# Devices are identified by their zigbee ieee address (stable across renames) and
+# displayed by their friendly name. Give each device an `ieee` plus a human `name`;
+# the live friendly name (MQTT topic) is resolved from z2m's bridge/devices registry,
+# so a device renamed in z2m is still tracked. A bare string (just the friendly name)
+# is still accepted for back-compat — then the ieee is looked up from the registry by
+# name, which is NOT rename-proof.
 thermostats:
   Wohnzimmer:
     day_hour: "06:00"
@@ -167,11 +170,12 @@ thermostats:
     night_hour: "23:00"
     night_temperature: 19.5
     type: VNTH-T2_v2
+    ieee: 0xa4c1386e2bd2e3b9    # the TRV (was implicit "<room> Thermostat")
     tolerance: 1.5             # optional per-room override
     no_reaction_minutes: 60    # optional per-room override
     sensors:
-      temperature: "Wohnzimmer Luft"   # zigbee2mqtt friendly name of a temp sensor
-      windows: ["Wohnzimmer Fenster"]  # contact sensor friendly names
+      temperature: { ieee: 0xa4c13835190efbf5, name: "Wohnzimmer Luft" }
+      windows: [ { ieee: 0xa4c1380f2108b149, name: "Wohnzimmer Fenster" } ]
       leak: []                          # optional water-leak sensors
     window:                             # optional per-room window-control overrides
       debounce: 5                       # override open/close debounce (s)
@@ -179,4 +183,4 @@ thermostats:
 
 # Sensors not tied to a heated room (still battery/life-sign monitored):
 # extra_sensors:
-#   - {name: "Dach Luft", kind: temperature}
+#   - { ieee: 0x..., name: "Dach Luft", kind: temperature }

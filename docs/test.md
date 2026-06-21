@@ -17,6 +17,8 @@ Coverage (`tests/`):
 | `test_health_sensors.py` | life sign / battery / manual vs mismatch / cooling-mode skip / no-reaction; window-open suppression; sensor battery+leak |
 | `test_alerts.py` | dedup + cooldown, info never mails, cleared removal, restart persistence, daily digest, periodic `due()` |
 | `test_manager_report.py` | manual-overrides listing, sensor/thermostat namespace isolation, status report, mode-change notify |
+| `test_devices.py` | device identity: ieee/name ref parsing, bridge/devices registry + rename detection, name-fallback resolution, HA entity candidates |
+| `test_history.py` | per-room charts: interval algebra, candidate (slug→ieee) resolution, SVG rendering |
 
 Fixtures use the real captured `boiler_data` / `thermostat_data` field shapes.
 

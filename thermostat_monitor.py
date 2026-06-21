@@ -34,10 +34,11 @@ import heatpump
 import cooling
 import health
 import history
+import devices
 import sensors as sensors_mod
 from alerts import Alerter, make_issue
 
-__version__ = "2.0.0"
+__version__ = "3.0.0"
 
 DAY_MINUTES = 24 * 60
 
@@ -97,15 +98,28 @@ class Manager:
         # Thermostats and sensors are separate namespaces: a contact sensor may
         # share a friendly name with a thermostat room (e.g. "Bad OG"), so they
         # must not share a state dict.
+        # Devices are identified by their zigbee ieee (stable) and displayed by a
+        # friendly label; see devices.py. Internally each device has a stable handle
+        # (its config label / room); the volatile z2m friendly name is resolved from
+        # the bridge/devices registry only to build the MQTT topic, and re-resolved on
+        # rename. ieee is carried for chart lookups and rename detection.
+        self.registry = devices.Registry()
+        self.bridge_devices_topic = f"{self.base}/bridge/devices"
+
         self.last_seen = {}          # room -> iso ts  (thermostats)
         self.last_state = {}         # room -> payload (thermostats)
         self.thermo_topic = {}       # state topic -> room
-        self.sensor_seen = {}        # friendly name -> iso ts
-        self.sensor_state = {}       # friendly name -> payload
-        self.sensor_topic = {}       # state topic -> friendly name
-        self.sensor_kind = {}        # sensor name -> 'temperature'|'window'|'leak'
-        self.room_temp_sensor = {}   # room -> temp sensor name
-        self.room_windows = defaultdict(list)  # room -> [window sensor names]
+        self.thermo_ieee = {}        # room -> TRV ieee
+        self.thermo_sub_topic = {}   # room -> currently-subscribed state topic
+        self.sensor_seen = {}        # label -> iso ts
+        self.sensor_state = {}       # label -> payload
+        self.sensor_topic = {}       # state topic -> label
+        self.sensor_kind = {}        # label -> 'temperature'|'window'|'leak'
+        self.sensor_ieee = {}        # label -> ieee
+        self.sensor_friendly = {}    # label -> resolved friendly (topic) name
+        self.sensor_sub_topic = {}   # label -> currently-subscribed state topic
+        self.room_temp_sensor = {}   # room -> temp sensor label
+        self.room_windows = defaultdict(list)  # room -> [window sensor labels]
 
         # heat-pump latest payloads
         self.hp_boiler = None
@@ -147,36 +161,57 @@ class Manager:
 
     def _build_topic_maps(self):
         for name, item in self.thermostats.items():
-            topic = f"{self.base}/{device_topic_name(name)}"
+            # The TRV: identity = its ieee; topic = resolved friendly name, falling
+            # back to the "<room> Thermostat" convention until the registry arrives.
+            trv_ref = {'ieee': item.get('ieee'), 'name': device_topic_name(name)}
+            ieee, friendly, _ = devices.resolve(trv_ref, self.registry)
+            topic = f"{self.base}/{friendly}"
             self.thermo_topic[topic] = name
+            self.thermo_ieee[name] = ieee
+            self.thermo_sub_topic[name] = topic
             self.last_seen[name] = None
             self.last_state[name] = None
             sensors = item.get('sensors') or {}
             temp = sensors.get('temperature')
             if temp:
-                self.room_temp_sensor[name] = temp
-                self._register_sensor(temp, 'temperature')
+                label = self._register_sensor(temp, 'temperature')
+                self.room_temp_sensor[name] = label
             for w in sensors.get('windows') or []:
-                self.room_windows[name].append(w)
-                self.window_rooms[w].append(name)
-                self._register_sensor(w, 'window')
+                label = self._register_sensor(w, 'window')
+                self.room_windows[name].append(label)
+                self.window_rooms[label].append(name)
             for leak in sensors.get('leak') or []:
                 self._register_sensor(leak, 'leak')
         for extra in self.cfg.get('extra_sensors') or []:
-            self._register_sensor(extra.get('name'), extra.get('kind', 'temperature'))
+            self._register_sensor(extra, extra.get('kind', 'temperature')
+                                  if isinstance(extra, dict) else 'temperature')
         # Track the heat-pump remote-feed candidate sensors so the daemon
         # subscribes to them, shows them in the report, and can warn when stale.
         for cand in self._remote_feed_candidates():
-            self._register_sensor(cand['sensor'], 'temperature')
+            self._register_sensor(cand['ref'], 'temperature')
 
-    def _register_sensor(self, name, kind):
-        if not name or name in self.sensor_kind:
-            return
-        self.sensor_kind[name] = kind
-        topic = f"{self.base}/{name}"
-        self.sensor_topic[topic] = name
-        self.sensor_seen[name] = None
-        self.sensor_state[name] = None
+    def _trv_set_topic(self, room):
+        """The /set topic for a room's TRV, using the registry-resolved friendly
+        name (falls back to the '<room> Thermostat' convention)."""
+        base = self.thermo_sub_topic.get(room) or \
+            f"{self.base}/{device_topic_name(room)}"
+        return f"{base}/set"
+
+    def _register_sensor(self, ref, kind):
+        """Register a device reference (string or {ieee,name}) as a monitored sensor.
+        Returns the stable label/handle it is keyed under."""
+        ieee, friendly, label = devices.resolve(ref, self.registry)
+        if not label or label in self.sensor_kind:
+            return label
+        self.sensor_kind[label] = kind
+        self.sensor_ieee[label] = ieee
+        self.sensor_friendly[label] = friendly
+        topic = f"{self.base}/{friendly}"
+        self.sensor_topic[topic] = label
+        self.sensor_sub_topic[label] = topic
+        self.sensor_seen[label] = None
+        self.sensor_state[label] = None
+        return label
 
     # ---- device-state persistence ------------------------------------
     def _load_device_state(self):
@@ -234,6 +269,9 @@ class Manager:
             log.error("MQTT connect failed with rc=%s", rc)
             return
         log.info("Connected to MQTT broker")
+        # The z2m device registry (retained) maps ieee <-> friendly name; subscribe
+        # first so it arrives before/with device state and topics resolve correctly.
+        client.subscribe(self.bridge_devices_topic)
         for topic in self.thermo_topic:
             client.subscribe(topic)
         for topic in self.sensor_topic:
@@ -258,7 +296,7 @@ class Manager:
             for name, item in self.thermostats.items():
                 off = self.thermostat_types.get(item.get('type'), {}).get('builtin_window_off')
                 if isinstance(off, dict) and off:
-                    client.publish(f"{self.base}/{device_topic_name(name)}/set",
+                    client.publish(self._trv_set_topic(name),
                                    json.dumps(off), qos=1)
                     n += 1
             if n:
@@ -285,6 +323,10 @@ class Manager:
                     log.info("status report mailed on request")
             return
 
+        if t == self.bridge_devices_topic:
+            self._on_registry(self._safe_json(payload), client)
+            return
+
         if t == self.heatpump_cfg.get('boiler_topic'):
             self.hp_boiler = self._safe_json(payload)
             return
@@ -303,6 +345,64 @@ class Manager:
             self.sensor_state[sensor] = self._safe_json(payload)
             if self.sensor_kind.get(sensor) == 'window':
                 self._on_window_event(sensor, client)
+
+    def _on_registry(self, payload, client):
+        """Handle a z2m bridge/devices update: refresh the ieee<->name registry and
+        re-point any device whose friendly name changed to its new topic. Keeps the
+        daemon tracking a device across a z2m rename without a restart."""
+        if not isinstance(payload, list):
+            return
+        self.registry.update(payload)
+        # Back-fill ieee for any device configured by name only (no ieee in config):
+        # the maps were built before the registry arrived, so resolve name -> ieee now.
+        for room in self.thermo_ieee:
+            if self.thermo_ieee[room] is None:
+                self.thermo_ieee[room] = self.registry.ieee_of(self._trv_friendly(room))
+        for label in self.sensor_ieee:
+            if self.sensor_ieee[label] is None:
+                self.sensor_ieee[label] = self.registry.ieee_of(
+                    self.sensor_friendly.get(label) or label)
+        moved = 0
+        # thermostats (keyed by room, identity = TRV ieee)
+        for room, ieee in self.thermo_ieee.items():
+            friendly = self.registry.name_of(ieee)
+            if not friendly:
+                continue
+            new_topic = f"{self.base}/{friendly}"
+            old_topic = self.thermo_sub_topic.get(room)
+            if new_topic != old_topic:
+                moved += self._resub(client, old_topic, new_topic, self.thermo_topic, room)
+                self.thermo_sub_topic[room] = new_topic
+        # sensors (keyed by label, identity = sensor ieee)
+        for label, ieee in self.sensor_ieee.items():
+            friendly = self.registry.name_of(ieee) if ieee else None
+            if not friendly or friendly == self.sensor_friendly.get(label):
+                continue
+            new_topic = f"{self.base}/{friendly}"
+            old_topic = self.sensor_sub_topic.get(label)
+            moved += self._resub(client, old_topic, new_topic, self.sensor_topic, label)
+            self.sensor_friendly[label] = friendly
+            self.sensor_sub_topic[label] = new_topic
+        if moved:
+            log.info("registry: %d device(s) re-subscribed after a rename", moved)
+
+    @staticmethod
+    def _resub(client, old_topic, new_topic, topic_map, handle):
+        """Move a subscription old_topic -> new_topic and update topic_map."""
+        if old_topic == new_topic:
+            return 0
+        if old_topic in topic_map:
+            del topic_map[old_topic]
+            try:
+                client.unsubscribe(old_topic)
+            except Exception:
+                pass
+        topic_map[new_topic] = handle
+        try:
+            client.subscribe(new_topic)
+        except Exception:
+            pass
+        return 1
 
     @staticmethod
     def _safe_json(payload):
@@ -323,19 +423,27 @@ class Manager:
 
     # ---- heat-pump remote sensor feed --------------------------------
     def _remote_feed_candidates(self):
-        """Normalized list of {sensor, room} candidates (supports the legacy
-        single `sensor:` form and the multi `sensors:` list)."""
+        """Normalized list of {ref, sensor, room} candidates. `ref` is the device
+        reference (string or {ieee,name}); `sensor` is its resolved stable label
+        (the key into sensor_state). Supports schema v2 `{ieee,name,room}`, the
+        legacy `{sensor,room}` and bare-string forms, and a single `sensor:`."""
         rf = self.remote_feed_cfg
         if not rf.get('enabled'):
             return []
         out = []
         for s in rf.get('sensors') or []:
-            if isinstance(s, dict) and s.get('sensor'):
-                out.append({'sensor': s['sensor'], 'room': s.get('room')})
-            elif isinstance(s, str):
-                out.append({'sensor': s, 'room': None})
+            if isinstance(s, dict):
+                ref = s if ('ieee' in s or 'name' in s) else s.get('sensor')
+                room = s.get('room')
+            else:
+                ref, room = s, None
+            if ref is None:
+                continue
+            _, _, label = devices.resolve(ref, self.registry)
+            out.append({'ref': ref, 'sensor': label, 'room': room})
         if not out and rf.get('sensor'):       # backward-compatible single sensor
-            out.append({'sensor': rf['sensor'], 'room': None})
+            _, _, label = devices.resolve(rf['sensor'], self.registry)
+            out.append({'ref': rf['sensor'], 'sensor': label, 'room': None})
         return out
 
     def _remote_feed_select(self, now_ts):
@@ -665,7 +773,7 @@ class Manager:
                 self._save_device_state()
             return
 
-        topic = f"{self.base}/{device_topic_name(room)}/set"
+        topic = self._trv_set_topic(room)
         if any_open:
             if own_off:
                 return  # already off and ours (signature or latched)
@@ -1107,6 +1215,33 @@ class Manager:
     def room_url(room, hours=history.DEFAULT_HOURS):
         return '/room?' + urllib.parse.urlencode({'name': room, 'hours': hours})
 
+    def _trv_friendly(self, room):
+        """The room TRV's current friendly name (topic minus base, registry-resolved)."""
+        topic = self.thermo_sub_topic.get(room, '')
+        prefix = f"{self.base}/"
+        return topic[len(prefix):] if topic.startswith(prefix) else None
+
+    def _room_chart_spec(self, room):
+        """Build the history-chart entity-candidate spec for a room from the
+        ieee-anchored device maps. Each device contributes HA entity candidates
+        (named slug first, then its 0x<ieee> form) so a sensor HA logged under its
+        raw ieee still resolves — no per-room override needed."""
+        temp_label = self.room_temp_sensor.get(room)
+        if temp_label:
+            temp_cands = devices.ha_entity_candidates(
+                self.sensor_ieee.get(temp_label),
+                self.sensor_friendly.get(temp_label), 'temperature')
+        else:
+            # no room sensor -> the TRV's own local_temperature (comfort fallback)
+            temp_cands = devices.ha_entity_candidates(
+                self.thermo_ieee.get(room), self._trv_friendly(room),
+                'local_temperature')
+        windows = [devices.ha_entity_candidates(self.sensor_ieee.get(w),
+                                                self.sensor_friendly.get(w), 'contact')
+                   for w in self.room_windows.get(room, [])]
+        return {'temp': temp_cands, 'outdoor': history.HP_OUTDOOR_TEMP,
+                'activity': history.HP_ACTIVITY, 'windows': windows}
+
     def room_page(self, room, hours=history.DEFAULT_HOURS):
         """Standalone HTML page with the last `hours` of history for one room.
 
@@ -1122,9 +1257,8 @@ class Manager:
             self._influx = history.InfluxClient(
                 url=self._history_cfg.get('influx_url', 'http://job4:8086'),
                 database=self._history_cfg.get('database', 'homeassistant'))
-        overrides = (self._history_cfg.get('entities', {}) or {}).get(room)
-        ent = history.room_entities(room, item, overrides)
-        data = history.collect_room_history(self._influx, ent, hours)
+        data = history.collect_room_history(self._influx, self._room_chart_spec(room),
+                                            hours)
         svg = history.render_room_svg(room, data)
 
         toggles = ' '.join(
@@ -1307,7 +1441,7 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
                        else cooling.build_restore_payload(type_cfg))
             if not payload:
                 continue
-            topic = f"{self.base}/{device_topic_name(name)}/set"
+            topic = self._trv_set_topic(name)
             try:
                 client.publish(topic, json.dumps(payload), qos=1)
                 self.applied_mode[name] = want
