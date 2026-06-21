@@ -389,26 +389,28 @@ def _stripe(segments, t0, t1, x0, x1, y, label):
             f'fill="none" stroke="{_COL["grid"]}"/>{rects}')
 
 
-def _legend(items, x0, x1, y, font):
-    """Flow legend items left-to-right, wrapping to a new line at x1. Each item is
-    (kind, color, dash, text) with kind 'line' (temperature trace) or 'box' (stripe)."""
-    sw, gap, pad = 24, 7, 26
-    out, cx, line_h = [], x0, font + 13
-    for kind, color, dash, text in items:
-        item_w = sw + gap + len(text) * font * 0.6 + pad
-        if cx + item_w > x1 and cx > x0:
-            cx, y = x0, y + line_h
+def _legend(items, x0, x1, y, font, cols=3):
+    """Lay legend items out as an equally-spaced grid (default 3 columns, no borders),
+    filled row-major. Each item is (kind, color, dash, text) with kind 'line'
+    (temperature trace) or 'box' (stripe). Returns (svg, y_after_last_row)."""
+    sw, gap = 24, 7
+    col_w = (x1 - x0) / cols
+    row_h = font + 14
+    out = []
+    for i, (kind, color, dash, text) in enumerate(items):
+        cx = x0 + (i % cols) * col_w
+        cy = y + (i // cols) * row_h
         if kind == 'line':
             d = f' stroke-dasharray="{dash}"' if dash else ''
-            out.append(f'<line x1="{cx}" y1="{y}" x2="{cx + sw}" y2="{y}" '
+            out.append(f'<line x1="{cx:.1f}" y1="{cy}" x2="{cx + sw:.1f}" y2="{cy}" '
                        f'stroke="{color}" stroke-width="2.6"{d}/>')
         else:
-            out.append(f'<rect x="{cx}" y="{y - font * 0.55:.1f}" width="{sw}" '
+            out.append(f'<rect x="{cx:.1f}" y="{cy - font * 0.55:.1f}" width="{sw}" '
                        f'height="{font * 0.8:.1f}" rx="2" fill="{color}"/>')
-        out.append(f'<text x="{cx + sw + gap}" y="{y + font * 0.35:.1f}" '
+        out.append(f'<text x="{cx + sw + gap:.1f}" y="{cy + font * 0.35:.1f}" '
                    f'font-size="{font}" fill="{_COL["label"]}">{html.escape(text)}</text>')
-        cx += item_w
-    return ''.join(out), y + line_h
+    rows = (len(items) + cols - 1) // cols
+    return ''.join(out), y + rows * row_h
 
 
 def render_room_svg(room, data):
