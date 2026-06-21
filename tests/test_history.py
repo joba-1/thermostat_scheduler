@@ -102,6 +102,20 @@ def test_long_open_span_is_dropped_as_artifact():
     assert d['window'] == [(now - 3600, now - 1800)]
 
 
+def test_hold_to_edges_extends_recent_but_not_stale():
+    now, t0 = 1_000_000, 1_000_000 - 24 * 3600
+    # a recent series sitting inside the window -> held flat to both edges
+    s = [(t0 + 3600, 22.0), (now - 3600, 24.0)]
+    held = history.hold_to_edges(s, t0, now)
+    assert held[0] == (t0, 22.0) and held[-1] == (now, 24.0)
+    # last point far older than HOLD_MAX from `now` -> right edge NOT extended (gap)
+    stale = [(t0 + 3600, 22.0), (now - 20 * 3600, 23.0)]
+    held2 = history.hold_to_edges(stale, t0, now)
+    assert held2[0] == (t0, 22.0)            # start gap is small -> extended
+    assert held2[-1] == (now - 20 * 3600, 23.0)   # end left open (no flat to now)
+    assert history.hold_to_edges([], t0, now) == []
+
+
 def test_candidates_merge_across_a_rename():
     """When history is split across two entity ids (HA rename), the window band is the
     UNION of both candidates — not just the first one with data."""

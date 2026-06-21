@@ -42,6 +42,25 @@ def hours_label(h):
 SEED_MAX_AGE = 12 * 3600
 MAX_OPEN = 12 * 3600
 
+# A temperature that holds steady logs no new HA points (on-change logging), so the
+# line would otherwise stop at the last change. Extend it flat to both chart edges
+# across a gap of up to this long; a longer gap is left open so a genuinely dead /
+# offline sensor still shows a break rather than a misleading flat line.
+HOLD_MAX = 12 * 3600
+
+
+def hold_to_edges(series, t_start, t_end, max_gap=HOLD_MAX):
+    """Flat-extend a value series to the window edges (see HOLD_MAX). `series` is
+    [(epoch, value), ...] ascending."""
+    if not series:
+        return series
+    out = list(series)
+    if t_start < out[0][0] <= t_start + max_gap:
+        out.insert(0, (t_start, out[0][1]))
+    if t_end - max_gap <= out[-1][0] < t_end:
+        out.append((t_end, out[-1][1]))
+    return out
+
 
 # --- interval algebra (pure, testable) -------------------------------------------
 
@@ -231,8 +250,8 @@ def collect_room_history(client, spec, hours, now=None):
     now = int(now if now is not None else time.time())
     t_start = now - int(hours) * 3600
 
-    temp = client.series_merged(spec.get('temp'), hours)
-    outdoor = client.series(spec.get('outdoor'), hours)
+    temp = hold_to_edges(client.series_merged(spec.get('temp'), hours), t_start, now)
+    outdoor = hold_to_edges(client.series(spec.get('outdoor'), hours), t_start, now)
 
     # Cooling vs heating from the authoritative compressor_activity string. 'hot water'
     # (DHW) and 'off' are not room conditioning, so they're excluded from hp_active.
