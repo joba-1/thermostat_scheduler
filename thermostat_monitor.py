@@ -1424,14 +1424,16 @@ class Manager:
              '<meta name="viewport" content="width=device-width,initial-scale=1">',
              f'<title>{esc(room)} history</title>',
              self._ICON_LINKS,
-             f'<style>{self._WEB_CSS}.toggles{{font-size:13px;margin:0 0 14px}}'
+             f'<style>{self._WEB_CSS}.toggles{{display:flex;align-items:baseline;'
+             'flex-wrap:wrap;font-size:13px;margin:0 0 14px}'
              '.toggles a{margin-right:10px}.toggles strong{margin-right:10px}'
-             '.back{font-size:13px}</style></head><body><div class="wrap">',
+             '.back{font-size:13px;margin-left:auto}</style></head>'
+             '<body><div class="wrap">',
              f'<header><img class="logo" src="/logo.svg" alt="">'
              f'<h1>{esc(room)}</h1>'
              f'<span class="when">last {history.hours_label(hours)}</span></header>',
-             f'<div class="toggles">range: {toggles} '
-             f'&nbsp;·&nbsp; <a class="back" href="/">← all rooms</a></div>',
+             f'<div class="toggles"><span>range: {toggles}</span>'
+             f'<a class="back" href="/">← all rooms</a></div>',
              f'<div class="card">{svg}</div>',
              '</div></body></html>']
         return ''.join(p)

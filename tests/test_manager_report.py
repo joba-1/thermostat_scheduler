@@ -188,12 +188,15 @@ def test_per_room_setpoints_fold_when_rooms_differ():
     cfg = {k: (dict(v) if isinstance(v, dict) else v) for k, v in CFG.items()}
     cfg['web'] = {'enabled': True}
     cfg['thermostats'] = dict(cfg['thermostats'])
+    # day == night so the range is deterministic regardless of the clock
+    cfg['thermostats']['Bad OG'] = dict(cfg['thermostats']['Bad OG'],
+                                        day_temperature=21.5, night_temperature=21.5)
     cfg['thermostats']['WC OG'] = {
         'day_hour': '05:00', 'day_temperature': 18.0, 'night_hour': '23:00',
-        'night_temperature': 16.0, 'type': 'VNTH-T2_v2',
+        'night_temperature': 18.0, 'type': 'VNTH-T2_v2',
         'sensors': {'temperature': 'WC OG Luft'}}
     cfg['device_state_file'] = tempfile.mkdtemp() + '/devices.json'
-    mgr = tm.Manager(cfg)   # heating: per-room schedule points differ (Bad OG 21.5, WC OG 18)
+    mgr = tm.Manager(cfg)   # per-room schedule points differ (Bad OG 21.5, WC OG 18)
     d = mgr._report_data()
     # never a table column now; uniform line absent, range summary + per-room detail
     assert 'set' not in d['thermo']['headers']
