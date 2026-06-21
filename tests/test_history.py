@@ -90,7 +90,12 @@ def test_render_room_svg_has_lines_and_stripes():
     svg = history.render_room_svg('Arbeitszimmer', data)
     assert svg.startswith('<svg') and svg.rstrip().endswith('</svg>')
     assert svg.count('<polyline') == 2          # room temp + outdoor reference
-    for label in ('HP cooling', 'Window open', 'Conditioned', 'outdoor (HP ref)'):
+    # short stripe-row labels (kept narrow, ~as wide as the temp ticks)
+    for short in ('>Cond<', '>HP<', '>Open<'):
+        assert short in svg
+    # ...spelled out in the legend below, with the temp traces
+    for label in ('room temp', 'outdoor (HP ref)', 'Cond = conditioned',
+                  'HP cooling', 'HP heating', 'Open = window open'):
         assert label in svg
 
 

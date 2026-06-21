@@ -271,16 +271,22 @@ def _intersect(a, b):
 
 
 # --- SVG rendering ---------------------------------------------------------------
+# Fonts are sized generously in the viewBox space because the SVG scales down to the
+# phone-portrait width — small px values become unreadable there.
 
-_W, _H = 880, 300          # plot box
-_L, _R, _T, _B = 48, 16, 12, 28   # margins inside the plot box
-_STRIPE_H = 16
-_STRIPE_GAP = 4
+_W, _H = 720, 300          # plot box (narrower viewBox -> larger apparent text on phones)
+_L, _R, _T, _B = 56, 14, 14, 40   # margins inside the plot box
+_STRIPE_H = 24
+_STRIPE_GAP = 7
+_FS = 16                   # axis + stripe-label font size
+_FS_LEG = 16               # legend font size
+_FS_EMPTY = 22
 
 _COL = {
     'temp': '#b42318', 'outdoor': '#6b7280',
     'cooling': '#1f6feb', 'heating': '#bf6b00',
     'window': '#d4a017', 'conditioned': '#1a7f37', 'grid': '#e5e7eb',
+    'label': '#6b7280',
 }
 
 
@@ -296,20 +302,45 @@ def _polyline(pts, t0, t1, vmin, vmax, x0, x1, y0, y1, color, dash=None):
         f"{_x(t, t0, t1, x0, x1):.1f},{y1 - (v - vmin) / span * (y1 - y0):.1f}"
         for t, v in pts)
     d = f' stroke-dasharray="{dash}"' if dash else ''
-    return (f'<polyline fill="none" stroke="{color}" stroke-width="1.8" '
+    return (f'<polyline fill="none" stroke="{color}" stroke-width="2.2" '
             f'stroke-linejoin="round" points="{coords}"{d}/>')
 
 
-def _stripe(intervals, t0, t1, x0, x1, y, color, label):
+def _stripe(segments, t0, t1, x0, x1, y, label):
+    """One stripe row. `segments` is [(intervals, color), ...] so a single row can
+    carry more than one colour (the unified heat-pump row: cooling + heating)."""
     rects = ''.join(
         f'<rect x="{_x(a, t0, t1, x0, x1):.1f}" y="{y}" '
         f'width="{max(_x(b, t0, t1, x0, x1) - _x(a, t0, t1, x0, x1), 0.6):.1f}" '
         f'height="{_STRIPE_H}" fill="{color}"/>'
-        for a, b in intervals)
-    return (f'<text x="{x0 - 6}" y="{y + _STRIPE_H - 4}" text-anchor="end" '
-            f'font-size="10" fill="#6b7280">{html.escape(label)}</text>'
+        for intervals, color in segments for a, b in intervals)
+    return (f'<text x="{x0 - 7}" y="{y + _STRIPE_H * 0.5 + _FS * 0.35:.1f}" '
+            f'text-anchor="end" font-size="{_FS}" fill="{_COL["label"]}">'
+            f'{html.escape(label)}</text>'
             f'<rect x="{x0}" y="{y}" width="{x1 - x0}" height="{_STRIPE_H}" '
             f'fill="none" stroke="{_COL["grid"]}"/>{rects}')
+
+
+def _legend(items, x0, x1, y, font):
+    """Flow legend items left-to-right, wrapping to a new line at x1. Each item is
+    (kind, color, dash, text) with kind 'line' (temperature trace) or 'box' (stripe)."""
+    sw, gap, pad = 24, 7, 26
+    out, cx, line_h = [], x0, font + 13
+    for kind, color, dash, text in items:
+        item_w = sw + gap + len(text) * font * 0.6 + pad
+        if cx + item_w > x1 and cx > x0:
+            cx, y = x0, y + line_h
+        if kind == 'line':
+            d = f' stroke-dasharray="{dash}"' if dash else ''
+            out.append(f'<line x1="{cx}" y1="{y}" x2="{cx + sw}" y2="{y}" '
+                       f'stroke="{color}" stroke-width="2.6"{d}/>')
+        else:
+            out.append(f'<rect x="{cx}" y="{y - font * 0.55:.1f}" width="{sw}" '
+                       f'height="{font * 0.8:.1f}" rx="2" fill="{color}"/>')
+        out.append(f'<text x="{cx + sw + gap}" y="{y + font * 0.35:.1f}" '
+                   f'font-size="{font}" fill="{_COL["label"]}">{html.escape(text)}</text>')
+        cx += item_w
+    return ''.join(out), y + line_h
 
 
 def render_room_svg(room, data):
@@ -320,14 +351,11 @@ def render_room_svg(room, data):
     temp, outdoor = data['temp'], data['outdoor']
 
     vals = [v for _, v in temp] + [v for _, v in outdoor]
-    parts = [f'<svg viewBox="0 0 {_W} {_H + 4 * (_STRIPE_H + _STRIPE_GAP) + 24}" '
-             f'width="100%" font-family="system-ui,sans-serif" role="img" '
-             f'aria-label="{html.escape(room)} history">']
-
+    body = []
     if not vals:
-        parts.append(f'<text x="{_W/2}" y="{_H/2}" text-anchor="middle" '
-                     f'fill="#6b7280" font-size="14">no temperature history '
-                     f'for the selected window</text>')
+        body.append(f'<text x="{_W/2}" y="{_H/2}" text-anchor="middle" '
+                    f'fill="{_COL["label"]}" font-size="{_FS_EMPTY}">no temperature '
+                    f'history for the selected window</text>')
     else:
         vmin, vmax = min(vals), max(vals)
         pad = max((vmax - vmin) * 0.1, 0.5)
@@ -336,40 +364,47 @@ def render_room_svg(room, data):
         for frac in (0, 0.25, 0.5, 0.75, 1):
             yy = y1 - frac * (y1 - y0)
             tv = vmin + frac * (vmax - vmin)
-            parts.append(f'<line x1="{x0}" y1="{yy:.1f}" x2="{x1}" y2="{yy:.1f}" '
-                         f'stroke="{_COL["grid"]}"/>')
-            parts.append(f'<text x="{x0 - 6}" y="{yy + 3:.1f}" text-anchor="end" '
-                         f'font-size="10" fill="#6b7280">{tv:.1f}°</text>')
-        # x time ticks (hourly-ish, ~6 labels)
+            body.append(f'<line x1="{x0}" y1="{yy:.1f}" x2="{x1}" y2="{yy:.1f}" '
+                        f'stroke="{_COL["grid"]}"/>')
+            body.append(f'<text x="{x0 - 7}" y="{yy + _FS * 0.35:.1f}" '
+                        f'text-anchor="end" font-size="{_FS}" fill="{_COL["label"]}">'
+                        f'{tv:.1f}°</text>')
+        # x time ticks (~6 labels)
         n = 6
         for i in range(n + 1):
             t = t0 + (t1 - t0) * i / n
             xx = _x(t, t0, t1, x0, x1)
             lbl = time.strftime('%H:%M', time.localtime(t))
-            parts.append(f'<text x="{xx:.1f}" y="{y1 + 14:.0f}" text-anchor="middle" '
-                         f'font-size="10" fill="#6b7280">{lbl}</text>')
-        parts.append(_polyline(outdoor, t0, t1, vmin, vmax, x0, x1, y0, y1,
-                               _COL['outdoor'], dash='4 3'))
-        parts.append(_polyline(temp, t0, t1, vmin, vmax, x0, x1, y0, y1, _COL['temp']))
+            body.append(f'<text x="{xx:.1f}" y="{y1 + _FS + 5:.0f}" '
+                        f'text-anchor="middle" font-size="{_FS}" '
+                        f'fill="{_COL["label"]}">{lbl}</text>')
+        body.append(_polyline(outdoor, t0, t1, vmin, vmax, x0, x1, y0, y1,
+                              _COL['outdoor'], dash='5 4'))
+        body.append(_polyline(temp, t0, t1, vmin, vmax, x0, x1, y0, y1, _COL['temp']))
 
-    # stripe rows beneath the plot
-    y = _H + 4
-    rows = [(union_intervals(data['hp_cooling']), _COL['cooling'], 'HP cooling'),
-            (union_intervals(data['hp_heating']), _COL['heating'], 'HP heating'),
-            (data['window'], _COL['window'], 'Window open'),
-            (data['conditioned'], _COL['conditioned'], 'Conditioned')]
-    for intervals, color, label in rows:
-        parts.append(_stripe(intervals, t0, t1, x0, x1, y, color, label))
+    # stripe rows beneath the plot: conditioned (green) first, the unified heat/cool
+    # row next, window open last. Labels are short (legend below spells them out).
+    y = _H + 6
+    rows = [('Cond', [(union_intervals(data['conditioned']), _COL['conditioned'])]),
+            ('HP', [(union_intervals(data['hp_cooling']), _COL['cooling']),
+                    (union_intervals(data['hp_heating']), _COL['heating'])]),
+            ('Open', [(union_intervals(data['window']), _COL['window'])])]
+    for label, segments in rows:
+        body.append(_stripe(segments, t0, t1, x0, x1, y, label))
         y += _STRIPE_H + _STRIPE_GAP
 
-    # legend for the two temperature lines
-    parts.append(f'<line x1="{x0}" y1="{y + 6}" x2="{x0 + 18}" y2="{y + 6}" '
-                 f'stroke="{_COL["temp"]}" stroke-width="2"/>'
-                 f'<text x="{x0 + 24}" y="{y + 10}" font-size="11" fill="#6b7280">'
-                 f'room temp</text>'
-                 f'<line x1="{x0 + 120}" y1="{y + 6}" x2="{x0 + 138}" y2="{y + 6}" '
-                 f'stroke="{_COL["outdoor"]}" stroke-width="2" stroke-dasharray="4 3"/>'
-                 f'<text x="{x0 + 144}" y="{y + 10}" font-size="11" fill="#6b7280">'
-                 f'outdoor (HP ref)</text>')
-    parts.append('</svg>')
-    return ''.join(parts)
+    legend_items = [
+        ('line', _COL['temp'], None, 'room temp'),
+        ('line', _COL['outdoor'], '5 4', 'outdoor (HP ref)'),
+        ('box', _COL['conditioned'], None, 'Cond = conditioned'),
+        ('box', _COL['cooling'], None, 'HP cooling'),
+        ('box', _COL['heating'], None, 'HP heating'),
+        ('box', _COL['window'], None, 'Open = window open'),
+    ]
+    legend_svg, y = _legend(legend_items, x0, x1, y + _FS_LEG, _FS_LEG)
+    body.append(legend_svg)
+
+    total_h = int(y + 6)
+    return (f'<svg viewBox="0 0 {_W} {total_h}" width="100%" '
+            f'font-family="system-ui,sans-serif" role="img" '
+            f'aria-label="{html.escape(room)} history">{"".join(body)}</svg>')
