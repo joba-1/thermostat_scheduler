@@ -46,7 +46,7 @@ def test_collect_room_history_conditioned_excludes_window():
         "entity_id='0xwin_contact'": [[now - 3000, 1], [now - 2000, 0]],
     }
     client = FakeInflux(responses)
-    spec = {'temp': ['missing_temp', 'temp_ent'],     # first candidate has no data
+    spec = {'temp': [['missing_temp', 'temp_ent']],   # one group; 2nd candidate has data
             'outdoor': history.HP_OUTDOOR_TEMP, 'activity': history.HP_ACTIVITY,
             'windows': [['win_named_contact', '0xwin_contact']]}
     data = history.collect_room_history(client, spec, 6, now=now)
@@ -144,6 +144,26 @@ def test_hold_to_edges_extends_recent_but_not_stale():
     assert held2[0] == (t0, 22.0)            # start gap is small -> extended
     assert held2[-1] == (now - 20 * 3600, 23.0)   # end left open (no flat to now)
     assert history.hold_to_edges([], t0, now) == []
+
+
+def test_series_best_falls_back_to_richer_source():
+    """A frozen/sparse room sensor (1 point) is beaten by the live TRV temp (many
+    points) — series_best picks the richer source instead of the dead one."""
+    now = 100_000
+
+    class Influx(history.InfluxClient):
+        def _fetch(self, q):
+            if "entity_id='air'" in q:               # frozen air sensor: 1 point
+                return [[now - 3600, 17.9]]
+            if "entity_id='trv'" in q:               # live TRV: several points
+                return [[now - 5400, 21.5], [now - 3600, 22.0], [now - 1800, 21.0]]
+            return []
+
+    c = Influx()
+    best = c.series_best([['air'], ['trv']], 72)
+    assert [v for _, v in best] == [21.5, 22.0, 21.0]      # TRV wins
+    # if the air sensor were healthy (more points) it would win instead
+    assert c.series_best([['trv'], ['nope']], 72) == c.series_merged(['trv'], 72)
 
 
 def test_candidates_merge_across_a_rename():

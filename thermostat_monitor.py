@@ -1356,20 +1356,21 @@ class Manager:
         ieee-anchored device maps. Each device contributes HA entity candidates
         (named slug first, then its 0x<ieee> form) so a sensor HA logged under its
         raw ieee still resolves — no per-room override needed."""
+        # Temperature is a list of candidate *groups* (richest wins, see series_best):
+        # the configured room sensor first, then the TRV's own local_temperature as a
+        # fallback — so a dead/frozen air sensor still gives a line from the TRV.
+        temp_groups = []
         temp_label = self.room_temp_sensor.get(room)
         if temp_label:
-            temp_cands = devices.ha_entity_candidates(
+            temp_groups.append(devices.ha_entity_candidates(
                 self.sensor_ieee.get(temp_label),
-                self.sensor_friendly.get(temp_label), 'temperature')
-        else:
-            # no room sensor -> the TRV's own local_temperature (comfort fallback)
-            temp_cands = devices.ha_entity_candidates(
-                self.thermo_ieee.get(room), self._trv_friendly(room),
-                'local_temperature')
+                self.sensor_friendly.get(temp_label), 'temperature'))
+        temp_groups.append(devices.ha_entity_candidates(
+            self.thermo_ieee.get(room), self._trv_friendly(room), 'local_temperature'))
         windows = [devices.ha_entity_candidates(self.sensor_ieee.get(w),
                                                 self.sensor_friendly.get(w), 'contact')
                    for w in self.room_windows.get(room, [])]
-        return {'temp': temp_cands, 'outdoor': history.HP_OUTDOOR_TEMP,
+        return {'temp': temp_groups, 'outdoor': history.HP_OUTDOOR_TEMP,
                 'activity': history.HP_ACTIVITY, 'windows': windows}
 
     def room_page(self, room, hours=history.DEFAULT_HOURS):

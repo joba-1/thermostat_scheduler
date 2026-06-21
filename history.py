@@ -211,6 +211,21 @@ class InfluxClient:
         rows.sort(key=lambda r: r[0])
         return rows
 
+    def series_best(self, groups, hours):
+        """Pick the richest of several candidate *groups* and return its merged series.
+
+        Each group is one physical device's entity ids (merged within via
+        series_merged); different groups are *different* sources (e.g. the room air
+        sensor vs the TRV's own local_temperature), so we choose the one with the most
+        data rather than merging — a dead/frozen air sensor falls back to the live TRV.
+        """
+        best = []
+        for group in groups or []:
+            s = self.series_merged(group, hours)
+            if len(s) > len(best):
+                best = s
+        return best
+
     def state_intervals_merged(self, candidates, hours, t_start, t_end,
                                truthy=lambda v: bool(v)):
         """state_intervals() merged across candidate entity ids (see series_merged):
@@ -251,7 +266,7 @@ def collect_room_history(client, spec, hours, now=None):
     now = int(now if now is not None else time.time())
     t_start = now - int(hours) * 3600
 
-    temp = hold_to_edges(client.series_merged(spec.get('temp'), hours), t_start, now)
+    temp = hold_to_edges(client.series_best(spec.get('temp'), hours), t_start, now)
     outdoor = hold_to_edges(client.series(spec.get('outdoor'), hours), t_start, now)
 
     # Cooling vs heating from the authoritative compressor_activity string. 'hot water'
