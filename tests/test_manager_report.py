@@ -60,6 +60,30 @@ def test_manual_override_listed():
     assert mgr.manual_overrides() == []
 
 
+def test_window_ignore_warns_and_does_not_switch_off():
+    cfg = {k: (dict(v) if isinstance(v, dict) else v) for k, v in CFG.items()}
+    cfg['window_control'] = {'enabled': True, 'act': True, 'ignore': True}
+    cfg['web'] = {'enabled': True}
+    cfg['device_state_file'] = tempfile.mkdtemp() + '/devices.json'
+    mgr = tm.Manager(cfg)
+    # Bad OG window is open
+    mgr.sensor_state['Bad OG'] = {'contact': False}
+    mgr.last_state['Bad OG'] = {'preset': 'comfort', 'comfort_temperature': 34}
+
+    class C:
+        def __init__(self): self.pub = []
+        def publish(self, t, p, qos=0): self.pub.append((t, p))
+    c = C()
+    mgr._apply_window_control('Bad OG', c)
+    assert c.pub == []                                 # never switched off
+    assert 'Bad OG' not in mgr.window_off
+    d = mgr._report_data()
+    assert d['warn_line'] and 'IGNORED' in d['warn_line'] and 'Bad OG' in d['warn_line']
+    assert '⚠' in mgr.status_report()                  # text report carries it
+    mgr._last_report = d
+    assert 'IGNORED' in mgr.web_page()                  # web banner
+
+
 def test_seen_style_highlights_stale_and_warming_page_polls_fast():
     import time
     mgr = make_mgr()

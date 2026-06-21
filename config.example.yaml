@@ -119,6 +119,8 @@ sensors:
 window_control:
   enabled: true
   act: true                    # false = detect + log + show in status, don't publish
+  ignore: false                # true = cool/heat regardless of open windows (never
+                               # switch a TRV off); a warning is shown in status/web/mail
   open_debounce: 5             # s a window must stay open before switching off
   close_debounce: 5            # s closed before restoring
   disable_builtin: true        # on connect, turn off each TRV's own window detection
@@ -190,7 +192,6 @@ thermostats:
     sensors:
       temperature: { ieee: 0xa4c13835190efbf5, name: "Wohnzimmer Luft" }
       windows: [ { ieee: 0xa4c1380f2108b149, name: "Wohnzimmer Fenster" } ]
-      leak: []                          # optional water-leak sensors
     window:                             # optional per-room window-control overrides
       debounce: 5                       # override open/close debounce (s)
       # humidity_guard: {sensor: "Wohnzimmer Luft", below: 50}  # only ventilate when dry

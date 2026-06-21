@@ -78,7 +78,7 @@ stays one continuous band (no gap). No per-room overrides.
 The manager mails you (low-noise):
 
 - **immediately** for each new alert (battery low, lost device/sensor, settings
-  not applied, room not following setpoint, water leak) — re-sent only after
+  not applied, room not following setpoint) — re-sent only after
   `cooldown_hours` while it stays open;
 - a **daily digest** at `digest_hour` of everything still open;
 - a **periodic status report** (full overview);

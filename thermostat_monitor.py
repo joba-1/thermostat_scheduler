@@ -114,7 +114,7 @@ class Manager:
         self.sensor_seen = {}        # label -> iso ts
         self.sensor_state = {}       # label -> payload
         self.sensor_topic = {}       # state topic -> label
-        self.sensor_kind = {}        # label -> 'temperature'|'window'|'leak'
+        self.sensor_kind = {}        # label -> 'temperature'|'window'
         self.sensor_ieee = {}        # label -> ieee
         self.sensor_friendly = {}    # label -> resolved friendly (topic) name
         self.sensor_sub_topic = {}   # label -> currently-subscribed state topic
@@ -188,8 +188,6 @@ class Manager:
                 label = self._register_sensor(w, 'window')
                 self.room_windows[name].append(label)
                 self.window_rooms[label].append(name)
-            for leak in sensors.get('leak') or []:
-                self._register_sensor(leak, 'leak')
         for extra in self.cfg.get('extra_sensors') or []:
             self._register_sensor(extra, extra.get('kind', 'temperature')
                                   if isinstance(extra, dict) else 'temperature')
@@ -842,6 +840,11 @@ class Manager:
         type_cfg = self.thermostat_types.get(item.get('type'), {})
         reported = self.last_state.get(room)
         any_open = self._room_window_open(room)
+        # "ignore window state": condition the room regardless of open windows. Treat
+        # every window as closed so we never switch a TRV off and restore any we did
+        # (a warning is surfaced in the status report / web / mail).
+        if self.window_cfg.get('ignore'):
+            any_open = False
 
         # Do we own this room's off? Either the device shows our off_signature, or
         # we have it latched and it is still off (covers a plain off we set with an
@@ -1066,6 +1069,14 @@ class Manager:
             fan_line = (f"{'ON' if self._fans_on else 'OFF'} ({len(self.fans)} fan(s)) "
                         f"— cooling {'active' if self._cool_active else 'idle'}")
 
+        # warning when window state is being ignored (conditioning regardless)
+        warn_line = None
+        if self.window_cfg.get('enabled') and self.window_cfg.get('ignore'):
+            open_now = sorted(r for r in self.thermostats if self._room_window_open(r))
+            warn_line = ("⚠ Window state IGNORED — conditioning regardless of open "
+                         "windows" + (f" (open now: {', '.join(open_now)})"
+                                      if open_now else ""))
+
         thermo_bat_limit = self.alerts_cfg.get('battery_limit', 20)
         records, setpoints = [], []
         for name, item in self.thermostats.items():
@@ -1133,12 +1144,6 @@ class Manager:
                         style['value'] = self._CSS_WARN
                     else:
                         val = "closed"
-                elif kind == 'leak':
-                    if st.get('water_leak'):
-                        val = "LEAK"
-                        style['value'] = self._CSS_BAD
-                    else:
-                        val = "dry"
                 else:
                     val = self._fmt(st.get('temperature'), "°C")
                     hum = st.get('humidity')
@@ -1169,6 +1174,7 @@ class Manager:
             'manual_line': manual_line,
             'window_line': window_line, 'window_head': window_head,
             'window_rows': window_rows, 'fan_line': fan_line,
+            'warn_line': warn_line,
             'set_line': set_line, 'set_head': set_head, 'set_rows': set_rows,
             'thermo': {'headers': thermo_headers,
                        'rows': thermo_rows, 'styles': thermo_styles},
@@ -1211,6 +1217,8 @@ class Manager:
         bar = "=" * 56
         lines = [bar, "  Thermostat status report", f"  {d['when']}", bar,
                  f"  Overall : {d['overall']}", f"  Mode    : {d['mode']}"]
+        if d.get('warn_line'):
+            lines.append(f"  {d['warn_line']}")
         if d['hp_line']:
             lines.append(f"  Heatpump: {d['hp_line']}")
         if d['manual_line']:
@@ -1275,6 +1283,9 @@ class Manager:
              f'<td>{esc(d["overall"])}</td></tr>',
              f'<tr><td style="padding-right:12px;color:#777">Mode</td>'
              f'<td>{esc(d["mode"])}</td></tr>']
+        if d.get('warn_line'):
+            p.append('<tr><td></td><td style="color:#b00020;font-weight:bold">'
+                     f'{esc(d["warn_line"])}</td></tr>')
         if d['hp_line']:
             p.append('<tr><td style="padding-right:12px;color:#777;'
                      f'vertical-align:top">Heat pump</td><td>{esc(d["hp_line"])}</td></tr>')
@@ -1541,6 +1552,10 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
         p.append(f'<header>{logo}<h1>Klima Status</h1>'
                  f'<span class="when">{esc(d["when"])}</span>'
                  f'<span class="pill {cls_pill}">{esc(d["overall"])}</span></header>')
+        if d.get('warn_line'):
+            p.append('<div style="background:#fde7e4;color:#b42318;font-weight:650;'
+                     'border-radius:10px;padding:10px 14px;margin:0 0 16px;'
+                     f'font-size:14px">{esc(d["warn_line"])}</div>')
 
         # summary card
         p.append('<div class="card"><h2>Overview</h2><div class="kv">')

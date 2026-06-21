@@ -16,7 +16,7 @@ and on a timer (`alerts.eval_interval`, default 300 s) runs one evaluation pass.
      only — manual override vs settings mismatch); plus, when **not** manual,
      `sensors.evaluate_room` (temp vs setpoint, window-aware) and
      `health.no_reaction_issue` (valve demanding but room temp not following);
-   - per sensor: `sensors.classify_sensor` (life sign, battery, leak);
+   - per sensor: `sensors.classify_sensor` (life sign, battery);
    - heat pump: `heatpump.check_bounds` (only while `active`), as digest notes.
 5. Cooling control (`_apply_cooling`): if `season.control`, publish each
    non-manual thermostat's `cooling_open` payload when entering cooling, or

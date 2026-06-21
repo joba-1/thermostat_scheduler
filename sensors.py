@@ -68,7 +68,7 @@ def evaluate_room(room, temp_state, windows_states, setpoint, mode, tolerance,
 
 
 def classify_sensor(name, kind, reported, last_seen_ts, now_ts, limits):
-    """Battery + life-sign check for a standalone sensor (temp / contact / leak)."""
+    """Battery + life-sign check for a standalone sensor (temp / contact)."""
     issues = []
     subject = f"{name} sensor"
     unseen = limits.get('unseen_interval', 7200)
@@ -85,8 +85,4 @@ def classify_sensor(name, kind, reported, last_seen_ts, now_ts, limits):
     bat = battery_issue(reported, limits.get('battery_limit', 20))
     if bat:
         issues.append(make_issue(f"{name}:battery", 'battery_low', subject, bat))
-
-    if isinstance(reported, dict) and reported.get('water_leak') is True:
-        issues.append(make_issue(f"{name}:leak", 'water_leak', subject,
-                                 "WATER LEAK detected"))
     return issues

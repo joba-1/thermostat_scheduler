@@ -14,7 +14,7 @@ Coverage (`tests/`):
 |------|----------------|
 | `test_schedule.py` | schedule generation (midnight, 6 points), schedule/state comparison, `build_expected_payload` prefix |
 | `test_heatpump_cooling.py` | EMS-ESP parse + `is_cooling`, `check_bounds`, `desired_mode`, manual-override detection, open/restore payloads |
-| `test_health_sensors.py` | life sign / battery / manual vs mismatch / cooling-mode skip / no-reaction; window-open suppression; sensor battery+leak |
+| `test_health_sensors.py` | life sign / battery / manual vs mismatch / cooling-mode skip / no-reaction; window-open suppression; sensor battery+life |
 | `test_alerts.py` | dedup + cooldown, info never mails, cleared removal, restart persistence, daily digest, periodic `due()` |
 | `test_manager_report.py` | manual-overrides listing, sensor/thermostat namespace isolation, status report, mode-change notify |
 | `test_devices.py` | device identity: ieee/name ref parsing, bridge/devices registry + rename detection, name-fallback resolution, HA entity candidates |

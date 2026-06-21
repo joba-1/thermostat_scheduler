@@ -89,8 +89,8 @@ def test_stuck_deviation_is_alert():
     assert issues[0].severity == 'alert'
 
 
-def test_sensor_battery_and_leak():
-    issues = sensors_mod.classify_sensor('Waschküche Wasser', 'leak',
-                                         {'battery': 5, 'water_leak': True},
+def test_sensor_battery_and_life():
+    issues = sensors_mod.classify_sensor('Bad OG Luft', 'temperature',
+                                         {'battery': 5, 'temperature': 21.0},
                                          NOW - 10, NOW, {'battery_limit': 20})
-    assert {'battery_low', 'water_leak'} <= kinds(issues)
+    assert 'battery_low' in kinds(issues)

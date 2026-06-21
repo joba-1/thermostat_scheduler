@@ -20,7 +20,7 @@ boundaries.
 | Heat pump | `heatpump.py` | Parse EMS-ESP MQTT → mode + telemetry; bounds check |
 | Cooling | `cooling.py` | Desired season; per-type open/restore payloads; manual-override detection |
 | Health | `health.py` | Classify thermostat issues (battery/life/mismatch/manual/no-reaction) |
-| Sensors | `sensors.py` | Room comfort vs setpoint (window-aware); sensor battery/life/leak |
+| Sensors | `sensors.py` | Room comfort vs setpoint (window-aware); sensor battery/life |
 | Alerts | `alerts.py` | Throttled mail, daily digest, periodic status report, JSON state |
 
 The daemon name (`thermostat_monitor.py`) is retained from the original monitor
@@ -48,7 +48,7 @@ is not involved, by design (fewer moving parts, no HA dependency).
 |-------|-----------|---------|
 | `zigbee2mqtt/<Room> Thermostat` | in | thermostat state |
 | `zigbee2mqtt/<Room> Thermostat/set` | out | schedule / cooling / reset payloads |
-| `zigbee2mqtt/<Sensor friendly name>` | in | temperature / contact / leak / battery |
+| `zigbee2mqtt/<Sensor friendly name>` | in | temperature / contact / battery |
 | `zigbee2mqtt/bridge/devices` | in | retained ieee ↔ friendly-name registry (device identity) |
 | `ems-esp/boiler_data`, `ems-esp/thermostat_data` | in | heat-pump mode + telemetry |
 | `thermostat_monitor` | in | `get` request |

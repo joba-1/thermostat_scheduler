@@ -311,7 +311,6 @@ thermostats:
     sensors:
       temperature: {ieee: '0xa4c1381f896f8d67', name: "Waschküche Luft"}
       windows: [{ieee: '0xa4c138402bbd648d', name: "Waschküche Fenster"}]
-      leak: [{ieee: '0xa4c138477cd1b085', name: "Waschküche Wasser"}]
     window:
       # HA only switched the laundry-room heating off for ventilation when it was
       # already dry; if the humidity sensor has no reading, ventilation is skipped
