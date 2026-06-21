@@ -65,9 +65,11 @@ open**, and **conditioned** (heat pump producing *and* the window closed — i.e
 room was actually being cooled/heated). The history is read on demand from Home
 Assistant's InfluxDB (`web.history.influx_url`, default `http://job4:8086`); if it's
 unreachable the chart degrades gracefully ("no temperature history"). Each device's HA
-entity is resolved from its **ieee + friendly name** (named slug first, then HA's
-`0x<ieee>_<property>` fallback), so a sensor HA logged under its raw ieee still
-resolves — no per-room overrides.
+entity is resolved from its **ieee + friendly name**: the named slug
+(`schlafzimmer_fenster_contact`) and HA's `0x<ieee>_<property>` fallback are both
+queried and their history is **merged**, so a sensor HA logged under its raw ieee
+still resolves — and history that is split across two entity ids by an HA **rename**
+stays one continuous band (no gap). No per-room overrides.
 
 ## Email alerts
 

@@ -77,8 +77,9 @@ is not involved, by design (fewer moving parts, no HA dependency).
   Config gives each device an `ieee` + human `name`; the daemon caches z2m's retained
   `zigbee2mqtt/bridge/devices` registry on connect, resolves `ieee → current friendly
   name` to build the MQTT topic, and **re-subscribes if a device is renamed** in z2m
-  (no restart). HA chart entities are resolved by trying the named slug first, then the
-  `0x<ieee>_<property>` form. Every step **falls back to the configured `name`**, so a
+  (no restart). HA chart entities are resolved by **merging** the named slug and the
+  `0x<ieee>_<property>` form, so history split across two entity ids by an HA rename
+  stays continuous. Every step **falls back to the configured `name`**, so a
   missing/late registry degrades to plain friendly-name topics — identity-by-ieee is an
   added anchor, never a hard dependency for valve control. A bare-string device ref
   (legacy) still works (ieee looked up by name), but isn't rename-proof.
