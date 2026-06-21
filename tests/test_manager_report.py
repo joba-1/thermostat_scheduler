@@ -69,6 +69,41 @@ def test_sensor_and_thermostat_namespaces_dont_collide():
     assert mgr.sensor_state['Bad OG']['battery'] == 80
 
 
+class _FakeClient:
+    def __init__(self):
+        self.subs, self.unsubs = [], []
+
+    def subscribe(self, t):
+        self.subs.append(t)
+
+    def unsubscribe(self, t):
+        self.unsubs.append(t)
+
+
+def test_registry_backfills_ieee_and_resubscribes_on_rename():
+    """bridge/devices back-fills ieee for name-only refs, and a z2m rename moves the
+    device's subscription to its new topic without a restart."""
+    mgr = make_mgr()                       # CFG refs Bad OG by friendly name (no ieee)
+    c = _FakeClient()
+    payload = [
+        {'ieee_address': '0xTRV', 'friendly_name': 'Bad OG Thermostat'},
+        {'ieee_address': '0xTEMP', 'friendly_name': 'Bad OG Luft'},
+        {'ieee_address': '0xWIN', 'friendly_name': 'Bad OG'},
+    ]
+    mgr._on_registry(payload, c)
+    assert mgr.thermo_ieee['Bad OG'] == '0xtrv'        # back-filled (lowercased)
+    assert mgr.sensor_ieee['Bad OG Luft'] == '0xtemp'
+
+    # rename the TRV in z2m -> daemon re-subscribes the new topic, drops the old
+    c.subs.clear()
+    mgr._on_registry([{'ieee_address': '0xTRV',
+                       'friendly_name': 'Bad OG Thermostat NEU'}], c)
+    base = mgr.base
+    assert f"{base}/Bad OG Thermostat NEU" in c.subs
+    assert f"{base}/Bad OG Thermostat" in c.unsubs
+    assert mgr.thermo_topic.get(f"{base}/Bad OG Thermostat NEU") == 'Bad OG'
+
+
 def test_mode_change_notifies_manual_valves():
     cfg = {k: (dict(v) if isinstance(v, dict) else v) for k, v in CFG.items()}
     cfg['manual_thermostats'] = ['Keller', 'Gäste WC']

@@ -50,8 +50,8 @@ heatpump:
     power: hpcurrpower
     pressure: syspress
   cooling_when:               # OR'd; house is "cooling" if any matches
-    - field: hpcooling        # ems-esp/thermostat_data hc1.hpcooling: cooling enabled
-      equals: "on"            # stable across compressor cycles (unlike hpactivity)
+  - field: hpcooling          # ems-esp/thermostat_data hc1.hpcooling: cooling enabled
+    equals: "on"              # stable across compressor cycles (unlike hpactivity)
     # Avoid keying off hpactivity (toggles each compressor cycle) or hp4way
     # (reads "cooling & defrost" from a resting valve even in winter).
   bounds:                     # operator sanity ranges -> digest warning if outside
@@ -74,8 +74,8 @@ heatpump:
   remote_feed:
     enabled: true
     sensors:                    # candidates; highest fresh temp (window closed) wins
-      - {sensor: "Wohnzimmer Luft", room: "Wohnzimmer"}
-      - {sensor: "Arbeitszimmer Bewegungsmelder", room: "Arbeitszimmer"}
+    - {ieee: '0xa4c13835190efbf5', room: "Wohnzimmer", name: "Wohnzimmer Luft"}
+    - {ieee: '0xa4c138e03a0a1f5b', room: "Arbeitszimmer", name: "Arbeitszimmer Bewegungsmelder"}
       # Schlafzimmer has no temp+humidity sensor (TRV reports temperature only),
       # so it cannot drive the dew-point feed; add one here once it exists.
     control_topic: ems-esp/thermostat/hc1/control
@@ -241,34 +241,38 @@ thermostats:
     night_hour: "23:00"
     night_temperature: 19.5
     type: ME168_1
+    ieee: '0xa4c138ce0c805e8c'
     sensors:
-      temperature: "Arbeitszimmer Bewegungsmelder"   # motion sensor (temp+humidity); more reliable than Marshall Klima here
-      windows: ["Arbeitszimmer Fenster"]
+      temperature: {ieee: '0xa4c138e03a0a1f5b', name: "Arbeitszimmer Bewegungsmelder"} # motion sensor (temp+humidity); more reliable than Marshall Klima here
+      windows: [{ieee: '0xa4c13855054afc24', name: "Arbeitszimmer Fenster"}]
   "Bad OG":
     day_hour: "05:00"
     day_temperature: 21.5
     night_hour: "23:00"
     night_temperature: 19.5
     type: VNTH-T2_v2
+    ieee: '0xa4c1382027b99401'
     sensors:
-      temperature: "Bad OG Luft"
-      windows: ["Bad OG"]
+      temperature: {ieee: '0xa4c1385ebc1e2739', name: "Bad OG Luft"}
+      windows: [{ieee: '0xa4c1381a9ca8d52c', name: "Bad OG"}]
   Caros:
     day_hour: "05:00"
     day_temperature: 21.5
     night_hour: "23:00"
     night_temperature: 19.5
     type: TRVZB
+    ieee: '0xc09b9efffe712b8a'
     sensors:
-      windows: ["Caro Fenster"]
+      windows: [{ieee: '0xa4c138a2899d7f40', name: "Caro Fenster"}]
   Dusche:
     day_hour: "05:00"
     day_temperature: 16.0
     night_hour: "23:00"
     night_temperature: 16.0
     type: ME168_1
+    ieee: '0xa4c1384abe34c836'
     sensors:
-      windows: ["Dusche Fenster"]
+      windows: [{ieee: '0xa4c1385f5f43d266', name: "Dusche Fenster"}]
     window:
       debounce: 2             # HA used a 2 s debounce for the shower window
   Esszimmer:
@@ -277,32 +281,36 @@ thermostats:
     night_hour: "23:00"
     night_temperature: 19.5
     type: VNTH-T2_v2
+    ieee: '0xa4c138987bc90a8e'
     sensors:
-      windows: ["Esszimmer Terrasse"]
+      windows: [{ieee: '0xa4c138bb04822b91', name: "Esszimmer Terrasse"}]
   Julians:
     day_hour: "06:00"
     day_temperature: 22.5
     night_hour: "23:00"
     night_temperature: 20.5
     type: VNTH-T2_v2
+    ieee: '0xa4c1388bb393c230'
   Schlafzimmer:
     day_hour: "05:00"
     day_temperature: 19.5
     night_hour: "23:00"
     night_temperature: 19.5
     type: TRVZB
+    ieee: '0xc09b9efffeaf4972'
     sensors:
-      windows: ["Schlafzimmer Fenster"]
+      windows: [{ieee: '0xa4c138251f74d9ed', name: "Schlafzimmer Fenster"}]
   Waschküche:
     day_hour: "05:00"
     day_temperature: 20.5
     night_hour: "23:00"
     night_temperature: 19.5
     type: TR-M3Z
+    ieee: '0xa4c138cf2971069d'
     sensors:
-      temperature: "Waschküche Luft"
-      windows: ["Waschküche Fenster"]
-      leak: ["Waschküche Wasser"]
+      temperature: {ieee: '0xa4c1381f896f8d67', name: "Waschküche Luft"}
+      windows: [{ieee: '0xa4c138402bbd648d', name: "Waschküche Fenster"}]
+      leak: [{ieee: '0xa4c138477cd1b085', name: "Waschküche Wasser"}]
     window:
       # HA only switched the laundry-room heating off for ventilation when it was
       # already dry; if the humidity sensor has no reading, ventilation is skipped
@@ -316,13 +324,15 @@ thermostats:
     night_hour: "23:00"
     night_temperature: 18.5
     type: VNTH-T2_v2
+    ieee: '0xa4c138fcd63c7be6'
     sensors:
-      windows: ["WC OG Fenster"]
+      windows: [{ieee: '0xa4c13853fd53d84d', name: "WC OG Fenster"}]
   Wohnzimmer:
     day_hour: "05:00"
     day_temperature: 22.5
     night_hour: "23:00"
     night_temperature: 20.5
     type: VNTH-T2_v2
+    ieee: '0xa4c1386e2bd2e3b9'
     sensors:
-      temperature: "Wohnzimmer Luft"   # also fed to the heat pump as remote thermostat (remote_feed)
+      temperature: {ieee: '0xa4c13835190efbf5', name: "Wohnzimmer Luft"} # also fed to the heat pump as remote thermostat (remote_feed)
