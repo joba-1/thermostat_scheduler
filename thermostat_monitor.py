@@ -669,17 +669,18 @@ class Manager:
         # messages pause (it's normally driven by each boiler_data update).
         self._apply_fan_control(client, hp)
 
+        # Cache the overview for the status web page first, *before* any mailing —
+        # SMTP latency must never delay the page showing data on startup. Rendered on
+        # demand from this snapshot, so the HTTP thread never recomputes/records.
+        d = self._report_data(mode, hp, issues=issues)
+        self._last_report = d
+
         mailed, cleared = self.alerter.process(issues)
         for iss in mailed:
             log.warning("ALERT %s: %s", iss.subject, iss.detail)
         for key in cleared:
             log.info("cleared: %s", key)
         self.alerter.maybe_send_digest()
-
-        # Cache the overview for the status web page (rendered on demand from
-        # this snapshot, so the HTTP thread never recomputes / records history).
-        d = self._report_data(mode, hp, issues=issues)
-        self._last_report = d
 
         # periodic full status overview (not just problems)
         interval = self.alerts_cfg.get('report_interval_hours', 24) * 3600
@@ -1091,6 +1092,9 @@ class Manager:
                     style['temp'] = self._CSS_COLD
             if self._battery_low(st, thermo_bat_limit):
                 style['bat'] = self._CSS_BAD
+            seen_css = self._seen_style(self.last_seen.get(name))
+            if seen_css:
+                style['seen'] = seen_css
             records.append((name, state_cell, sp, temp,
                             st.get('battery'), self._age(self.last_seen.get(name)),
                             style))
@@ -1145,6 +1149,9 @@ class Manager:
                             val = f"{val} dp {self._fmt(round(dp, 1), '°C')}"
                 if self._battery_low(st, sensor_bat_limit):
                     style['bat'] = self._CSS_BAD
+                seen_css = self._seen_style(self.sensor_seen.get(name))
+                if seen_css:
+                    style['seen'] = seen_css
                 sensor_rows.append([name, val, kind,
                                     self._fmt(st.get('battery'), "%"),
                                     self._age(self.sensor_seen.get(name))])
@@ -1179,7 +1186,16 @@ class Manager:
     _CSS_BAD = 'color:#b00020;font-weight:bold'      # low battery / leak
     _CSS_HOT = 'color:#c0392b;font-weight:bold'      # too warm vs target
     _CSS_COLD = 'color:#1f6feb;font-weight:bold'     # too cold vs target
-    _CSS_WARN = 'color:#c05600;font-weight:bold'     # window open
+    _CSS_WARN = 'color:#c05600;font-weight:bold'     # window open / stale 'seen'
+    _SEEN_WARN_AGE = 4 * 3600    # 'seen' older than this is highlighted as stale
+
+    def _seen_style(self, iso_seen):
+        """Highlight a 'seen' cell when the device hasn't reported in a while (>4h)
+        or never — flags a stale/off-mesh device at a glance."""
+        ts = parse_iso(iso_seen)
+        if ts is None or (time.time() - ts) > self._SEEN_WARN_AGE:
+            return self._CSS_WARN
+        return None
 
     @staticmethod
     def _battery_low(state, limit):
@@ -1499,8 +1515,11 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
         esc = html.escape
         head = ['<!doctype html><html lang="en"><head><meta charset="utf-8">',
                 '<meta name="viewport" content="width=device-width,initial-scale=1">']
-        if refresh and refresh > 0:
-            head.append(f'<meta http-equiv="refresh" content="{int(refresh)}">')
+        # While warming up (no snapshot yet) poll fast so the page picks up data as
+        # soon as the first eval runs, instead of waiting a full refresh interval.
+        eff_refresh = 3 if not d else refresh
+        if eff_refresh and eff_refresh > 0:
+            head.append(f'<meta http-equiv="refresh" content="{int(eff_refresh)}">')
         head.append('<title>Klima Status</title>')
         head.append(cls._ICON_LINKS)
         head.append(f'<style>{cls._WEB_CSS}</style></head><body><div class="wrap">')

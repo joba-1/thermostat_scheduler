@@ -60,6 +60,23 @@ def test_manual_override_listed():
     assert mgr.manual_overrides() == []
 
 
+def test_seen_style_highlights_stale_and_warming_page_polls_fast():
+    import time
+    mgr = make_mgr()
+    fresh = time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime())
+    assert mgr._seen_style(fresh) is None                 # recent -> no highlight
+    assert mgr._seen_style('2026-01-01T00:00:00') == mgr._CSS_WARN   # >4h -> stale
+    assert mgr._seen_style(None) == mgr._CSS_WARN          # never seen -> stale
+    # the warming-up (no data) page polls fast so it picks up data quickly
+    warm = tm.Manager._render_web(None, refresh=60)
+    assert 'content="3"' in warm and 'Starting up' in warm
+    # a real page keeps the configured refresh
+    assert 'content="60"' in tm.Manager._render_web({'n_alert': 0, 'n_info': 0,
+        'overall': 'ok', 'when': 'now', 'mode': 'cooling', 'hp_line': None,
+        'manual_line': None, 'thermo': {'headers': [], 'rows': []},
+        'sensors': None, 'issues': []}, refresh=60)
+
+
 def test_room_temp_falls_back_to_trv_when_air_sensor_stale():
     import time
     mgr = make_mgr()                                  # Bad OG sensor = "Bad OG Luft"
