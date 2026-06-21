@@ -57,6 +57,23 @@ def test_collect_room_history_conditioned_excludes_window():
                for s, e in data['conditioned'])
 
 
+def test_candidates_merge_across_a_rename():
+    """When history is split across two entity ids (HA rename), the window band is the
+    UNION of both candidates — not just the first one with data."""
+    now = 100_000
+    responses = {
+        # old ieee entity holds the early part; new named entity the late part
+        "entity_id='0xwin_contact'": [[now - 5000, 1], [now - 4000, 0]],
+        "entity_id='win_named_contact'": [[now - 2000, 1], [now - 1000, 0]],
+    }
+    client = FakeInflux(responses)
+    band = client.state_intervals_merged(
+        ['win_named_contact', '0xwin_contact'], 24, now - 6 * 3600, now)
+    # both open spans show up (early from ieee id, late from named id)
+    assert any(abs(a - (now - 5000)) < 2 and abs(b - (now - 4000)) < 2 for a, b in band)
+    assert any(abs(a - (now - 2000)) < 2 and abs(b - (now - 1000)) < 2 for a, b in band)
+
+
 def test_render_room_svg_has_lines_and_stripes():
     now = 10_000
     data = {'now': now, 't_start': now - 6 * 3600, 'hours': 6,

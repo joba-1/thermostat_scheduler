@@ -163,22 +163,40 @@ class InfluxClient:
         rows.sort(key=lambda r: r[0])
         return fold_intervals(rows, t_start, t_end, truthy=lambda s: s in match)
 
-    def series_first(self, candidates, hours):
-        """series() for the first candidate entity id that returns data."""
-        for ent in candidates or []:
-            s = self.series(ent, hours)
-            if s:
-                return s
-        return []
+    def series_merged(self, candidates, hours):
+        """series() merged across all candidate entity ids, sorted by time.
 
-    def state_intervals_first(self, candidates, hours, t_start, t_end):
-        """state_intervals() for the first candidate entity id that has any samples."""
+        Candidates are the same physical device under different HA entity ids (named
+        slug + 0x<ieee> fallback). A HA rename splits history across two ids at the
+        rename instant, so the union — not first-with-data — keeps the whole window
+        visible. Their samples don't overlap in time, so concatenation is correct.
+        """
+        rows = []
+        for ent in candidates or []:
+            rows += self.series(ent, hours)
+        rows.sort(key=lambda r: r[0])
+        return rows
+
+    def state_intervals_merged(self, candidates, hours, t_start, t_end,
+                               truthy=lambda v: bool(v)):
+        """state_intervals() merged across candidate entity ids (see series_merged):
+        union their in-window samples and seed from the most recent pre-window value
+        among them, so a state that spans a HA rename folds into one continuous band."""
+        rows, seeds = [], []
         for ent in candidates or []:
             e = self._esc(ent)
-            if self._fetch(f"SELECT value FROM /.*/ WHERE entity_id='{e}' "
-                           f'AND time>now()-{int(hours)}h LIMIT 1'):
-                return self.state_intervals(ent, hours, t_start, t_end)
-        return []
+            rows += [(int(t), v) for t, v in self._fetch(
+                f"SELECT value FROM /.*/ WHERE entity_id='{e}' "
+                f'AND time>now()-{int(hours)}h')]
+            s = self._fetch(f"SELECT value FROM /.*/ WHERE entity_id='{e}' "
+                            f'AND time<now()-{int(hours)}h ORDER BY time DESC LIMIT 1')
+            if s:
+                seeds.append((int(s[0][0]), s[0][1]))
+        if seeds:
+            seeds.sort()                       # most recent pre-window value wins
+            rows.append((t_start, seeds[-1][1]))
+        rows.sort(key=lambda r: r[0])
+        return fold_intervals(rows, t_start, t_end, truthy)
 
     @staticmethod
     def _step(hours):
@@ -195,7 +213,7 @@ def collect_room_history(client, spec, hours, now=None):
     now = int(now if now is not None else time.time())
     t_start = now - int(hours) * 3600
 
-    temp = client.series_first(spec.get('temp'), hours)
+    temp = client.series_merged(spec.get('temp'), hours)
     outdoor = client.series(spec.get('outdoor'), hours)
 
     # Cooling vs heating from the authoritative compressor_activity string. 'hot water'
@@ -207,7 +225,7 @@ def collect_room_history(client, spec, hours, now=None):
     hp_active = union_intervals(hp_cooling, hp_heating)
 
     window = union_intervals(*[
-        client.state_intervals_first(cands, hours, t_start, now)
+        client.state_intervals_merged(cands, hours, t_start, now)
         for cands in spec.get('windows', [])
     ]) if spec.get('windows') else []
 
