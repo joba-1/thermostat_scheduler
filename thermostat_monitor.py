@@ -1336,12 +1336,12 @@ class Manager:
 body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
  background:#f4f5f7;color:#1f2329;line-height:1.45}
 .wrap{max-width:920px;margin:0 auto;padding:20px 16px 48px}
-header{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:4px}
+header{display:flex;align-items:center;gap:8px 10px;flex-wrap:wrap;margin-bottom:16px}
 header .logo{height:30px;width:30px;flex:0 0 auto}
 h1{font-size:22px;margin:0;font-weight:650}
 .when{color:#6b7280;font-size:13px}
 .pill{display:inline-block;padding:3px 12px;border-radius:999px;font-size:13px;
- font-weight:650;color:#fff;margin:10px 0 18px}
+ font-weight:650;color:#fff;margin-left:auto}
 .pill.ok{background:#1a7f37}.pill.note{background:#bf8700}.pill.alert{background:#b42318}
 .card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:16px 18px;
  margin:0 0 16px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
@@ -1423,9 +1423,11 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
 
         cls_pill = ('alert' if d['n_alert'] else 'note' if d['n_info'] else 'ok')
         p = head
+        # Status pill rides on the right of the title bar when there's room (desktop)
+        # and wraps below the title on narrow screens.
         p.append(f'<header>{logo}<h1>Klima Status</h1>'
-                 f'<span class="when">{esc(d["when"])}</span></header>')
-        p.append(f'<div class="pill {cls_pill}">{esc(d["overall"])}</div>')
+                 f'<span class="when">{esc(d["when"])}</span>'
+                 f'<span class="pill {cls_pill}">{esc(d["overall"])}</span></header>')
 
         # summary card
         p.append('<div class="card"><h2>Overview</h2><div class="kv">')
