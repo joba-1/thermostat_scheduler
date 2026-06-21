@@ -204,10 +204,25 @@ def test_hp_overview_is_collapsed_details():
     mgr._last_report = mgr._report_data(mode='cooling', hp=hp, issues=[])
     page = mgr.web_page()
     # summary (first line) always visible; telemetry in a collapsed (no `open`) table
-    assert '<details class="hp"><summary>' in page
-    assert '<details class="hp" open' not in page
+    assert '<details class="fold"><summary>' in page
+    assert '<details class="fold" open' not in page
     assert 'cooling season — cooling (running)' in page
     assert 'Flow (Vorlauf)' in page and '14.8°C' in page
+
+
+def test_open_windows_overview_is_collapsed_with_room_summary():
+    cfg = {k: (dict(v) if isinstance(v, dict) else v) for k, v in CFG.items()}
+    cfg['web'] = {'enabled': True}
+    cfg['device_state_file'] = tempfile.mkdtemp() + '/devices.json'
+    mgr = tm.Manager(cfg)
+    mgr.window_off = {'Waschküche': '2026-06-21T15:13:42',
+                      'Bad OG': '2026-06-21T15:20:00'}
+    mgr._last_report = mgr._report_data(mode='cooling', hp=None, issues=[])
+    page = mgr.web_page()
+    # summary lists which rooms (sorted); ages live in the collapsed detail table
+    assert '<details class="fold"><summary><span class="k">Off (window open)' in page
+    assert 'Bad OG, Waschküche' in page          # summary = room names
+    assert '<table class="fold-tbl">' in page     # per-room ages in the detail
 
 
 def test_room_page_toggles_ranges_and_no_footer(monkeypatch):

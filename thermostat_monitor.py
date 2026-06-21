@@ -967,10 +967,14 @@ class Manager:
             want = "OPEN fully" if mode == 'cooling' else "normal heating"
             manual_line = f"{want}: " + ", ".join(self.manual_thermostats)
 
-        window_line = None
+        window_line = None        # text/mail: single line
+        window_head = None        # web: summary (which rooms) — always visible
+        window_rows = []          # web: collapsed detail [(room, age), ...]
         if self.window_off:
-            window_line = ", ".join(f"{r} ({self._age(ts)})"
-                                    for r, ts in sorted(self.window_off.items()))
+            items = sorted(self.window_off.items())
+            window_line = ", ".join(f"{r} ({self._age(ts)})" for r, ts in items)
+            window_head = ", ".join(r for r, _ in items)
+            window_rows = [(r, self._age(ts)) for r, ts in items]
 
         thermo_bat_limit = self.alerts_cfg.get('battery_limit', 20)
         records, setpoints = [], []
@@ -1065,7 +1069,8 @@ class Manager:
             'mode': mode,
             'hp_line': hp_line, 'hp_head': hp_head, 'hp_rows': hp_rows,
             'manual_line': manual_line,
-            'window_line': window_line, 'set_line': set_line,
+            'window_line': window_line, 'window_head': window_head,
+            'window_rows': window_rows, 'set_line': set_line,
             'thermo': {'headers': thermo_headers,
                        'rows': thermo_rows, 'styles': thermo_styles},
             'sensors': ({'headers': ["sensor", "value", "kind", "bat", "seen"],
@@ -1333,16 +1338,16 @@ h1{font-size:22px;margin:0;font-weight:650}
  margin:0 0 12px;font-weight:650}
 .kv{display:grid;grid-template-columns:max-content 1fr;gap:6px 18px;font-size:14px}
 .kv .k{color:#6b7280}
-details.hp{font-size:14px;margin-top:8px;border-top:1px solid #f0f1f3;padding-top:8px}
-details.hp summary{cursor:pointer;list-style:none}
-details.hp summary::-webkit-details-marker{display:none}
-details.hp summary::before{content:"\\25B8";color:#9ca3af;margin-right:7px;
+details.fold{font-size:14px;margin-top:8px;border-top:1px solid #f0f1f3;padding-top:8px}
+details.fold summary{cursor:pointer;list-style:none}
+details.fold summary::-webkit-details-marker{display:none}
+details.fold summary::before{content:"\\25B8";color:#9ca3af;margin-right:7px;
  display:inline-block;transition:transform .15s}
-details.hp[open] summary::before{transform:rotate(90deg)}
-details.hp .k{color:#6b7280;margin-right:6px}
-table.hp-tbl{width:auto;margin:8px 0 2px 20px;font-size:13.5px}
-table.hp-tbl td{padding:3px 16px 3px 0;border:none;white-space:nowrap}
-table.hp-tbl td.k{color:#6b7280}
+details.fold[open] summary::before{transform:rotate(90deg)}
+details.fold .k{color:#6b7280;margin-right:6px}
+table.fold-tbl{width:auto;margin:8px 0 2px 20px;font-size:13.5px}
+table.fold-tbl td{padding:3px 16px 3px 0;border:none;white-space:nowrap}
+table.fold-tbl td.k{color:#6b7280}
 .tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
 table{border-collapse:collapse;width:100%;font-size:14px}
 th{text-align:left;font-weight:650;color:#6b7280;border-bottom:2px solid #e5e7eb;
@@ -1420,17 +1425,22 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
         if d['manual_line']:
             p.append(f'<div class="k">Manual valves</div>'
                      f'<div>{esc(d["manual_line"])}</div>')
-        if d.get('window_line'):
-            p.append(f'<div class="k">Off (window open)</div>'
-                     f'<div>{esc(d["window_line"])}</div>')
         p.append('</div>')
-        # Heat pump: compact — summary line always visible, telemetry collapsed.
+
+        # Compact, collapsible sub-sections: a summary line is always visible, the
+        # detail table expands on tap (same idiom for heat pump + open windows).
+        def _fold(label, head, rows):
+            body = ''.join(f'<tr><td class="k">{esc(a)}</td><td>{esc(b)}</td></tr>'
+                           for a, b in rows)
+            return (f'<details class="fold"><summary><span class="k">{esc(label)}'
+                    f'</span> {esc(head)}</summary>'
+                    f'<table class="fold-tbl">{body}</table></details>')
+
         if d.get('hp_head'):
-            rows = ''.join(f'<tr><td class="k">{esc(lbl)}</td><td>{esc(val)}</td></tr>'
-                           for lbl, val in d.get('hp_rows') or [])
-            p.append(f'<details class="hp"><summary><span class="k">Heat pump</span> '
-                     f'{esc(d["hp_head"])}</summary>'
-                     f'<table class="hp-tbl">{rows}</table></details>')
+            p.append(_fold('Heat pump', d['hp_head'], d.get('hp_rows') or []))
+        if d.get('window_head'):
+            p.append(_fold('Off (window open)', d['window_head'],
+                           d.get('window_rows') or []))
         p.append('</div>')
 
         p.append('<div class="card"><h2>Thermostats</h2>')
