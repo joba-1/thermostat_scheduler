@@ -28,6 +28,14 @@ HP_OUTDOOR_TEMP = 'ems_esp_thermostat_damped_outdoor_temperature'
 HOURS_CHOICES = (6, 24, 72)
 DEFAULT_HOURS = 24
 
+# The window's start-state is seeded from the last sample *before* the window. Ignore
+# that seed if it is older than this: a "last known state" many hours old can't be
+# trusted, and cheap contact sensors (e.g. TS0203) routinely DROP their close event,
+# leaving the logged state stuck "open" for days. Without this cap a single stale
+# "open" paints a phantom multi-day window-open band. 12 h comfortably exceeds a real
+# overnight airing while killing week-old stale seeds.
+SEED_MAX_AGE = 12 * 3600
+
 
 # --- interval algebra (pure, testable) -------------------------------------------
 
@@ -138,7 +146,7 @@ class InfluxClient:
         seed = self._fetch(
             f"SELECT value FROM /.*/ WHERE entity_id='{e}' "
             f'AND time<now()-{int(hours)}h ORDER BY time DESC LIMIT 1')
-        if seed:
+        if seed and t_start - int(seed[0][0]) <= SEED_MAX_AGE:
             rows = [(t_start, seed[0][1])] + rows
         rows.sort()
         return fold_intervals(rows, t_start, t_end, truthy)
@@ -158,7 +166,7 @@ class InfluxClient:
         seed = self._fetch(
             f'SELECT state FROM "state" WHERE entity_id=\'{e}\' '
             f'AND time<now()-{int(hours)}h ORDER BY time DESC LIMIT 1')
-        if seed:
+        if seed and t_start - int(seed[0][0]) <= SEED_MAX_AGE:
             rows = [(t_start, seed[0][1])] + rows
         rows.sort(key=lambda r: r[0])
         return fold_intervals(rows, t_start, t_end, truthy=lambda s: s in match)
@@ -192,9 +200,12 @@ class InfluxClient:
                             f'AND time<now()-{int(hours)}h ORDER BY time DESC LIMIT 1')
             if s:
                 seeds.append((int(s[0][0]), s[0][1]))
+        # most recent pre-window value wins, but only if it isn't a stale (dropped-edge)
+        # reading — see SEED_MAX_AGE (lossy contact sensors get stuck "open").
         if seeds:
-            seeds.sort()                       # most recent pre-window value wins
-            rows.append((t_start, seeds[-1][1]))
+            seeds.sort()
+            if t_start - seeds[-1][0] <= SEED_MAX_AGE:
+                rows.append((t_start, seeds[-1][1]))
         rows.sort(key=lambda r: r[0])
         return fold_intervals(rows, t_start, t_end, truthy)
 

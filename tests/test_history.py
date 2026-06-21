@@ -57,6 +57,30 @@ def test_collect_room_history_conditioned_excludes_window():
                for s, e in data['conditioned'])
 
 
+def test_stale_seed_is_ignored():
+    """A pre-window 'open' that is older than SEED_MAX_AGE must NOT paint a phantom
+    open band (lossy contact sensors drop their close event and get stuck 'open')."""
+    now = 1_000_000
+    t_start = now - 72 * 3600
+
+    class SeedInflux(history.InfluxClient):
+        def __init__(self, seed_age_h):
+            super().__init__()
+            self.seed_age_h = seed_age_h
+
+        def _fetch(self, q):
+            if 'time<now()' in q:                       # the seed query -> stale 'open'
+                return [[t_start - self.seed_age_h * 3600, 1]]
+            return [[now - 3600, 1], [now - 1800, 0]]   # a real 30-min open in-window
+
+    # seed 5 days before the window -> dropped: only the real 30-min span remains
+    band = SeedInflux(120).state_intervals_merged(['e'], 72, t_start, now)
+    assert band == [(now - 3600, now - 1800)]
+    # a fresh seed (2 h before window) is still honoured -> open from t_start
+    band2 = SeedInflux(2).state_intervals_merged(['e'], 72, t_start, now)
+    assert band2[0][0] == t_start
+
+
 def test_candidates_merge_across_a_rename():
     """When history is split across two entity ids (HA rename), the window band is the
     UNION of both candidates — not just the first one with data."""
