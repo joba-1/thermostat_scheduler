@@ -15,7 +15,6 @@ def test_room_entities_from_config_and_override():
     ent = history.room_entities('Arbeitszimmer', item)
     assert ent['temperature'] == 'arbeitszimmer_bewegungsmelder_temperature'
     assert ent['windows'] == ['arbeitszimmer_fenster_contact']
-    assert ent['valve'] == 'arbeitszimmer_thermostat_valve_opening_degree'
     assert ent['outdoor'] == history.HP_OUTDOOR_TEMP
     # override wins per field
     ent2 = history.room_entities('Arbeitszimmer', item,
@@ -70,7 +69,7 @@ def test_collect_room_history_conditioned_excludes_window():
     }
     client = FakeInflux(responses)
     ent = {'temperature': 'temp_ent', 'outdoor': history.HP_OUTDOOR_TEMP,
-           'activity': history.HP_ACTIVITY, 'windows': ['win_ent'], 'valve': None}
+           'activity': history.HP_ACTIVITY, 'windows': ['win_ent']}
     data = history.collect_room_history(client, ent, 6, now=now)
     assert data['temp'] and data['hp_cooling'] and not data['hp_heating']
     # the open-window span is cut out of the conditioned band

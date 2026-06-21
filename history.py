@@ -1,7 +1,7 @@
 """Per-room history charts for the status web page.
 
 Pulls the last few hours of room temperature, heat-pump activity, window-open and
-valve state from Home Assistant's InfluxDB (job4, db `homeassistant`) and renders a
+window state from Home Assistant's InfluxDB (job4, db `homeassistant`) and renders a
 dependency-free inline SVG. All InfluxDB access goes through `InfluxClient`, whose
 `_fetch` can be replaced in tests so nothing here ever needs a live database.
 
@@ -69,8 +69,6 @@ def room_entities(room, item, overrides=None):
     ent = {
         'temperature': temp_entity,
         'windows': [slugify(w) + '_contact' for w in windows],
-        # only TRVZB actually report this; used if the query returns data, else ignored
-        'valve': slugify(f"{room} Thermostat") + '_valve_opening_degree',
         'activity': HP_ACTIVITY,
         'outdoor': HP_OUTDOOR_TEMP,
     }
@@ -238,14 +236,11 @@ def collect_room_history(client, ent, hours, now=None):
         client.state_intervals(w, hours, t_start, now) for w in ent.get('windows', [])
     ]) if ent.get('windows') else []
 
-    # "Actually conditioning": heat pump producing, window closed, and (if a valve
-    # series exists for this room) the valve is open.
+    # "Actually conditioning": heat pump producing AND the room's window closed (the
+    # valves are forced open in cooling). We deliberately do NOT gate on the TRV's
+    # valve_opening_degree — TRVZBs report it only on change (often once in many
+    # hours), so before the first sample the band would be wrongly blank.
     conditioned = subtract_intervals(hp_active, window)
-    valve = client.series(ent.get('valve'), hours)
-    if valve:
-        valve_open = fold_intervals([(t, v) for t, v in valve], t_start, now,
-                                    truthy=lambda v: float(v) > 0)
-        conditioned = _intersect(conditioned, union_intervals(valve_open))
 
     return {
         'now': now, 't_start': t_start, 'hours': int(hours),

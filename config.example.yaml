@@ -44,9 +44,11 @@ web:
     influx_url: http://job4:8086   # Home Assistant's InfluxDB (read-only, on demand)
     database: homeassistant
     # Entity ids are derived from the friendly names in `thermostats` (HA's slug rule).
-    # Override per room only if a name doesn't slugify cleanly:
+    # Override per room only when a sensor isn't logged under the expected slug — e.g.
+    # a contact that rejoined without a friendly name in HA logs under its raw ieee:
     # entities:
     #   Wohnzimmer: { temperature: wohnzimmer_luft_temperature }
+    #   Schlafzimmer: { windows: ["0xa4c138251f74d9ed_contact"] }
 
 heatpump:
   enabled: true
