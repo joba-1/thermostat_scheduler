@@ -919,13 +919,20 @@ class Manager:
                    else f"{n_alert} alert(s), {n_info} note(s)")
 
         hp_line = None
+        hp_head = None        # web: always-visible summary line
+        hp_rows = []          # web: collapsed detail table [(label, value), ...]
         if hp:
             t = hp['telemetry']
             units = {'vorlauf': '°C', 'ruecklauf': '°C', 'outdoor': '°C',
                      'power': 'W', 'pressure': 'bar'}
+            labels = {'vorlauf': 'Flow (Vorlauf)', 'ruecklauf': 'Return (Rücklauf)',
+                      'outdoor': 'Outdoor', 'power': 'Power', 'pressure': 'Pressure'}
             parts = [f"{k} {self._fmt(t[k], units.get(k, ''))}"
                      for k in ('vorlauf', 'ruecklauf', 'outdoor', 'power', 'pressure')
                      if k in t]
+            hp_rows = [(labels[k], self._fmt(t[k], units.get(k, '')))
+                       for k in ('vorlauf', 'ruecklauf', 'outdoor', 'power', 'pressure')
+                       if k in t]
             # the pump's own dew-point view (flow floor = dewtemperature +
             # dewoffset) — the binding constraint on how cold it can cool. Show
             # the temp+humidity ems-esp derived it from (the values we feed it as
@@ -934,11 +941,15 @@ class Manager:
             dewt = raw.get('dewtemperature')
             if dewt is not None:
                 seg = f"dew {self._fmt(dewt, '°C')}"
+                dval = self._fmt(dewt, '°C')
                 rt = raw.get('rftemp', raw.get('currtemp'))
                 ah = raw.get('airhumidity')
                 if rt is not None and ah is not None:
-                    seg += f" (ems-esp {self._fmt(rt, '°C')} {self._fmt(ah, '%RH')})"
+                    detail = f" (ems-esp {self._fmt(rt, '°C')} {self._fmt(ah, '%RH')})"
+                    seg += detail
+                    dval += detail
                 parts.append(seg)
+                hp_rows.append(('Dew point', dval))
             act = 'running' if hp.get('active') else 'idle'
             # `hpactivity` is what the pump is doing *right now* (e.g. "hot
             # water", "cooling", "heating", "off") — distinct from the season
@@ -948,6 +959,7 @@ class Manager:
             activity = (hp.get('raw') or {}).get('hpactivity')
             head = (f"{hp['mode']} season — {activity} ({act})"
                     if activity else f"{hp['mode']} ({act})")
+            hp_head = head
             hp_line = f"{head}: " + ", ".join(parts)
 
         manual_line = None
@@ -1051,7 +1063,8 @@ class Manager:
             'when': time.strftime('%a %Y-%m-%d %H:%M', now_lt),
             'overall': overall, 'n_alert': n_alert, 'n_info': n_info,
             'mode': mode,
-            'hp_line': hp_line, 'manual_line': manual_line,
+            'hp_line': hp_line, 'hp_head': hp_head, 'hp_rows': hp_rows,
+            'manual_line': manual_line,
             'window_line': window_line, 'set_line': set_line,
             'thermo': {'headers': thermo_headers,
                        'rows': thermo_rows, 'styles': thermo_styles},
@@ -1197,9 +1210,17 @@ class Manager:
 
     # Project logo (also attached to the ThermostatScheduler Trac page). Served at
     # /logo.svg and shown in the web UI header + as favicon (coding standard §5).
-    _LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                              'docs', 'thermostat.svg')
+    # The PNG is the iOS "Add to Home Screen" app icon (apple-touch-icon, 180x180).
+    _DOCS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'docs')
+    _LOGO_PATH = os.path.join(_DOCS_DIR, 'thermostat.svg')
+    _APPLE_ICON_PATH = os.path.join(_DOCS_DIR, 'apple-touch-icon.png')
     _logo_cache = None
+    _apple_icon_cache = None
+    # favicon + iOS home-screen icon + web-app title; shared by every page <head>
+    _ICON_LINKS = ('<link rel="icon" type="image/svg+xml" href="/logo.svg">'
+                   '<link rel="apple-touch-icon" href="/apple-touch-icon.png">'
+                   '<meta name="apple-mobile-web-app-title" content="Thermostat">'
+                   '<meta name="apple-mobile-web-app-capable" content="yes">')
 
     @classmethod
     def logo_svg(cls):
@@ -1210,6 +1231,16 @@ class Manager:
             except OSError:
                 cls._logo_cache = ''      # missing logo must never break the page
         return cls._logo_cache
+
+    @classmethod
+    def apple_icon_png(cls):
+        if cls._apple_icon_cache is None:
+            try:
+                with open(cls._APPLE_ICON_PATH, 'rb') as f:
+                    cls._apple_icon_cache = f.read()
+            except OSError:
+                cls._apple_icon_cache = b''
+        return cls._apple_icon_cache
 
     @staticmethod
     def room_url(room, hours=history.DEFAULT_HOURS):
@@ -1262,23 +1293,22 @@ class Manager:
         svg = history.render_room_svg(room, data)
 
         toggles = ' '.join(
-            (f'<strong>{h}h</strong>' if h == hours
-             else f'<a href="{self.room_url(room, h)}">{h}h</a>')
+            (f'<strong>{history.hours_label(h)}</strong>' if h == hours
+             else f'<a href="{self.room_url(room, h)}">{history.hours_label(h)}</a>')
             for h in history.HOURS_CHOICES)
         p = ['<!doctype html><html lang="en"><head><meta charset="utf-8">',
              '<meta name="viewport" content="width=device-width,initial-scale=1">',
              f'<title>{esc(room)} history</title>',
-             '<link rel="icon" type="image/svg+xml" href="/logo.svg">',
+             self._ICON_LINKS,
              f'<style>{self._WEB_CSS}.toggles{{font-size:13px;margin:0 0 14px}}'
              '.toggles a{margin-right:10px}.toggles strong{margin-right:10px}'
              '.back{font-size:13px}</style></head><body><div class="wrap">',
              f'<header><img class="logo" src="/logo.svg" alt="">'
              f'<h1>{esc(room)}</h1>'
-             f'<span class="when">last {int(hours)}h</span></header>',
+             f'<span class="when">last {history.hours_label(hours)}</span></header>',
              f'<div class="toggles">range: {toggles} '
              f'&nbsp;·&nbsp; <a class="back" href="/">← all rooms</a></div>',
              f'<div class="card">{svg}</div>',
-             '<footer><a href="/">← back to status</a></footer>',
              '</div></body></html>']
         return ''.join(p)
 
@@ -1303,6 +1333,16 @@ h1{font-size:22px;margin:0;font-weight:650}
  margin:0 0 12px;font-weight:650}
 .kv{display:grid;grid-template-columns:max-content 1fr;gap:6px 18px;font-size:14px}
 .kv .k{color:#6b7280}
+details.hp{font-size:14px;margin-top:8px;border-top:1px solid #f0f1f3;padding-top:8px}
+details.hp summary{cursor:pointer;list-style:none}
+details.hp summary::-webkit-details-marker{display:none}
+details.hp summary::before{content:"\\25B8";color:#9ca3af;margin-right:7px;
+ display:inline-block;transition:transform .15s}
+details.hp[open] summary::before{transform:rotate(90deg)}
+details.hp .k{color:#6b7280;margin-right:6px}
+table.hp-tbl{width:auto;margin:8px 0 2px 20px;font-size:13.5px}
+table.hp-tbl td{padding:3px 16px 3px 0;border:none;white-space:nowrap}
+table.hp-tbl td.k{color:#6b7280}
 .tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
 table{border-collapse:collapse;width:100%;font-size:14px}
 th{text-align:left;font-weight:650;color:#6b7280;border-bottom:2px solid #e5e7eb;
@@ -1354,7 +1394,7 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
         if refresh and refresh > 0:
             head.append(f'<meta http-equiv="refresh" content="{int(refresh)}">')
         head.append('<title>Thermostat status</title>')
-        head.append('<link rel="icon" type="image/svg+xml" href="/logo.svg">')
+        head.append(cls._ICON_LINKS)
         head.append(f'<style>{cls._WEB_CSS}</style></head><body><div class="wrap">')
         logo = '<img class="logo" src="/logo.svg" alt="">'
 
@@ -1374,8 +1414,6 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
         # summary card
         p.append('<div class="card"><h2>Overview</h2><div class="kv">')
         p.append(f'<div class="k">Mode</div><div>{esc(d["mode"])}</div>')
-        if d['hp_line']:
-            p.append(f'<div class="k">Heat pump</div><div>{esc(d["hp_line"])}</div>')
         if d.get('set_line'):
             p.append(f'<div class="k">Set point</div>'
                      f'<div>{esc(d["set_line"])} (all rooms)</div>')
@@ -1385,7 +1423,15 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
         if d.get('window_line'):
             p.append(f'<div class="k">Off (window open)</div>'
                      f'<div>{esc(d["window_line"])}</div>')
-        p.append('</div></div>')
+        p.append('</div>')
+        # Heat pump: compact — summary line always visible, telemetry collapsed.
+        if d.get('hp_head'):
+            rows = ''.join(f'<tr><td class="k">{esc(lbl)}</td><td>{esc(val)}</td></tr>'
+                           for lbl, val in d.get('hp_rows') or [])
+            p.append(f'<details class="hp"><summary><span class="k">Heat pump</span> '
+                     f'{esc(d["hp_head"])}</summary>'
+                     f'<table class="hp-tbl">{rows}</table></details>')
+        p.append('</div>')
 
         p.append('<div class="card"><h2>Thermostats</h2>')
         thermo_links = None
@@ -1470,16 +1516,22 @@ def start_web_server(mgr):
             self.end_headers()
             self.wfile.write(body)
 
+        def _send_asset(self, body, ctype):
+            self.send_response(200)
+            self.send_header('Content-Type', ctype)
+            self.send_header('Content-Length', str(len(body)))
+            self.send_header('Cache-Control', 'max-age=86400')
+            self.end_headers()
+            self.wfile.write(body)
+
         def do_GET(self):
             parsed = urllib.parse.urlparse(self.path)
             if parsed.path == '/logo.svg':
-                body = mgr.logo_svg().encode('utf-8')
-                self.send_response(200)
-                self.send_header('Content-Type', 'image/svg+xml; charset=utf-8')
-                self.send_header('Content-Length', str(len(body)))
-                self.send_header('Cache-Control', 'max-age=86400')
-                self.end_headers()
-                self.wfile.write(body)
+                self._send_asset(mgr.logo_svg().encode('utf-8'),
+                                 'image/svg+xml; charset=utf-8')
+                return
+            if parsed.path == '/apple-touch-icon.png':
+                self._send_asset(mgr.apple_icon_png(), 'image/png')
                 return
             if parsed.path == '/room':
                 qs = urllib.parse.parse_qs(parsed.query)

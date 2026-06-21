@@ -81,6 +81,27 @@ def test_stale_seed_is_ignored():
     assert band2[0][0] == t_start
 
 
+def test_long_open_span_is_dropped_as_artifact():
+    """An in-window 'open' that never gets a close (dropped edge) folds into a giant
+    span; spans longer than MAX_OPEN are hidden so week/month views stay clean."""
+    now = 2_000_000
+    t_start = now - 720 * 3600
+
+    class Influx(history.InfluxClient):
+        def _fetch(self, q):
+            if 'time<now()' in q:
+                return []
+            # a stuck-open span (~19 h, dropped close) then a recent real 30-min open
+            return [[t_start + 3600, 1], [t_start + 20 * 3600, 0],
+                    [now - 3600, 1], [now - 1800, 0]]
+
+    spec = {'temp': [], 'outdoor': None, 'activity': None,
+            'windows': [['w']]}
+    d = history.collect_room_history(Influx(), spec, 720, now=now)
+    # the multi-week phantom is gone; only the real 30-min span remains
+    assert d['window'] == [(now - 3600, now - 1800)]
+
+
 def test_candidates_merge_across_a_rename():
     """When history is split across two entity ids (HA rename), the window band is the
     UNION of both candidates — not just the first one with data."""

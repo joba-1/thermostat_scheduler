@@ -187,24 +187,44 @@ def test_web_page_renders_full_document():
     assert 'class="pill' in page
     # the room's temperature links to its history chart
     assert 'href="/room?name=Bad+OG' in page
-    # project icon: favicon + header logo, served at /logo.svg (coding standard §5)
+    # project icon: favicon + header logo + iOS home-screen icon (coding standard §5)
     assert 'rel="icon"' in page and 'src="/logo.svg"' in page
+    assert 'rel="apple-touch-icon" href="/apple-touch-icon.png"' in page
     assert mgr.logo_svg().lstrip().startswith('<?xml') or '<svg' in mgr.logo_svg()
 
 
-def test_room_page_has_chart_back_and_toggles(monkeypatch):
+def test_hp_overview_is_collapsed_details():
     cfg = {k: (dict(v) if isinstance(v, dict) else v) for k, v in CFG.items()}
     cfg['web'] = {'enabled': True}
     cfg['device_state_file'] = tempfile.mkdtemp() + '/devices.json'
     mgr = tm.Manager(cfg)
-    # never hit a real InfluxDB: stub the client's fetch to return nothing
+    hp = {'mode': 'cooling', 'active': True,
+          'telemetry': {'vorlauf': 14.8, 'ruecklauf': 16.0, 'power': 691},
+          'raw': {'hpactivity': 'cooling'}}
+    mgr._last_report = mgr._report_data(mode='cooling', hp=hp, issues=[])
+    page = mgr.web_page()
+    # summary (first line) always visible; telemetry in a collapsed (no `open`) table
+    assert '<details class="hp"><summary>' in page
+    assert '<details class="hp" open' not in page
+    assert 'cooling season — cooling (running)' in page
+    assert 'Flow (Vorlauf)' in page and '14.8°C' in page
+
+
+def test_room_page_toggles_ranges_and_no_footer(monkeypatch):
+    cfg = {k: (dict(v) if isinstance(v, dict) else v) for k, v in CFG.items()}
+    cfg['web'] = {'enabled': True}
+    cfg['device_state_file'] = tempfile.mkdtemp() + '/devices.json'
+    mgr = tm.Manager(cfg)
     import history
     monkeypatch.setattr(history.InfluxClient, '_fetch', lambda self, q: [])
     page = mgr.room_page('Bad OG', 24)
     assert '<svg' in page and 'Bad OG' in page
-    assert 'href="/"' in page                       # back link
-    assert 'href="/room?name=Bad+OG&hours=6"' in page   # range toggle
-    assert mgr.room_page('Nope', 24) is None        # unknown room rejected
+    assert 'href="/"' in page                              # "all rooms" link (top)
+    assert '← back to status' not in page                 # bottom footer removed
+    # all five ranges incl. week + month, with friendly labels
+    for h, lbl in ((6, '6h'), (72, '3d'), (168, '1w'), (720, '1mo')):
+        assert f'href="/room?name=Bad+OG&hours={h}">{lbl}</a>' in page
+    assert mgr.room_page('Nope', 24) is None              # unknown room rejected
 
 
 def test_hp_line_shows_current_activity():

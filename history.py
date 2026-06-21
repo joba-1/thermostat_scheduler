@@ -25,16 +25,22 @@ HP_ACTIVITY = 'ems_esp_boiler_compressor_activity'
 HP_OUTDOOR_TEMP = 'ems_esp_thermostat_damped_outdoor_temperature'
 
 # Allowed chart windows (hours). Whitelisted so no caller-supplied value reaches a query.
-HOURS_CHOICES = (6, 24, 72)
+HOURS_CHOICES = (6, 24, 72, 168, 720)
 DEFAULT_HOURS = 24
+_HOURS_LABELS = {6: '6h', 24: '24h', 72: '3d', 168: '1w', 720: '1mo'}
 
-# The window's start-state is seeded from the last sample *before* the window. Ignore
-# that seed if it is older than this: a "last known state" many hours old can't be
-# trusted, and cheap contact sensors (e.g. TS0203) routinely DROP their close event,
-# leaving the logged state stuck "open" for days. Without this cap a single stale
-# "open" paints a phantom multi-day window-open band. 12 h comfortably exceeds a real
-# overnight airing while killing week-old stale seeds.
+
+def hours_label(h):
+    return _HOURS_LABELS.get(h, f'{h}h')
+
+# Cheap contact sensors (e.g. TS0203) routinely DROP their close event, leaving the
+# logged state stuck "open" — for the *seed* (state at window start) and *in-window*
+# (consecutive opens with no close fold into one giant span). Two guards, both 12 h
+# (comfortably exceeds a real overnight airing, kills the multi-day artifacts):
+#  - SEED_MAX_AGE: ignore a pre-window state-seed older than this.
+#  - MAX_OPEN: hide a window-open span longer than this (treated as a dropped close).
 SEED_MAX_AGE = 12 * 3600
+MAX_OPEN = 12 * 3600
 
 
 # --- interval algebra (pure, testable) -------------------------------------------
@@ -211,7 +217,8 @@ class InfluxClient:
 
     @staticmethod
     def _step(hours):
-        return '5m' if hours <= 6 else '15m' if hours <= 24 else '1h'
+        return ('5m' if hours <= 6 else '15m' if hours <= 24 else '1h'
+                if hours <= 72 else '2h' if hours <= 168 else '6h')
 
 
 def collect_room_history(client, spec, hours, now=None):
@@ -239,6 +246,9 @@ def collect_room_history(client, spec, hours, now=None):
         client.state_intervals_merged(cands, hours, t_start, now)
         for cands in spec.get('windows', [])
     ]) if spec.get('windows') else []
+    # Drop implausibly long "open" spans (a dropped close left the state stuck open);
+    # see MAX_OPEN. Keeps week/month views from showing a phantom continuous band.
+    window = [s for s in window if s[1] - s[0] <= MAX_OPEN]
 
     # "Actually conditioning": heat pump producing AND the room's window closed (the
     # valves are forced open in cooling). We deliberately do NOT gate on the TRV's
@@ -368,12 +378,16 @@ def render_room_svg(room, data):
             body.append(f'<text x="{x0 - 7}" y="{yy + _FS * 0.35:.1f}" '
                         f'text-anchor="end" font-size="{_FS}" fill="{_COL["label"]}">'
                         f'{tv:.1f}°</text>')
-        # x time ticks (~6 labels)
+        # x time ticks (~6 labels); format widens with the range so multi-day
+        # windows don't show six identical clock times
+        hrs = data['hours']
+        tfmt = ('%H:%M' if hrs <= 24 else '%a %H:%M' if hrs <= 72
+                else '%a' if hrs <= 168 else '%d.%m')
         n = 6
         for i in range(n + 1):
             t = t0 + (t1 - t0) * i / n
             xx = _x(t, t0, t1, x0, x1)
-            lbl = time.strftime('%H:%M', time.localtime(t))
+            lbl = time.strftime(tfmt, time.localtime(t))
             body.append(f'<text x="{xx:.1f}" y="{y1 + _FS + 5:.0f}" '
                         f'text-anchor="middle" font-size="{_FS}" '
                         f'fill="{_COL["label"]}">{lbl}</text>')
