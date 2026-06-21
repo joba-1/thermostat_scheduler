@@ -13,6 +13,7 @@ HA logged under its raw ieee (no friendly name) still resolves. The chart `spec`
 """
 import html
 import json
+import math
 import time
 import urllib.parse
 import urllib.request
@@ -322,6 +323,27 @@ def _x(t, t0, t1, x0, x1):
     return x0 + (t - t0) / max(t1 - t0, 1) * (x1 - x0)
 
 
+def _nice_step(span):
+    """Smallest 'nice' axis step (…0.5,1,2,5,10…) giving at most ~6 intervals."""
+    span = max(span, 0.5)
+    for s in (0.5, 1, 2, 5, 10, 20, 50, 100):
+        if span / s <= 6:
+            return s
+    return 200
+
+
+def _temp_axis(vlo, vhi):
+    """Round [min,max] data temps out to nice gridline bounds; return (vmin, vmax,
+    step) so axis labels land on round values (24°, 26°…) not 24.1°."""
+    step = _nice_step(vhi - vlo)
+    vmin = math.floor(vlo / step) * step
+    vmax = math.ceil(vhi / step) * step
+    while vmax - vmin < 1.5 * step:        # guarantee a few gridlines, even if flat
+        vmin -= step
+        vmax += step
+    return vmin, vmax, step
+
+
 def _time_ticks(t0, t1, hours):
     """Even local-time tick boundaries within [t0, t1] (round hours / midnights), so
     axis labels read 16:00 / Mon 00:00 rather than the window's arbitrary edge time."""
@@ -403,18 +425,17 @@ def render_room_svg(room, data):
                     f'fill="{_COL["label"]}" font-size="{_FS_EMPTY}">no temperature '
                     f'history for the selected window</text>')
     else:
-        vmin, vmax = min(vals), max(vals)
-        pad = max((vmax - vmin) * 0.1, 0.5)
-        vmin, vmax = vmin - pad, vmax + pad
-        # y gridlines + °C ticks
-        for frac in (0, 0.25, 0.5, 0.75, 1):
-            yy = y1 - frac * (y1 - y0)
-            tv = vmin + frac * (vmax - vmin)
+        # y gridlines at round temperatures (nice-number axis), not the raw data edges
+        vmin, vmax, vstep = _temp_axis(min(vals), max(vals))
+        tv = vmin
+        while tv <= vmax + 1e-9:
+            yy = y1 - (tv - vmin) / (vmax - vmin) * (y1 - y0)
             body.append(f'<line x1="{x0}" y1="{yy:.1f}" x2="{x1}" y2="{yy:.1f}" '
                         f'stroke="{_COL["grid"]}"/>')
             body.append(f'<text x="{x0 - 7}" y="{yy + _FS * 0.35:.1f}" '
                         f'text-anchor="end" font-size="{_FS}" fill="{_COL["label"]}">'
-                        f'{tv:.1f}°</text>')
+                        f'{tv:g}°</text>')
+            tv += vstep
         # x time ticks at even local-time boundaries (round hours/days), with a
         # vertical gridline each; the label format widens with the range.
         hrs = data['hours']

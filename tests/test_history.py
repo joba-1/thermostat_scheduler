@@ -119,6 +119,19 @@ def test_time_ticks_land_on_even_local_boundaries():
         assert lt.tm_hour == 0 and lt.tm_min == 0
 
 
+def test_temp_axis_rounds_to_nice_bounds():
+    vmin, vmax, step = history._temp_axis(24.1, 27.3)
+    assert step == 1 and vmin == 24 and vmax == 28      # ticks 24,25,26,27,28
+    assert all(float(t).is_integer() for t in
+               [vmin + i * step for i in range(int((vmax - vmin) / step) + 1)])
+    # wide range -> 5° steps
+    _, _, step2 = history._temp_axis(17.2, 35.8)
+    assert step2 == 5
+    # flat data still yields a few gridlines around it
+    lo, hi, st = history._temp_axis(25.5, 25.5)
+    assert lo < 25.5 < hi and (hi - lo) >= 1.5 * st
+
+
 def test_hold_to_edges_extends_recent_but_not_stale():
     now, t0 = 1_000_000, 1_000_000 - 24 * 3600
     # a recent series sitting inside the window -> held flat to both edges
