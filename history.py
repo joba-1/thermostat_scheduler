@@ -322,6 +322,24 @@ def _x(t, t0, t1, x0, x1):
     return x0 + (t - t0) / max(t1 - t0, 1) * (x1 - x0)
 
 
+def _time_ticks(t0, t1, hours):
+    """Even local-time tick boundaries within [t0, t1] (round hours / midnights), so
+    axis labels read 16:00 / Mon 00:00 rather than the window's arbitrary edge time."""
+    step_h = (1 if hours <= 6 else 4 if hours <= 24 else 12 if hours <= 72
+              else 24 if hours <= 168 else 120)
+    step = step_h * 3600
+    lt = time.localtime(t0)
+    midnight = int(t0) - (lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec)
+    tick = midnight
+    while tick < t0:
+        tick += step
+    ticks = []
+    while tick <= t1:
+        ticks.append(tick)
+        tick += step
+    return ticks
+
+
 def _polyline(pts, t0, t1, vmin, vmax, x0, x1, y0, y1, color, dash=None):
     if not pts:
         return ''
@@ -397,19 +415,19 @@ def render_room_svg(room, data):
             body.append(f'<text x="{x0 - 7}" y="{yy + _FS * 0.35:.1f}" '
                         f'text-anchor="end" font-size="{_FS}" fill="{_COL["label"]}">'
                         f'{tv:.1f}°</text>')
-        # x time ticks (~6 labels); format widens with the range so multi-day
-        # windows don't show six identical clock times
+        # x time ticks at even local-time boundaries (round hours/days), with a
+        # vertical gridline each; the label format widens with the range.
         hrs = data['hours']
         tfmt = ('%H:%M' if hrs <= 24 else '%a %H:%M' if hrs <= 72
                 else '%a' if hrs <= 168 else '%d.%m')
-        n = 6
-        for i in range(n + 1):
-            t = t0 + (t1 - t0) * i / n
+        for t in _time_ticks(t0, t1, hrs):
             xx = _x(t, t0, t1, x0, x1)
-            lbl = time.strftime(tfmt, time.localtime(t))
+            body.append(f'<line x1="{xx:.1f}" y1="{y0}" x2="{xx:.1f}" y2="{y1}" '
+                        f'stroke="{_COL["grid"]}"/>')
             body.append(f'<text x="{xx:.1f}" y="{y1 + _FS + 5:.0f}" '
                         f'text-anchor="middle" font-size="{_FS}" '
-                        f'fill="{_COL["label"]}">{lbl}</text>')
+                        f'fill="{_COL["label"]}">{time.strftime(tfmt, time.localtime(t))}'
+                        f'</text>')
         body.append(_polyline(outdoor, t0, t1, vmin, vmax, x0, x1, y0, y1,
                               _COL['outdoor'], dash='5 4'))
         body.append(_polyline(temp, t0, t1, vmin, vmax, x0, x1, y0, y1, _COL['temp']))

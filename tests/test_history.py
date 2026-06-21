@@ -102,6 +102,23 @@ def test_long_open_span_is_dropped_as_artifact():
     assert d['window'] == [(now - 3600, now - 1800)]
 
 
+def test_time_ticks_land_on_even_local_boundaries():
+    import time
+    # a window with an arbitrary edge time -> ticks must be round, not the edge
+    t1 = int(time.mktime(time.strptime('2026-06-21 17:46:00', '%Y-%m-%d %H:%M:%S')))
+    t0 = t1 - 24 * 3600
+    ticks = history._time_ticks(t0, t1, 24)
+    assert ticks, 'expected ticks in the window'
+    for t in ticks:
+        lt = time.localtime(t)
+        assert lt.tm_min == 0 and lt.tm_sec == 0      # on the hour
+        assert lt.tm_hour % 4 == 0                    # 24h range -> every 4h
+    # daily range -> midnights
+    for t in history._time_ticks(t0 - 6 * 86400, t1, 168):
+        lt = time.localtime(t)
+        assert lt.tm_hour == 0 and lt.tm_min == 0
+
+
 def test_hold_to_edges_extends_recent_but_not_stale():
     now, t0 = 1_000_000, 1_000_000 - 24 * 3600
     # a recent series sitting inside the window -> held flat to both edges
