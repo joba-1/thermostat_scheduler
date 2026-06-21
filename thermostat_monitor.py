@@ -136,6 +136,14 @@ class Manager:
         # and only restores rooms we closed (never a user's manual off).
         self.window_cfg = cfg.get('window_control', {}) or {}
 
+        # Radiator fans (smart plugs) switched on while the heat pump actively cools,
+        # to boost radiator heat transfer. See _apply_fan_control.
+        self.fan_cfg = cfg.get('fan_control', {}) or {}
+        self.fans = self.fan_cfg.get('fans') or []
+        self._fans_on = None        # last applied fan state (None until first apply)
+        self._cool_active = None    # last seen "actively cooling" bool
+        self._cool_edge_ts = 0.0    # when _cool_active last changed
+
         # Optional read-only status web page. The eval loop caches the latest
         # report data here; the HTTP server only renders this snapshot (it never
         # recomputes, so it has no side effects and can't race the MQTT thread).
@@ -329,6 +337,7 @@ class Manager:
 
         if t == self.heatpump_cfg.get('boiler_topic'):
             self.hp_boiler = self._safe_json(payload)
+            self._apply_fan_control(client)   # react promptly to cooling on/off
             return
         if t == self.heatpump_cfg.get('thermostat_topic'):
             self.hp_thermostat = self._safe_json(payload)
@@ -656,6 +665,10 @@ class Manager:
                 except Exception as e:
                     log.exception("window-control reconcile error for %s: %s", room, e)
 
+        # radiator fans: also here so the off_delay still expires if boiler
+        # messages pause (it's normally driven by each boiler_data update).
+        self._apply_fan_control(client, hp)
+
         mailed, cleared = self.alerter.process(issues)
         for iss in mailed:
             log.warning("ALERT %s: %s", iss.subject, iss.detail)
@@ -741,6 +754,69 @@ class Manager:
                 timer.daemon = True
                 self._win_timers[room] = timer
                 timer.start()
+
+    @staticmethod
+    def _cooling_active(hp):
+        """True when the heat pump is actively producing cold (compressor cooling) —
+        i.e. the radiators have cold water worth fanning. Uses `hpactivity` (the live
+        compressor activity), the same authoritative signal the charts use."""
+        return bool(hp) and (hp.get('raw') or {}).get('hpactivity') == 'cooling'
+
+    def _set_fan(self, client, fan, on, dry=False):
+        """Switch one fan plug. Supports zigbee2mqtt and Tasmota plugs."""
+        ftype = (fan.get('type') or '').lower()
+        state = "ON" if on else "OFF"
+        if ftype == 'zigbee':
+            name = fan.get('name')
+            if not name:
+                return
+            topic, payload = f"{self.base}/{name}/set", json.dumps({"state": state})
+        elif ftype == 'tasmota':
+            dev = fan.get('topic') or fan.get('name')
+            if not dev:
+                return
+            topic = f"{fan.get('cmnd_prefix', 'cmnd')}/{dev}/{fan.get('power', 'POWER')}"
+            payload = state
+        else:
+            log.warning("fan-control: unknown fan type %r", fan.get('type'))
+            return
+        if dry:
+            log.info("fan-control: would publish %s = %s", topic, payload)
+            return
+        client.publish(topic, payload, qos=1)
+
+    def _apply_fan_control(self, client, hp=None, now=None):
+        """Drive the radiator-fan plugs from the cooling signal: ON while the heat
+        pump actively cools (after `on_debounce`), held ON for `off_delay` after it
+        stops so the fans keep working the buffer's residual cold through the
+        compressor's off-gaps. Idempotent — only publishes on a state change."""
+        if client is None or not (self.fan_cfg.get('enabled') and self.fans):
+            return
+        now = now if now is not None else time.time()
+        if hp is None:
+            hp = self.heatpump_state()
+        active = self._cooling_active(hp)
+        if active != self._cool_active:
+            self._cool_active = active
+            self._cool_edge_ts = now
+        if active:
+            want = (now - self._cool_edge_ts) >= self.fan_cfg.get('on_debounce', 30)
+            want = want or bool(self._fans_on)        # already on -> stay on
+        else:
+            want = bool(self._fans_on) and \
+                (now - self._cool_edge_ts) < self.fan_cfg.get('off_delay', 600)
+        if want == bool(self._fans_on):     # None treated as off; no spurious publish
+            self._fans_on = want
+            return
+        act = self.fan_cfg.get('act', True)
+        for fan in self.fans:
+            try:
+                self._set_fan(client, fan, want, dry=not act)
+            except Exception as e:
+                log.error("fan-control publish failed for %s: %s", fan, e)
+        self._fans_on = want
+        log.info("fan-control: cooling=%s -> fans %s%s", active,
+                 "ON" if want else "OFF", "" if act else " (act:false)")
 
     def _apply_window_control(self, room, client):
         """Fired after the debounce: switch the room's TRV off (window open) or
@@ -976,6 +1052,11 @@ class Manager:
             window_head = ", ".join(r for r, _ in items)
             window_rows = [(r, self._age(ts)) for r, ts in items]
 
+        fan_line = None
+        if self.fan_cfg.get('enabled') and self.fans:
+            fan_line = (f"{'ON' if self._fans_on else 'OFF'} ({len(self.fans)} fan(s)) "
+                        f"— cooling {'active' if self._cool_active else 'idle'}")
+
         thermo_bat_limit = self.alerts_cfg.get('battery_limit', 20)
         records, setpoints = [], []
         for name, item in self.thermostats.items():
@@ -1072,7 +1153,7 @@ class Manager:
             'hp_line': hp_line, 'hp_head': hp_head, 'hp_rows': hp_rows,
             'manual_line': manual_line,
             'window_line': window_line, 'window_head': window_head,
-            'window_rows': window_rows,
+            'window_rows': window_rows, 'fan_line': fan_line,
             'set_line': set_line, 'set_head': set_head, 'set_rows': set_rows,
             'thermo': {'headers': thermo_headers,
                        'rows': thermo_rows, 'styles': thermo_styles},
@@ -1112,6 +1193,8 @@ class Manager:
             lines.append(f"  Manual valves -> {d['manual_line']}")
         if d.get('window_line'):
             lines.append(f"  Off (window open) -> {d['window_line']}")
+        if d.get('fan_line'):
+            lines.append(f"  Fans: {d['fan_line']}")
         if d.get('set_line'):
             lines.append(f"  Set point: {d['set_line']} (all rooms)")
         elif d.get('set_head'):
@@ -1438,6 +1521,8 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
         if d['manual_line']:
             p.append(f'<div class="k">Manual valves</div>'
                      f'<div>{esc(d["manual_line"])}</div>')
+        if d.get('fan_line'):
+            p.append(f'<div class="k">Fans</div><div>{esc(d["fan_line"])}</div>')
         p.append('</div>')
 
         # Compact, collapsible sub-sections: a summary line is always visible, the

@@ -109,6 +109,22 @@ old Home Assistant "lüften/heizen" automations — control now lives here.
 - Kill switch: `window_control.act: false` keeps detecting/logging/status without
   touching any valve; `enabled: false` turns the feature off.
 
+## Radiator fans (cooling boost)
+
+Radiators are weak cooling emitters, so the manager can switch **fan plugs** on while
+the heat pump is actively cooling, to force air across the radiators and pull more
+heat into the loop (`fan_control`). It triggers on `hpactivity == cooling` and holds
+the fans on for `off_delay` seconds after cooling stops, so they keep working the
+buffer's residual cold through the compressor's off-gaps.
+
+- Plugs are **zigbee2mqtt** (`{type: zigbee, name: ...}` → `zigbee2mqtt/<name>/set`)
+  or **Tasmota** (`{type: tasmota, topic: ..., power: POWER}` → `cmnd/<topic>/<power>`).
+- `on_debounce` (default 30 s) avoids reacting to a momentary cooling blip;
+  `off_delay` (default 600 s) is the post-cooling hold.
+- The status report shows a **Fans** line (ON/OFF + whether cooling is active).
+- Kill switch: `fan_control.act: false` logs "would publish …" without switching;
+  `enabled: false` turns it off.
+
 Rooms without a contact sensor (e.g. Julians, Wohnzimmer) are not window-controlled.
 
 ## Cooling

@@ -123,6 +123,20 @@ window_control:
   close_debounce: 5            # s closed before restoring
   disable_builtin: true        # on connect, turn off each TRV's own window detection
 
+
+# --- Radiator fans (smart plugs) ---
+# Switch fan plugs ON while the heat pump is actively cooling (hpactivity==cooling)
+# to boost radiator heat transfer; an off_delay keeps them running through the
+# compressor's off-gaps (a buffer tank still feeds cold to the radiators then).
+fan_control:
+  enabled: false
+  act: true                    # false = log "would publish ..." only, don't switch
+  on_debounce: 30              # s cooling must be active before switching fans on
+  off_delay: 600               # s to keep fans ON after cooling stops (use residual cold)
+  fans:                        # zigbee (zigbee2mqtt) and/or tasmota plugs
+    - { type: zigbee, name: "Schlafzimmer Ventilator" }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
+    - { type: tasmota, topic: "ventilator_wz", power: POWER }  # -> cmnd/<topic>/<power> ON|OFF
+
 # Dumb / manual radiator valves the manager cannot control. On every
 # heating<->cooling change it mails a reminder to open them (cooling) or set
 # them back to normal (heating).

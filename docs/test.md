@@ -18,6 +18,7 @@ Coverage (`tests/`):
 | `test_alerts.py` | dedup + cooldown, info never mails, cleared removal, restart persistence, daily digest, periodic `due()` |
 | `test_manager_report.py` | manual-overrides listing, sensor/thermostat namespace isolation, status report, mode-change notify |
 | `test_devices.py` | device identity: ieee/name ref parsing, bridge/devices registry + rename detection, name-fallback resolution, HA entity candidates |
+| `test_fan_control.py` | radiator-fan plug switching: cooling-active signal, on-debounce, off-delay hold through gaps, zigbee+tasmota topics, act:false |
 | `test_history.py` | per-room charts: interval algebra, candidate (slug→ieee) resolution, SVG rendering |
 
 Fixtures use the real captured `boiler_data` / `thermostat_data` field shapes.
