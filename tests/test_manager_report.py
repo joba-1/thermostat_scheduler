@@ -60,6 +60,19 @@ def test_manual_override_listed():
     assert mgr.manual_overrides() == []
 
 
+def test_room_temp_falls_back_to_trv_when_air_sensor_stale():
+    import time
+    mgr = make_mgr()                                  # Bad OG sensor = "Bad OG Luft"
+    mgr.last_state['Bad OG'] = {'local_temperature': 22.4}
+    # fresh air sensor -> used
+    mgr.sensor_state['Bad OG Luft'] = {'temperature': 17.9}
+    mgr.sensor_seen['Bad OG Luft'] = time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime())
+    assert mgr._room_temp_state('Bad OG')['temperature'] == 17.9
+    # stale air sensor (seen long ago) -> fall back to the TRV's local_temperature
+    mgr.sensor_seen['Bad OG Luft'] = '2026-01-01T00:00:00'
+    assert mgr._room_temp_state('Bad OG')['temperature'] == 22.4
+
+
 def test_sensor_and_thermostat_namespaces_dont_collide():
     """A contact sensor named 'Bad OG' must not clobber the 'Bad OG' thermostat."""
     mgr = make_mgr()

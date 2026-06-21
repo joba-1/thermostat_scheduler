@@ -705,14 +705,22 @@ class Manager:
         return max(ts, self.start_ts)
 
     def _room_temp_state(self, room):
+        """Best current room temperature: the configured air sensor while it's fresh,
+        otherwise the TRV's own local_temperature. Falling back when the air sensor is
+        *stale* (not just missing) keeps the shown temp consistent with a live source —
+        a dead/off-mesh sensor (e.g. Waschküche Luft frozen at 17.9) no longer shows a
+        stale value next to the TRV's recent 'seen'. Mirrors the chart's TRV fallback."""
         sensor = self.room_temp_sensor.get(room)
-        if sensor and isinstance(self.sensor_state.get(sensor), dict):
-            return self.sensor_state[sensor]
-        # fall back to the thermostat's own local_temperature
-        st = self.last_state.get(room)
-        if isinstance(st, dict) and 'local_temperature' in st:
-            return {'temperature': st.get('local_temperature')}
-        return None
+        st = self.sensor_state.get(sensor) if sensor else None
+        if isinstance(st, dict) and st.get('temperature') is not None:
+            seen = parse_iso(self.sensor_seen.get(sensor))
+            stale_after = self.sensors_cfg.get('unseen_interval', 21600)
+            if seen is None or (time.time() - seen) <= stale_after:
+                return st                      # room sensor present and fresh
+        trv = self.last_state.get(room)
+        if isinstance(trv, dict) and trv.get('local_temperature') is not None:
+            return {'temperature': trv.get('local_temperature')}
+        return st                              # last resort: stale value or None
 
     # ---- window -> TRV control ---------------------------------------
     def _room_window_open(self, room):
