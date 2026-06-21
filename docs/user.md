@@ -57,6 +57,17 @@ changes anything. The page re-fetches itself every `web.refresh` seconds and
 adapts to light/dark mode. There is **no authentication**, so bind it to a
 trusted LAN only (set `web.host: 127.0.0.1` for local-only access).
 
+**Per-room history charts.** Click a room's temperature on the status page to open
+a chart of the last 6 h / 24 h / 3 d (toggle links, "← all rooms" to go back). Each
+chart overlays the room temperature and the heat pump's outdoor reference
+temperature (dashed) with stripe rows below: **HP cooling / heating**, **window
+open**, and **conditioned** (heat pump producing *and* the window closed — i.e. the
+room was actually being cooled/heated). The history is read on demand from Home
+Assistant's InfluxDB (`web.history.influx_url`, default `http://job4:8086`); if it's
+unreachable the chart degrades gracefully ("no temperature history"). Entity ids are
+derived from the friendly names in `thermostats`; override per room under
+`web.history.entities` if a name doesn't map cleanly.
+
 ## Email alerts
 
 The manager mails you (low-noise):

@@ -23,6 +23,7 @@ import time
 import json
 import argparse
 import threading
+import urllib.parse
 from collections import deque, defaultdict
 
 import paho.mqtt.client as mqtt
@@ -32,6 +33,7 @@ from common import (setup_logging, log, load_config, time_to_minutes,
 import heatpump
 import cooling
 import health
+import history
 import sensors as sensors_mod
 from alerts import Alerter, make_issue
 
@@ -125,6 +127,9 @@ class Manager:
         # recomputes, so it has no side effects and can't race the MQTT thread).
         self.web_cfg = cfg.get('web', {}) or {}
         self._last_report = None
+        # InfluxDB-backed per-room history charts (built lazily on first /room hit).
+        self._history_cfg = self.web_cfg.get('history', {}) or {}
+        self._influx = None
 
         self.window_off = {}
         self.window_rooms = defaultdict(list)   # window sensor name -> [rooms]
@@ -1079,7 +1084,51 @@ class Manager:
         """Full standalone HTML page for the status web server, from the cached
         snapshot. Returns a 'warming up' placeholder until the first eval pass."""
         return self._render_web(self._last_report,
-                                refresh=self.web_cfg.get('refresh', 60))
+                                refresh=self.web_cfg.get('refresh', 60),
+                                link_rooms=True)
+
+    @staticmethod
+    def room_url(room, hours=history.DEFAULT_HOURS):
+        return '/room?' + urllib.parse.urlencode({'name': room, 'hours': hours})
+
+    def room_page(self, room, hours=history.DEFAULT_HOURS):
+        """Standalone HTML page with the last `hours` of history for one room.
+
+        Queries HA's InfluxDB on demand (the only place the web server touches
+        external state). `room` must be a configured thermostat; `hours` must be one
+        of history.HOURS_CHOICES — both are validated by the caller (the HTTP route).
+        """
+        esc = html.escape
+        item = self.thermostats.get(room)
+        if item is None:
+            return None
+        if self._influx is None:
+            self._influx = history.InfluxClient(
+                url=self._history_cfg.get('influx_url', 'http://job4:8086'),
+                database=self._history_cfg.get('database', 'homeassistant'))
+        overrides = (self._history_cfg.get('entities', {}) or {}).get(room)
+        ent = history.room_entities(room, item, overrides)
+        data = history.collect_room_history(self._influx, ent, hours)
+        svg = history.render_room_svg(room, data)
+
+        toggles = ' '.join(
+            (f'<strong>{h}h</strong>' if h == hours
+             else f'<a href="{self.room_url(room, h)}">{h}h</a>')
+            for h in history.HOURS_CHOICES)
+        p = ['<!doctype html><html lang="en"><head><meta charset="utf-8">',
+             '<meta name="viewport" content="width=device-width,initial-scale=1">',
+             f'<title>{esc(room)} history</title>',
+             f'<style>{self._WEB_CSS}.toggles{{font-size:13px;margin:0 0 14px}}'
+             '.toggles a{margin-right:10px}.toggles strong{margin-right:10px}'
+             '.back{font-size:13px}</style></head><body><div class="wrap">',
+             f'<header><h1>{esc(room)}</h1>'
+             f'<span class="when">last {int(hours)}h</span></header>',
+             f'<div class="toggles">range: {toggles} '
+             f'&nbsp;·&nbsp; <a class="back" href="/">← all rooms</a></div>',
+             f'<div class="card">{svg}</div>',
+             '<footer><a href="/">← back to status</a></footer>',
+             '</div></body></html>']
+        return ''.join(p)
 
     # --- status web page (standalone, class-based layout) -------------------
 
@@ -1123,22 +1172,29 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
 """
 
     @staticmethod
-    def _web_table(headers, rows, styles=None):
+    def _web_table(headers, rows, styles=None, links=None):
+        """Render an HTML table. `links` is an optional per-row {header: url} map;
+        a matching cell is wrapped in an <a> (used to link a room's temp to its
+        history chart). Cell text is always escaped."""
         esc = html.escape
         th = "".join(f'<th>{esc(str(h))}</th>' for h in headers)
         trs = []
         for ri, row in enumerate(rows):
             cs = styles[ri] if styles else {}
-            tds = "".join(
-                (f'<td style="{cs[h]}">{esc(str(c))}</td>' if cs.get(h)
-                 else f'<td>{esc(str(c))}</td>')
-                for h, c in zip(headers, row))
-            trs.append(f"<tr>{tds}</tr>")
+            ls = links[ri] if links else {}
+            cells = []
+            for h, c in zip(headers, row):
+                inner = esc(str(c))
+                if ls.get(h):
+                    inner = f'<a href="{esc(ls[h])}">{inner}</a>'
+                style = f' style="{cs[h]}"' if cs.get(h) else ''
+                cells.append(f'<td{style}>{inner}</td>')
+            trs.append(f"<tr>{''.join(cells)}</tr>")
         return (f'<div class="tbl-wrap"><table><thead><tr>{th}</tr></thead>'
                 f'<tbody>{"".join(trs)}</tbody></table></div>')
 
     @classmethod
-    def _render_web(cls, d, refresh=60):
+    def _render_web(cls, d, refresh=60, link_rooms=False):
         esc = html.escape
         head = ['<!doctype html><html lang="en"><head><meta charset="utf-8">',
                 '<meta name="viewport" content="width=device-width,initial-scale=1">']
@@ -1177,8 +1233,13 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
         p.append('</div></div>')
 
         p.append('<div class="card"><h2>Thermostats</h2>')
+        thermo_links = None
+        if link_rooms:
+            # link each room's name + temperature cell to its history chart
+            thermo_links = [{'room': cls.room_url(row[0]), 'temp': cls.room_url(row[0])}
+                            for row in d['thermo']['rows']]
         p.append(cls._web_table(d['thermo']['headers'], d['thermo']['rows'],
-                                d['thermo'].get('styles')))
+                                d['thermo'].get('styles'), thermo_links))
         p.append('</div>')
 
         if d['sensors']:
@@ -1245,17 +1306,36 @@ def start_web_server(mgr):
     port = int(mgr.web_cfg.get('port', 8099))
 
     class Handler(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):
-            if self.path not in ('/', '/index.html', '/status'):
-                self.send_error(404)
-                return
-            body = mgr.web_page().encode('utf-8')
+        def _send(self, body):
+            body = body.encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.send_header('Content-Length', str(len(body)))
             self.send_header('Cache-Control', 'no-store')
             self.end_headers()
             self.wfile.write(body)
+
+        def do_GET(self):
+            parsed = urllib.parse.urlparse(self.path)
+            if parsed.path == '/room':
+                qs = urllib.parse.parse_qs(parsed.query)
+                room = (qs.get('name') or [''])[0]
+                # whitelist room + hours so no caller string reaches a query
+                if room not in mgr.thermostats:
+                    self.send_error(404)
+                    return
+                try:
+                    hours = int((qs.get('hours') or [history.DEFAULT_HOURS])[0])
+                except ValueError:
+                    hours = history.DEFAULT_HOURS
+                if hours not in history.HOURS_CHOICES:
+                    hours = history.DEFAULT_HOURS
+                self._send(mgr.room_page(room, hours))
+                return
+            if parsed.path not in ('/', '/index.html', '/status'):
+                self.send_error(404)
+                return
+            self._send(mgr.web_page())
 
         def log_message(self, *a):
             pass   # don't spam the journal with one line per request

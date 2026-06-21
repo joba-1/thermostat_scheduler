@@ -150,6 +150,23 @@ def test_web_page_renders_full_document():
     assert 'Bad OG' in page and 'open' in page
     assert 'content="45"' in page          # honours the configured refresh
     assert 'class="pill' in page
+    # the room's temperature links to its history chart
+    assert 'href="/room?name=Bad+OG' in page
+
+
+def test_room_page_has_chart_back_and_toggles(monkeypatch):
+    cfg = {k: (dict(v) if isinstance(v, dict) else v) for k, v in CFG.items()}
+    cfg['web'] = {'enabled': True}
+    cfg['device_state_file'] = tempfile.mkdtemp() + '/devices.json'
+    mgr = tm.Manager(cfg)
+    # never hit a real InfluxDB: stub the client's fetch to return nothing
+    import history
+    monkeypatch.setattr(history.InfluxClient, '_fetch', lambda self, q: [])
+    page = mgr.room_page('Bad OG', 24)
+    assert '<svg' in page and 'Bad OG' in page
+    assert 'href="/"' in page                       # back link
+    assert 'href="/room?name=Bad+OG&hours=6"' in page   # range toggle
+    assert mgr.room_page('Nope', 24) is None        # unknown room rejected
 
 
 def test_hp_line_shows_current_activity():
