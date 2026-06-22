@@ -23,7 +23,8 @@ import urllib.request
 # authoritative signal. The thermostat's cooling_on flag is unreliable (it reads off
 # during active cooling), so it is not used.
 HP_ACTIVITY = 'ems_esp_boiler_compressor_activity'
-HP_OUTDOOR_TEMP = 'ems_esp_thermostat_damped_outdoor_temperature'
+HP_OUTDOOR_TEMP = 'ems_esp_thermostat_damped_outdoor_temperature'   # damped (HP ref)
+HP_OUTDOOR_RAW = 'ems_esp_boiler_outside_temperature'               # real measured
 
 # Allowed chart windows (hours). Whitelisted so no caller-supplied value reaches a query.
 HOURS_CHOICES = (6, 24, 72, 168, 720)
@@ -268,6 +269,8 @@ def collect_room_history(client, spec, hours, now=None):
 
     temp = hold_to_edges(client.series_best(spec.get('temp'), hours), t_start, now)
     outdoor = hold_to_edges(client.series(spec.get('outdoor'), hours), t_start, now)
+    outdoor_ref = hold_to_edges(client.series(spec.get('outdoor_ref'), hours),
+                                t_start, now)
 
     # Cooling vs heating from the authoritative compressor_activity string. 'hot water'
     # (DHW) and 'off' are not room conditioning, so they're excluded from hp_active.
@@ -293,7 +296,7 @@ def collect_room_history(client, spec, hours, now=None):
 
     return {
         'now': now, 't_start': t_start, 'hours': int(hours),
-        'temp': temp, 'outdoor': outdoor,
+        'temp': temp, 'outdoor': outdoor, 'outdoor_ref': outdoor_ref,
         'hp_cooling': hp_cooling, 'hp_heating': hp_heating,
         'window': window, 'conditioned': conditioned,
     }
@@ -327,7 +330,7 @@ _FS_LEG = 16               # legend font size
 _FS_EMPTY = 22
 
 _COL = {
-    'temp': '#b42318', 'outdoor': '#6b7280',
+    'temp': '#b42318', 'outdoor': '#6b7280', 'outdoor_ref': '#b8bcc4',
     'cooling': '#1f6feb', 'heating': '#bf6b00',
     'window': '#d4a017', 'conditioned': '#1a7f37', 'grid': '#e5e7eb',
     'label': '#6b7280',
@@ -434,8 +437,9 @@ def render_room_svg(room, data):
     x0, x1 = _L, _W - _R
     y0, y1 = _T, _H - _B
     temp, outdoor = data['temp'], data['outdoor']
+    outdoor_ref = data.get('outdoor_ref') or []
 
-    vals = [v for _, v in temp] + [v for _, v in outdoor]
+    vals = [v for _, v in temp] + [v for _, v in outdoor] + [v for _, v in outdoor_ref]
     body = []
     if not vals:
         body.append(f'<text x="{_W/2}" y="{_H/2}" text-anchor="middle" '
@@ -466,6 +470,9 @@ def render_room_svg(room, data):
                         f'text-anchor="middle" font-size="{_FS}" '
                         f'fill="{_COL["label"]}">{time.strftime(tfmt, time.localtime(t))}'
                         f'</text>')
+        # damped HP-ref behind (faint dotted), real outdoor (dashed), room temp on top
+        body.append(_polyline(outdoor_ref, t0, t1, vmin, vmax, x0, x1, y0, y1,
+                              _COL['outdoor_ref'], dash='2 3'))
         body.append(_polyline(outdoor, t0, t1, vmin, vmax, x0, x1, y0, y1,
                               _COL['outdoor'], dash='5 4'))
         body.append(_polyline(temp, t0, t1, vmin, vmax, x0, x1, y0, y1, _COL['temp']))
@@ -483,7 +490,8 @@ def render_room_svg(room, data):
 
     legend_items = [
         ('line', _COL['temp'], None, 'room temp'),
-        ('line', _COL['outdoor'], '5 4', 'outdoor (HP ref)'),
+        ('line', _COL['outdoor'], '5 4', 'outdoor (real)'),
+        ('line', _COL['outdoor_ref'], '2 3', 'outdoor (HP ref)'),
         ('box', _COL['conditioned'], None, 'Cond = conditioned'),
         ('box', _COL['cooling'], None, 'HP cooling'),
         ('box', _COL['heating'], None, 'HP heating'),

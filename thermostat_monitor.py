@@ -1100,8 +1100,11 @@ class Manager:
             activity = (hp.get('raw') or {}).get('hpactivity')
             head = (f"{hp['mode']} season — {activity} ({act})"
                     if activity else f"{hp['mode']} ({act})")
+            hp_line = f"{head}: " + ", ".join(parts)   # text/mail (parts has outdoor)
+            # web summary fold is collapsed, so surface the real outside temp there
             hp_head = head
-            hp_line = f"{head}: " + ", ".join(parts)
+            if isinstance(t.get('outdoor'), (int, float)):
+                hp_head += f" · outside {self._fmt(t['outdoor'], '°C')}"
 
         manual_line = None
         if self.manual_thermostats:
@@ -1470,7 +1473,8 @@ class Manager:
         windows = [devices.ha_entity_candidates(self.sensor_ieee.get(w),
                                                 self.sensor_friendly.get(w), 'contact')
                    for w in self.room_windows.get(room, [])]
-        return {'temp': temp_groups, 'outdoor': history.HP_OUTDOOR_TEMP,
+        return {'temp': temp_groups, 'outdoor': history.HP_OUTDOOR_RAW,
+                'outdoor_ref': history.HP_OUTDOOR_TEMP,
                 'activity': history.HP_ACTIVITY, 'windows': windows}
 
     def room_page(self, room, hours=history.DEFAULT_HOURS):
