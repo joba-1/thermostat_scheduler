@@ -205,6 +205,20 @@ def test_render_room_svg_has_lines_and_stripes():
         assert label in svg
 
 
+def test_render_room_svg_omits_damped_when_absent():
+    """Damping off -> collect_room_history leaves outdoor_ref empty -> the chart
+    drops both the damped polyline and its legend entry (just real outdoor)."""
+    now = 10_000
+    data = {'now': now, 't_start': now - 6 * 3600, 'hours': 6,
+            'temp': [(now - 3600, 24.0), (now - 60, 23.0)],
+            'outdoor': [(now - 3600, 30.0), (now - 60, 31.0)],
+            'outdoor_ref': [],
+            'hp_cooling': [], 'hp_heating': [], 'window': [], 'conditioned': []}
+    svg = history.render_room_svg('Arbeitszimmer', data)
+    assert svg.count('<polyline') == 2          # room temp + real outdoor only
+    assert 'outdoor (real)' in svg and 'outdoor (HP ref)' not in svg
+
+
 def test_render_room_svg_empty_temp_is_graceful():
     now = 10_000
     data = {'now': now, 't_start': now - 6 * 3600, 'hours': 6,

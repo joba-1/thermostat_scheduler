@@ -1530,9 +1530,18 @@ class Manager:
         windows = [devices.ha_entity_candidates(self.sensor_ieee.get(w),
                                                 self.sensor_friendly.get(w), 'contact')
                    for w in self.room_windows.get(room, [])]
+        # The damped outdoor ref is only meaningful while damping is on; off, it
+        # just tracks the real outdoor, so drop it from the chart (see overview).
+        ref = history.HP_OUTDOOR_TEMP if self._hp_damping_on() else None
         return {'temp': temp_groups, 'outdoor': history.HP_OUTDOOR_RAW,
-                'outdoor_ref': history.HP_OUTDOOR_TEMP,
+                'outdoor_ref': ref,
                 'activity': history.HP_ACTIVITY, 'windows': windows}
+
+    def _hp_damping_on(self):
+        """True if the heat pump is currently damping the outdoor temperature
+        (`damping` != off); when off the damped value mirrors the raw outdoor."""
+        raw = (self.heatpump_state() or {}).get('raw') or {}
+        return str(raw.get('damping', 'off')).strip().lower() != 'off'
 
     def room_page(self, room, hours=history.DEFAULT_HOURS):
         """Standalone HTML page with the last `hours` of history for one room.

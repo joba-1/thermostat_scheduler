@@ -491,7 +491,10 @@ def render_room_svg(room, data):
     legend_items = [
         ('line', _COL['temp'], None, 'room temp'),
         ('line', _COL['outdoor'], '5 4', 'outdoor (real)'),
-        ('line', _COL['outdoor_ref'], '2 3', 'outdoor (HP ref)'),
+        # the damped HP-ref line is only drawn when damping is active (off -> it
+        # just mirrors the real outdoor, so collect_room_history omits the series)
+        *([('line', _COL['outdoor_ref'], '2 3', 'outdoor (HP ref)')]
+          if outdoor_ref else []),
         ('box', _COL['conditioned'], None, 'Cond = conditioned'),
         ('box', _COL['cooling'], None, 'HP cooling'),
         ('box', _COL['heating'], None, 'HP heating'),
