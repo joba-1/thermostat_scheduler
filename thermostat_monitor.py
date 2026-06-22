@@ -144,6 +144,14 @@ class Manager:
         self._cool_active = None    # last seen "actively cooling" bool
         self._cool_edge_ts = 0.0    # when _cool_active last changed
 
+        # Free night-cooling reminder: mail "open windows" when the outside air is
+        # cooler than the warmest room (the HP idles below coolstart, but ventilation
+        # still cools). See _free_cooling_state.
+        self.free_cooling_cfg = cfg.get('free_cooling', {}) or {}
+        self._free_cooling_on = False     # currently an opportunity?
+        self._free_cooling_info = None    # {outside, room, temp} for the status line
+        self._free_cooling_notified_ts = None
+
         # Optional read-only status web page. The eval loop caches the latest
         # report data here; the HTTP server only renders this snapshot (it never
         # recomputes, so it has no side effects and can't race the MQTT thread).
@@ -667,6 +675,9 @@ class Manager:
         # messages pause (it's normally driven by each boiler_data update).
         self._apply_fan_control(client, hp)
 
+        # free-cooling "open windows" reminder
+        self._apply_free_cooling(mode, hp, now_ts)
+
         # Cache the overview for the status web page first, *before* any mailing —
         # SMTP latency must never delay the page showing data on startup. Rendered on
         # demand from this snapshot, so the HTTP thread never recomputes/records.
@@ -824,6 +835,48 @@ class Manager:
         self._fans_on = want
         log.info("fan-control: cooling=%s -> fans %s%s", active,
                  "ON" if want else "OFF", "" if act else " (act:false)")
+
+    def _free_cooling_state(self, mode, hp):
+        """A free-cooling (ventilation) opportunity: it's cooling season, rooms are
+        above the cool target, and the *raw* outside air is cooler than the warmest
+        room by `margin` — open windows. Returns {outside, room, temp} or None."""
+        fc = self.free_cooling_cfg
+        if not fc.get('enabled') or mode != 'cooling' or not hp:
+            return None
+        outside = (hp.get('telemetry') or {}).get('outdoor')
+        if not isinstance(outside, (int, float)):
+            return None
+        target = self.season_cfg.get('cool_target', 21)
+        warmest, wt = None, None
+        for room in self.thermostats:
+            st = self._room_temp_state(room)
+            t = st.get('temperature') if isinstance(st, dict) else None
+            if isinstance(t, (int, float)) and (wt is None or t > wt):
+                warmest, wt = room, t
+        if wt is None or wt <= target:                      # rooms already cool enough
+            return None
+        if outside <= wt - fc.get('margin', 2):             # outside genuinely cooler
+            return {'outside': outside, 'room': warmest, 'temp': wt}
+        return None
+
+    def _apply_free_cooling(self, mode, hp, now_ts):
+        """Detect the opportunity and mail an 'open windows' reminder on the rising
+        edge (throttled), so it lands when the evening air first turns favourable."""
+        fc = self._free_cooling_state(mode, hp)
+        if fc and not self._free_cooling_on:
+            last = self._free_cooling_notified_ts
+            throttle = self.free_cooling_cfg.get('remind_interval_hours', 8) * 3600
+            if last is None or now_ts - last > throttle:
+                self.alerter.notify(
+                    "[thermostat] open windows — free cooling available",
+                    f"Outside is {fc['outside']:.1f}°C, warmest room ~{fc['temp']:.1f}°C "
+                    f"({fc['room']}). Open windows to ventilate and cool for free "
+                    f"(the heat pump barely cools when it's this cool outside).")
+                self._free_cooling_notified_ts = now_ts
+                log.info("free-cooling: available (outside %.1f < %s %.1f) -> reminded",
+                         fc['outside'], fc['room'], fc['temp'])
+        self._free_cooling_on = bool(fc)
+        self._free_cooling_info = fc
 
     def _apply_window_control(self, room, client):
         """Fired after the debounce: switch the room's TRV off (window open) or
@@ -1069,6 +1122,12 @@ class Manager:
             fan_line = (f"{'ON' if self._fans_on else 'OFF'} ({len(self.fans)} fan(s)) "
                         f"— cooling {'active' if self._cool_active else 'idle'}")
 
+        free_line = None
+        fci = self._free_cooling_info
+        if fci:
+            free_line = (f"available — outside {self._fmt(fci['outside'], '°C')} < "
+                         f"{fci['room']} {self._fmt(fci['temp'], '°C')}; open windows")
+
         # warning when window state is being ignored (conditioning regardless)
         warn_line = None
         if self.window_cfg.get('enabled') and self.window_cfg.get('ignore'):
@@ -1174,7 +1233,7 @@ class Manager:
             'manual_line': manual_line,
             'window_line': window_line, 'window_head': window_head,
             'window_rows': window_rows, 'fan_line': fan_line,
-            'warn_line': warn_line,
+            'warn_line': warn_line, 'free_line': free_line,
             'set_line': set_line, 'set_head': set_head, 'set_rows': set_rows,
             'thermo': {'headers': thermo_headers,
                        'rows': thermo_rows, 'styles': thermo_styles},
@@ -1227,6 +1286,8 @@ class Manager:
             lines.append(f"  Off (window open) -> {d['window_line']}")
         if d.get('fan_line'):
             lines.append(f"  Fans: {d['fan_line']}")
+        if d.get('free_line'):
+            lines.append(f"  Free cooling: {d['free_line']}")
         if d.get('set_line'):
             lines.append(f"  Set point: {d['set_line']} (all rooms)")
         elif d.get('set_head'):
@@ -1296,6 +1357,10 @@ class Manager:
         if d.get('window_line'):
             p.append('<tr><td style="padding-right:12px;color:#777;'
                      f'vertical-align:top">Off (window open)</td><td>{esc(d["window_line"])}'
+                     '</td></tr>')
+        if d.get('free_line'):
+            p.append('<tr><td style="padding-right:12px;color:#777">Free cooling</td>'
+                     f'<td style="color:#1a7f37;font-weight:600">{esc(d["free_line"])}'
                      '</td></tr>')
         if d.get('set_line'):
             p.append('<tr><td style="padding-right:12px;color:#777">Set point</td>'
@@ -1568,6 +1633,10 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
                      f'<div>{esc(d["manual_line"])}</div>')
         if d.get('fan_line'):
             p.append(f'<div class="k">Fans</div><div>{esc(d["fan_line"])}</div>')
+        if d.get('free_line'):
+            p.append('<div class="k">Free cooling</div>'
+                     f'<div style="color:#1a7f37;font-weight:650">{esc(d["free_line"])}'
+                     '</div>')
         p.append('</div>')
 
         # Compact, collapsible sub-sections: a summary line is always visible, the

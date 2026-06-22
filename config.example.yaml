@@ -139,6 +139,16 @@ fan_control:
     - { type: zigbee, name: "Schlafzimmer Ventilator" }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
     - { type: tasmota, topic: "ventilator_wz", power: POWER }  # -> cmnd/<topic>/<power> ON|OFF
 
+
+# --- Free-cooling reminder ---
+# In cooling, when the (raw) outside air is cooler than the warmest room by `margin`,
+# mail an "open windows" reminder — the heat pump idles below its cooling-start outdoor
+# temp, but ventilation still cools. Shown as a "Free cooling" line in status/web/mail.
+free_cooling:
+  enabled: true
+  margin: 2                    # °C the outside must be below the warmest room
+  remind_interval_hours: 8     # min hours between reminder mails (avoids flapping)
+
 # Dumb / manual radiator valves the manager cannot control. On every
 # heating<->cooling change it mails a reminder to open them (cooling) or set
 # them back to normal (heating).
