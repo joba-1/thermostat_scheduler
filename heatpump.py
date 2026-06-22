@@ -14,6 +14,7 @@ publishes two retained-ish JSON payloads we care about:
 config can reference any field by its plain name, and derives a coarse
 mode (heating / cooling) plus the operator-relevant telemetry.
 """
+import re
 
 
 def _flatten(boiler, thermostat):
@@ -49,6 +50,29 @@ def is_cooling(merged, cooling_when):
             if str(cond['contains']).strip().lower() in str(val).strip().lower():
                 return True
     return False
+
+
+_LASTCODE_RE = re.compile(r'\(([^)]+)\)\s*(.*?)\s*-\s*(.+?)\s*$')
+
+
+def alarm_state(raw):
+    """Parse EMS-ESP `lastcode` into an alarm descriptor, or None.
+
+    `lastcode` reads like " --(5140) 22.06.2026 08:01 - now" while a fault is
+    ongoing, and " --(5140) 22.06.2026 08:01 - 22.06.2026 08:07" once it has
+    cleared (start - end timestamps). Returns
+    {'code', 'since', 'until', 'active'} where `active` is True only while the
+    fault is still open ("- now"); None if the field is missing/unparsable.
+    """
+    code_field = (raw or {}).get('lastcode')
+    if not isinstance(code_field, str) or not code_field.strip():
+        return None
+    m = _LASTCODE_RE.search(code_field)
+    if not m:
+        return None
+    code, since, until = (g.strip() for g in m.groups())
+    return {'code': code, 'since': since, 'until': until,
+            'active': until.lower() == 'now'}
 
 
 def telemetry(merged, fields):

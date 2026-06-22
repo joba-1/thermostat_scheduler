@@ -38,6 +38,20 @@ def test_check_bounds_flags_low_cooling_flow():
     assert not any(f == 'pressure' for f, *_ in out)
 
 
+def test_alarm_state_parses_open_and_cleared_lastcode():
+    # ongoing fault ("- now") -> active
+    a = heatpump.alarm_state({'lastcode': ' --(5140) 22.06.2026 08:01 - now'})
+    assert a == {'code': '5140', 'since': '22.06.2026 08:01',
+                 'until': 'now', 'active': True}
+    # cleared fault (start - end timestamps) -> not active, end captured
+    c = heatpump.alarm_state({'lastcode': ' --(5140) 22.06.2026 08:01 - 22.06.2026 08:07'})
+    assert c['active'] is False and c['until'] == '22.06.2026 08:07'
+    # missing / unparsable -> None
+    assert heatpump.alarm_state({}) is None
+    assert heatpump.alarm_state({'lastcode': ''}) is None
+    assert heatpump.alarm_state({'lastcode': '0H'}) is None
+
+
 def test_desired_mode_forced_and_auto():
     assert cooling.desired_mode({'mode': 'cooling'}, None) == 'cooling'
     assert cooling.desired_mode({'mode': 'auto', 'source': 'heatpump'},

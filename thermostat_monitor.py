@@ -152,6 +152,11 @@ class Manager:
         self._free_cooling_info = None    # {outside, room, temp} for the status line
         self._free_cooling_notified_ts = None
 
+        # Heat-pump fault: surfaced as a warning line while a fault is open
+        # (lastcode "- now"), with a mail when it clears. See _apply_hp_alarm.
+        self._hp_alarm = None             # {'code','since','until','active'} while open
+        self._hp_alarm_notified = None    # signature of the last fault we mailed (persisted)
+
         # Optional read-only status web page. The eval loop caches the latest
         # report data here; the HTTP server only renders this snapshot (it never
         # recomputes, so it has no side effects and can't race the MQTT thread).
@@ -252,6 +257,7 @@ class Manager:
                 self.sensor_seen[name] = data.get('sensor_seen', {}).get(name)
         self.hp_boiler = data.get('hp_boiler', self.hp_boiler)
         self.hp_thermostat = data.get('hp_thermostat', self.hp_thermostat)
+        self._hp_alarm_notified = data.get('hp_alarm_notified', self._hp_alarm_notified)
         # only keep window-off latches for rooms still in config
         self.window_off = {r: ts for r, ts in (data.get('window_off') or {}).items()
                            if r in self.thermostats}
@@ -267,6 +273,7 @@ class Manager:
             'hp_boiler': self.hp_boiler,
             'hp_thermostat': self.hp_thermostat,
             'window_off': self.window_off,
+            'hp_alarm_notified': self._hp_alarm_notified,
         }
         try:
             os.makedirs(os.path.dirname(self.device_state_file), exist_ok=True)
@@ -678,6 +685,9 @@ class Manager:
         # free-cooling "open windows" reminder
         self._apply_free_cooling(mode, hp, now_ts)
 
+        # heat-pump fault: surface while open, mail when it clears
+        self._apply_hp_alarm(hp, now_ts)
+
         # Cache the overview for the status web page first, *before* any mailing —
         # SMTP latency must never delay the page showing data on startup. Rendered on
         # demand from this snapshot, so the HTTP thread never recomputes/records.
@@ -877,6 +887,33 @@ class Manager:
                          fc['outside'], fc['room'], fc['temp'])
         self._free_cooling_on = bool(fc)
         self._free_cooling_info = fc
+
+    def _apply_hp_alarm(self, hp, now_ts):
+        """Track the heat pump's `lastcode` fault. While a fault is open it shows
+        as a warning line (status/web/mail). Each distinct fault is mailed exactly
+        once, when it has cleared — including one that was already off when first
+        seen (the mail then notes it had already ended). The last-mailed signature
+        is persisted (with device state), so a restart never re-sends it."""
+        info = heatpump.alarm_state((hp or {}).get('raw')) if hp else None
+        prev = self._hp_alarm
+        # warning line only while the fault is still open
+        self._hp_alarm = info if (info and info['active']) else None
+        if not info:
+            return
+        sig = f"{info['code']}@{info['since']}"   # one signature per occurrence
+        if info['active'] or sig == self._hp_alarm_notified:
+            return                                # still open, or already mailed
+        # a cleared fault we haven't mailed yet: live-cleared (we saw it open) or
+        # discovered after it had already ended (startup / between polls)
+        was_open = bool(prev and f"{prev['code']}@{prev['since']}" == sig)
+        self._hp_alarm_notified = sig
+        note = "" if was_open else " (detected after it had already ended)"
+        log.warning("HP alarm: code %s (%s - %s)%s",
+                    info['code'], info['since'], info['until'], note)
+        self.alerter.notify(
+            f"[thermostat] heat-pump alarm (code {info['code']})",
+            f"Heat-pump fault code {info['code']}: started {info['since']}, "
+            f"ended {info['until']}{note}. The compressor resumed normal operation.")
 
     def _apply_window_control(self, room, client):
         """Fired after the debounce: switch the room's TRV off (window open) or
@@ -1079,6 +1116,17 @@ class Manager:
             # the temp+humidity ems-esp derived it from (the values we feed it as
             # remotetemp/remotehum, echoed back as rftemp/currtemp + airhumidity).
             raw = hp.get('raw') or {}
+            # damped outdoor temp (the slow heating-curve average the HP uses).
+            # Only meaningful while damping is on; when it's off the damped value
+            # just mirrors the raw one, so show a single "Outdoor" row instead.
+            damped = raw.get('dampedoutdoortemp')
+            damping_on = str(raw.get('damping', 'off')).strip().lower() != 'off'
+            if damping_on and isinstance(damped, (int, float)):
+                for i, (lbl, val) in enumerate(hp_rows):
+                    if lbl == 'Outdoor':
+                        hp_rows[i] = ('Outdoor (raw)', val)
+                        hp_rows.insert(i + 1, ('Outdoor (damped)', self._fmt(damped, '°C')))
+                        break
             dewt = raw.get('dewtemperature')
             if dewt is not None:
                 seg = f"dew {self._fmt(dewt, '°C')}"
@@ -1101,10 +1149,7 @@ class Manager:
             head = (f"{hp['mode']} season — {activity} ({act})"
                     if activity else f"{hp['mode']} ({act})")
             hp_line = f"{head}: " + ", ".join(parts)   # text/mail (parts has outdoor)
-            # web summary fold is collapsed, so surface the real outside temp there
             hp_head = head
-            if isinstance(t.get('outdoor'), (int, float)):
-                hp_head += f" · outside {self._fmt(t['outdoor'], '°C')}"
 
         manual_line = None
         if self.manual_thermostats:
@@ -1130,6 +1175,12 @@ class Manager:
         if fci:
             free_line = (f"available — outside {self._fmt(fci['outside'], '°C')} < "
                          f"{fci['room']} {self._fmt(fci['temp'], '°C')}; open windows")
+
+        # heat-pump fault currently open (lastcode "- now") -> warning line
+        hp_alarm_line = None
+        if self._hp_alarm:
+            hp_alarm_line = (f"⚠ Heat-pump alarm — code {self._hp_alarm['code']} "
+                             f"active since {self._hp_alarm['since']}")
 
         # warning when window state is being ignored (conditioning regardless)
         warn_line = None
@@ -1237,6 +1288,7 @@ class Manager:
             'window_line': window_line, 'window_head': window_head,
             'window_rows': window_rows, 'fan_line': fan_line,
             'warn_line': warn_line, 'free_line': free_line,
+            'hp_alarm_line': hp_alarm_line,
             'set_line': set_line, 'set_head': set_head, 'set_rows': set_rows,
             'thermo': {'headers': thermo_headers,
                        'rows': thermo_rows, 'styles': thermo_styles},
@@ -1279,6 +1331,8 @@ class Manager:
         bar = "=" * 56
         lines = [bar, "  Thermostat status report", f"  {d['when']}", bar,
                  f"  Overall : {d['overall']}", f"  Mode    : {d['mode']}"]
+        if d.get('hp_alarm_line'):
+            lines.append(f"  {d['hp_alarm_line']}")
         if d.get('warn_line'):
             lines.append(f"  {d['warn_line']}")
         if d['hp_line']:
@@ -1347,6 +1401,9 @@ class Manager:
              f'<td>{esc(d["overall"])}</td></tr>',
              f'<tr><td style="padding-right:12px;color:#777">Mode</td>'
              f'<td>{esc(d["mode"])}</td></tr>']
+        if d.get('hp_alarm_line'):
+            p.append('<tr><td></td><td style="color:#b00020;font-weight:bold">'
+                     f'{esc(d["hp_alarm_line"])}</td></tr>')
         if d.get('warn_line'):
             p.append('<tr><td></td><td style="color:#b00020;font-weight:bold">'
                      f'{esc(d["warn_line"])}</td></tr>')
@@ -1621,6 +1678,10 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
         p.append(f'<header>{logo}<h1>Klima Status</h1>'
                  f'<span class="when">{esc(d["when"])}</span>'
                  f'<span class="pill {cls_pill}">{esc(d["overall"])}</span></header>')
+        if d.get('hp_alarm_line'):
+            p.append('<div style="background:#fde7e4;color:#b42318;font-weight:650;'
+                     'border-radius:10px;padding:10px 14px;margin:0 0 16px;'
+                     f'font-size:14px">{esc(d["hp_alarm_line"])}</div>')
         if d.get('warn_line'):
             p.append('<div style="background:#fde7e4;color:#b42318;font-weight:650;'
                      'border-radius:10px;padding:10px 14px;margin:0 0 16px;'
