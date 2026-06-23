@@ -1633,10 +1633,11 @@ class Manager:
     def z2m_url(self, ieee):
         """Link to a device's page in the z2m frontend, keyed by its ieee. Returns
         None when the base URL is disabled or the ieee is unknown (not yet resolved
-        from bridge/devices)."""
+        from bridge/devices). The `/0/` is the frontend's source index (a single
+        z2m instance is 0); without it the route falls back to the device list."""
         if not self.z2m_base or not ieee:
             return None
-        return f"{self.z2m_base}/#/device/{ieee}/info"
+        return f"{self.z2m_base}/#/device/0/{ieee}/info"
 
     def _trv_friendly(self, room):
         """The room TRV's current friendly name (topic minus base, registry-resolved)."""

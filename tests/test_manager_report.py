@@ -106,14 +106,14 @@ def test_z2m_device_links_for_trv_and_sensor():
     mgr.sensor_state['Bad OG Luft'] = {'temperature': 21.0}
 
     d = mgr._report_data()
-    assert d['thermo']['z2m'] == ['http://mqtt.lan:8080/#/device/0x1111/info']
+    assert d['thermo']['z2m'] == ['http://mqtt.lan:8080/#/device/0/0x1111/info']
     luft_i = d['sensors']['rows'].index(next(r for r in d['sensors']['rows']
                                              if r[0] == 'Bad OG Luft'))
-    assert d['sensors']['z2m'][luft_i] == 'http://mqtt.lan:8080/#/device/0x2222/info'
+    assert d['sensors']['z2m'][luft_i] == 'http://mqtt.lan:8080/#/device/0/0x2222/info'
 
     html = mgr._render_web(d, link_rooms=True)
-    assert 'href="http://mqtt.lan:8080/#/device/0x1111/info" target="_blank"' in html
-    assert 'href="http://mqtt.lan:8080/#/device/0x2222/info" target="_blank"' in html
+    assert 'href="http://mqtt.lan:8080/#/device/0/0x1111/info" target="_blank"' in html
+    assert 'href="http://mqtt.lan:8080/#/device/0/0x2222/info" target="_blank"' in html
     assert 'href="/room?' in html          # temp cell still links to history
 
 
