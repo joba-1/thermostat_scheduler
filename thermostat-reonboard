@@ -18,11 +18,6 @@ PY="${INSTALL_DIR}/venv/bin/python"
 SCHED="${INSTALL_DIR}/thermostat_scheduler.py"
 CONFIG="${INSTALL_DIR}/config.yaml"
 
-if [ ! -x "${PY}" ]; then
-  echo "thermostat-reonboard: venv not found at ${PY} — is the service installed?" >&2
-  exit 1
-fi
-
 # Choose action: --list maps to the scheduler's --list-manual; otherwise reset.
 if [ "${1:-}" = "--list" ]; then
   action=(--list-manual)
