@@ -85,7 +85,8 @@ def is_our_off(type_cfg, reported_state):
 
 
 def build_intended_payload(name, cfg_item, thermostat_types, mqtt_cfg, mode,
-                           reported, control_fields=CONTROL_FIELDS):
+                           reported, control_fields=CONTROL_FIELDS,
+                           reclaim_manual=False):
     """Build the payload that reinstates a thermostat's *currently intended* state.
 
     Season-aware: in cooling the intended active state is `cooling_open`; in
@@ -95,6 +96,11 @@ def build_intended_payload(name, cfg_item, thermostat_types, mqtt_cfg, mode,
     Exceptions — a device in **manual override** or **off** keeps that mode: we
     strip every control field (mode/preset/setpoint) and push only the stored
     schedule + calibration, so manual/off and the user's manual setpoint stay.
+
+    `reclaim_manual=True` overrides the *manual* exception only (used by an
+    explicit operator re-onboard, e.g. `--reset-manual`): a manual device is
+    pushed to the active-season state instead of being left alone. The **off**
+    exception always holds — we never force an off (e.g. window-open) valve on.
 
     Returns (payload, topic, note). When the device's state is unknown (no
     daemon running / dry-run) manual/off can't be detected, so it falls back to
@@ -109,7 +115,8 @@ def build_intended_payload(name, cfg_item, thermostat_types, mqtt_cfg, mode,
     # off device reads as "off" rather than the broader "manual" classification.
     if isinstance(reported, dict) and is_off(reported):
         return config_only, topic, "off (e.g. window open) — schedule/calibration only"
-    if isinstance(reported, dict) and is_manual_override(type_cfg, reported):
+    if (not reclaim_manual and isinstance(reported, dict)
+            and is_manual_override(type_cfg, reported)):
         return config_only, topic, "manual override — schedule/calibration only"
     suffix = "" if isinstance(reported, dict) else " [state unknown]"
     if mode == 'cooling':

@@ -201,6 +201,57 @@ def configure_intended(cfg, client, userdata, dry_run=False, timeout=None):
         time.sleep(mqtt_cfg.get('delay_between_messages', 1))
 
 
+def reset_manual(cfg, client, userdata, targets, timeout=None):
+    """Re-onboard named thermostats from manual override into active-season control.
+
+    Like `configure_intended` but with `reclaim_manual=True`: a device currently
+    in manual override is pushed to the season-intended state (cooling -> open,
+    heating -> schedule) instead of being left alone. A device that is genuinely
+    OFF (e.g. window open) is still left off — we never force an open valve on a
+    window. This is the one-step fix for "a TRV was touched; put it back under
+    control" (see also the status page's re-onboard hint).
+    """
+    if timeout is None:
+        timeout = max(cfg.get('mqtt', {}).get('check_timeout', 5), 4)
+    mqtt_cfg = cfg.get('mqtt', {})
+    thermostats = cfg.get('thermostats', {})
+    thermostat_types = cfg.get('thermostat_types', {})
+
+    mode, hp_state, checked = detect_mode(cfg, client, userdata, timeout)
+    print(f"\nRe-onboarding (mode: {mode}"
+          + (f", heat pump: {hp_state['mode']}" if hp_state else "")
+          + (")  [no daemon — can't detect off per device]" if not checked else ")"))
+
+    for name in targets:
+        if name not in thermostats:
+            print(f"  unknown thermostat: {name}")
+            continue
+        reported = (checked.get(name) or {}).get('state')
+        try:
+            payload, topic, note = cooling.build_intended_payload(
+                name, thermostats[name], thermostat_types, mqtt_cfg, mode,
+                reported, reclaim_manual=True)
+        except Exception as e:
+            print(f"{name}: error building payload: {e}")
+            continue
+        if not payload:
+            print(f"{name}: {note}")
+            continue
+        print(f"\n{name} [{note}]\n  {topic}\n  {pretty_payload(payload, indent=2)}")
+        if client is None:
+            continue
+        try:
+            info = client.publish(topic, json.dumps(payload), qos=1, retain=False)
+            try:
+                info.wait_for_publish(timeout=10)
+            except Exception:
+                pass
+            print(f"  {'✓ sent' if getattr(info, 'is_published', lambda: False)() else '✗ not confirmed'}")
+        except Exception as e:
+            print(f"  publish error: {e}")
+        time.sleep(mqtt_cfg.get('delay_between_messages', 1))
+
+
 def check_thermostats(cfg, client, userdata, timeout=None):
     """Query `thermostat_monitor` for per-device status and collect responses.
 
@@ -373,7 +424,9 @@ def main():
     group.add_argument('--list-manual', action='store_true',
                        help='List thermostats currently in end-user manual override')
     group.add_argument('--reset-manual', nargs='*', metavar='NAME',
-                       help='Clear manual override by re-pushing the schedule to NAMEs (all if none given)')
+                       help='Re-onboard NAMEs from manual override into active-season '
+                            'control (cooling->open, heating->schedule; off/window '
+                            'rooms left off). All thermostats if no NAME given.')
     group.add_argument('--status', action='store_true',
                        help='Print a full status report from the running manager')
     group.add_argument('--status-mail', action='store_true',
@@ -432,14 +485,8 @@ def main():
             list_manual(cfg, client, userdata, timeout=mqtt_cfg.get('check_timeout', 5))
         elif args.reset_manual is not None:
             targets = args.reset_manual or list(thermostats.keys())
-            print(f"Resetting manual override (re-pushing schedule) for: {', '.join(targets)}")
-            for i, name in enumerate(targets):
-                if name not in thermostats:
-                    print(f"  unknown thermostat: {name}")
-                    continue
-                configure_thermostat(client, name, thermostats[name], i + 1,
-                                     thermostat_types, mqtt_cfg, dry_run=False)
-                time.sleep(mqtt_cfg.get('delay_between_messages', 1))
+            reset_manual(cfg, client, userdata, targets,
+                         timeout=mqtt_cfg.get('check_timeout', 5))
         else:
             # Reinstate each thermostat's currently intended state (season-aware,
             # honouring manual/off). In --dry-run with no broker we can't read

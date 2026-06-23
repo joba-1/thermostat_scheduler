@@ -154,6 +154,31 @@ def test_intended_off_keeps_only_config():
     assert 'off' in note
 
 
+def test_reclaim_manual_pushes_active_season_state():
+    """reclaim_manual overrides the manual exception: a manual VNTH TRV in
+    cooling is forced to cooling_open (the --reset-manual one-step fix)."""
+    payload, topic, note = cooling.build_intended_payload(
+        'Bad OG', INTENDED_ITEM, INTENDED_TYPES, MQTT, 'cooling',
+        {'preset': 'manual'}, reclaim_manual=True)
+    assert payload['preset'] == 'comfort' and payload['comfort_temperature'] == 34
+    assert 'manual' not in note                  # no longer the leave-alone branch
+    # and in heating it reclaims to the schedule instead
+    payload_h, _, _ = cooling.build_intended_payload(
+        'Bad OG', INTENDED_ITEM, INTENDED_TYPES, MQTT, 'heating',
+        {'preset': 'manual'}, reclaim_manual=True)
+    assert payload_h['preset'] == 'schedule' and payload_h['system_mode'] == 'heat'
+
+
+def test_reclaim_manual_still_leaves_off_off():
+    """The off exception holds even with reclaim_manual — never force an off
+    (e.g. window-open) valve on."""
+    payload, topic, note = cooling.build_intended_payload(
+        'Bad OG', INTENDED_ITEM, INTENDED_TYPES, MQTT, 'cooling',
+        {'system_mode': 'off'}, reclaim_manual=True)
+    assert not (cooling.CONTROL_FIELDS & set(payload))
+    assert 'off' in note
+
+
 def test_intended_unknown_state_falls_back_to_season():
     payload, topic, note = cooling.build_intended_payload(
         'Bad OG', INTENDED_ITEM, INTENDED_TYPES, MQTT, 'cooling', None)
