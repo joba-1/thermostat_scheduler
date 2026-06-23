@@ -36,6 +36,7 @@ web:
   host: "0.0.0.0"      # bind address; 0.0.0.0 = reachable on the LAN
   port: 8099
   refresh: 60          # client auto-refresh interval (seconds)
+  z2m_url: "http://192.168.1.4:8082"   # zigbee2mqtt frontend; device name cells link here
 
 
 # --- EMS-ESP heat pump (read directly from MQTT, not Home Assistant) ---

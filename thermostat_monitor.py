@@ -166,6 +166,12 @@ class Manager:
         # report data here; the HTTP server only renders this snapshot (it never
         # recomputes, so it has no side effects and can't race the MQTT thread).
         self.web_cfg = cfg.get('web', {}) or {}
+        # Base URL of the zigbee2mqtt frontend, for "name -> device page" links on
+        # the status page. Defaults to the MQTT broker host on the z2m default port
+        # (8080); set web.z2m_url to override (e.g. behind a reverse proxy). A blank
+        # value disables the links.
+        self.z2m_base = self.web_cfg.get(
+            'z2m_url', f"http://{self.mqtt_cfg.get('broker')}:8080")
         self._last_report = None
         # InfluxDB-backed per-room history charts (built lazily on first /room hit).
         self._history_cfg = self.web_cfg.get('history', {}) or {}
@@ -1108,6 +1114,18 @@ class Manager:
                 out.append(name)
         return out
 
+    @staticmethod
+    def _reonboard_hint(type_cfg):
+        """Human instruction to bring a manual-override TRV back under control:
+        set it back to its weekly-schedule mode (the field/value our schedule_mode
+        defines), after which the next eval reclassifies it as 'schedule'. Falls
+        back to generic wording if the type declares no schedule_mode."""
+        sm = type_cfg.get('schedule_mode') or {}
+        if sm:
+            parts = ", ".join(f"{k} = {v}" for k, v in sm.items())
+            return f"set the TRV to schedule mode ({parts})"
+        return "set the TRV back to its normal weekly-schedule mode"
+
     def _age(self, iso_seen):
         ts = parse_iso(iso_seen)
         if ts is None:
@@ -1218,6 +1236,23 @@ class Manager:
             want = "OPEN fully" if mode == 'cooling' else "normal heating"
             manual_line = f"{want}: " + ", ".join(self.manual_thermostats)
 
+        # Runtime manual *override* rooms: a TRV whose reported state matches none
+        # of our signatures, so we deliberately leave it alone (distinct from the
+        # configured, non-controllable `manual_thermostats` above). We can't read
+        # who set it, so re-onboarding is a hands-on step the operator does on the
+        # device: put the TRV back into its weekly-schedule mode and the next eval
+        # reclassifies it as 'schedule' and resumes control automatically.
+        override_rooms = self.manual_overrides()
+        override_head = override_line = None
+        override_rows = []
+        if override_rooms:
+            override_head = ", ".join(override_rooms)
+            override_line = ", ".join(override_rooms)
+            for name in override_rooms:
+                type_cfg = self.thermostat_types.get(
+                    self.thermostats[name].get('type'), {})
+                override_rows.append((name, self._reonboard_hint(type_cfg)))
+
         window_line = None        # text/mail: single line
         window_head = None        # web: summary (which rooms) — always visible
         window_rows = []          # web: collapsed detail [(room, age), ...]
@@ -1262,12 +1297,17 @@ class Manager:
             temp_state = self._room_temp_state(name)
             temp = temp_state.get('temperature') if isinstance(temp_state, dict) else None
             # Show *our* state vocabulary, not the device's raw mode fields.
+            classified = cooling.classify_state(type_cfg, st)
             if name in self.window_off:
                 state_cell = "off (window)"   # we hold it off (latch wins over classify)
             else:
-                state_cell = self._OUR_STATE.get(
-                    cooling.classify_state(type_cfg, st), "—")
+                state_cell = self._OUR_STATE.get(classified, "—")
             style = {}
+            # A manual-override room is one we deliberately leave alone — colour the
+            # state cell so it stands out, and list it (with re-onboard instructions)
+            # in the manual section. The window latch wins, so skip it then.
+            if classified == 'manual' and name not in self.window_off:
+                style['state'] = self._CSS_MANUAL
             tol = item.get('tolerance', self.cfg.get('default_tolerance', 1.5))
             if isinstance(temp, (int, float)) and isinstance(sp, (int, float)):
                 # highlight the deviation that matters for the season: too warm
@@ -1296,6 +1336,8 @@ class Manager:
         thermo_rows = [[n, sc, self._fmt(t, "°C"), self._fmt(b, "%"), age]
                        for (n, sc, sp, t, b, age, _) in records]
         thermo_styles = [r[6] for r in records]
+        # name cell -> z2m device page (keyed by the TRV ieee); None when unknown
+        thermo_z2m = [self.z2m_url(self.thermo_ieee.get(r[0])) for r in records]
 
         seen_sp = [s for s in setpoints if s is not None]
         uniform_sp = bool(seen_sp) and len(set(seen_sp)) == 1
@@ -1308,10 +1350,10 @@ class Manager:
             set_rows = [(n, self._fmt(sp, "°C")) for (n, sc, sp, t, b, age, _)
                         in records if sp is not None]
 
-        sensor_rows = sensor_styles = None
+        sensor_rows = sensor_styles = sensor_z2m = None
         if self.sensor_kind:
             sensor_bat_limit = self.sensors_cfg.get('battery_limit', 20)
-            sensor_rows, sensor_styles = [], []
+            sensor_rows, sensor_styles, sensor_z2m = [], [], []
             for name, kind in self.sensor_kind.items():
                 st = self.sensor_state.get(name) or {}
                 style = {}
@@ -1340,6 +1382,7 @@ class Manager:
                                     self._fmt(st.get('battery'), "%"),
                                     self._age(self.sensor_seen.get(name))])
                 sensor_styles.append(style)
+                sensor_z2m.append(self.z2m_url(self.sensor_ieee.get(name)))
 
         order = {'alert': 0, 'info': 1}
         issue_list = [(i.severity, i.subject, i.detail)
@@ -1351,15 +1394,19 @@ class Manager:
             'mode': mode,
             'hp_line': hp_line, 'hp_head': hp_head, 'hp_rows': hp_rows,
             'manual_line': manual_line,
+            'override_line': override_line, 'override_head': override_head,
+            'override_rows': override_rows,
             'window_line': window_line, 'window_head': window_head,
             'window_rows': window_rows, 'fan_line': fan_line,
             'warn_line': warn_line, 'free_line': free_line,
             'hp_alarm_line': hp_alarm_line,
             'set_line': set_line, 'set_head': set_head, 'set_rows': set_rows,
             'thermo': {'headers': thermo_headers,
-                       'rows': thermo_rows, 'styles': thermo_styles},
+                       'rows': thermo_rows, 'styles': thermo_styles,
+                       'z2m': thermo_z2m},
             'sensors': ({'headers': ["sensor", "value", "kind", "bat", "seen"],
-                         'rows': sensor_rows, 'styles': sensor_styles}
+                         'rows': sensor_rows, 'styles': sensor_styles,
+                         'z2m': sensor_z2m}
                         if sensor_rows is not None else None),
             'issues': issue_list,
         }
@@ -1373,6 +1420,7 @@ class Manager:
     _CSS_HOT = 'color:#c0392b;font-weight:bold'      # too warm vs target
     _CSS_COLD = 'color:#1f6feb;font-weight:bold'     # too cold vs target
     _CSS_WARN = 'color:#c05600;font-weight:bold'     # window open / stale 'seen'
+    _CSS_MANUAL = 'color:#8250df;font-weight:bold'   # manual override — left alone
     _SEEN_WARN_AGE = 4 * 3600    # 'seen' older than this is highlighted as stale
 
     def _seen_style(self, iso_seen):
@@ -1407,6 +1455,10 @@ class Manager:
             lines.append(f"  Manual valves -> {d['manual_line']}")
         if d.get('window_line'):
             lines.append(f"  Off (window open) -> {d['window_line']}")
+        if d.get('override_line'):
+            lines.append(f"  Manual (left alone) -> {d['override_line']}")
+            for r, hint in d.get('override_rows') or []:
+                lines.append(f"      {r}: {hint}")
         if d.get('fan_line'):
             lines.append(f"  Fans: {d['fan_line']}")
         if d.get('free_line'):
@@ -1484,6 +1536,13 @@ class Manager:
             p.append('<tr><td style="padding-right:12px;color:#777;'
                      f'vertical-align:top">Off (window open)</td><td>{esc(d["window_line"])}'
                      '</td></tr>')
+        if d.get('override_line'):
+            detail = "; ".join(f"{r}: {hint}" for r, hint in d.get('override_rows') or [])
+            p.append('<tr><td style="padding-right:12px;color:#777;'
+                     f'vertical-align:top">Manual (left alone)</td>'
+                     f'<td>{esc(d["override_line"])}'
+                     + (f' <span style="color:#777">({esc(detail)})</span>' if detail else '')
+                     + '</td></tr>')
         if d.get('free_line'):
             p.append('<tr><td style="padding-right:12px;color:#777">Free cooling</td>'
                      f'<td style="color:#1a7f37;font-weight:600">{esc(d["free_line"])}'
@@ -1570,6 +1629,14 @@ class Manager:
     @staticmethod
     def room_url(room, hours=history.DEFAULT_HOURS):
         return '/room?' + urllib.parse.urlencode({'name': room, 'hours': hours})
+
+    def z2m_url(self, ieee):
+        """Link to a device's page in the z2m frontend, keyed by its ieee. Returns
+        None when the base URL is disabled or the ieee is unknown (not yet resolved
+        from bridge/devices)."""
+        if not self.z2m_base or not ieee:
+            return None
+        return f"{self.z2m_base}/#/device/{ieee}/info"
 
     def _trv_friendly(self, room):
         """The room TRV's current friendly name (topic minus base, registry-resolved)."""
@@ -1706,7 +1773,8 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
     def _web_table(headers, rows, styles=None, links=None):
         """Render an HTML table. `links` is an optional per-row {header: url} map;
         a matching cell is wrapped in an <a> (used to link a room's temp to its
-        history chart). Cell text is always escaped."""
+        history chart, and a device name to its z2m page). External http(s) links
+        open in a new tab. Cell text is always escaped."""
         esc = html.escape
         th = "".join(f'<th>{esc(str(h))}</th>' for h in headers)
         trs = []
@@ -1717,7 +1785,12 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
             for h, c in zip(headers, row):
                 inner = esc(str(c))
                 if ls.get(h):
-                    inner = f'<a href="{esc(ls[h])}">{inner}</a>'
+                    url = ls[h]
+                    # external (z2m) links open in a new tab so the auto-refreshing
+                    # status page isn't navigated away; internal /room links don't.
+                    ext = (' target="_blank" rel="noopener"'
+                           if url.startswith(('http://', 'https://')) else '')
+                    inner = f'<a href="{esc(url)}"{ext}>{inner}</a>'
                 style = f' style="{cs[h]}"' if cs.get(h) else ''
                 cells.append(f'<td{style}>{inner}</td>')
             trs.append(f"<tr>{''.join(cells)}</tr>")
@@ -1795,22 +1868,34 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
         if d.get('window_head'):
             p.append(_fold('Off (window open)', d['window_head'],
                            d.get('window_rows') or []))
+        if d.get('override_head'):   # manual-override rooms + how to re-onboard
+            p.append(_fold('Manual (left alone)', d['override_head'],
+                           d.get('override_rows') or []))
         p.append('</div>')
 
         p.append('<div class="card"><h2>Thermostats</h2>')
-        thermo_links = None
-        if link_rooms:
-            # link each room's name + temperature cell to its history chart
-            thermo_links = [{'room': cls.room_url(row[0]), 'temp': cls.room_url(row[0])}
-                            for row in d['thermo']['rows']]
+        # name cell -> z2m device page; temp cell -> history chart (when linkable)
+        z2m = d['thermo'].get('z2m') or [None] * len(d['thermo']['rows'])
+        thermo_links = []
+        for row, url in zip(d['thermo']['rows'], z2m):
+            link = {}
+            if url:
+                link['room'] = url
+            if link_rooms:
+                link['temp'] = cls.room_url(row[0])
+            thermo_links.append(link)
         p.append(cls._web_table(d['thermo']['headers'], d['thermo']['rows'],
-                                d['thermo'].get('styles'), thermo_links))
+                                d['thermo'].get('styles'),
+                                thermo_links if any(thermo_links) else None))
         p.append('</div>')
 
         if d['sensors']:
             p.append('<div class="card"><h2>Sensors</h2>')
+            s_z2m = d['sensors'].get('z2m') or [None] * len(d['sensors']['rows'])
+            sensor_links = [{'sensor': url} if url else {} for url in s_z2m]
             p.append(cls._web_table(d['sensors']['headers'], d['sensors']['rows'],
-                                    d['sensors'].get('styles')))
+                                    d['sensors'].get('styles'),
+                                    sensor_links if any(sensor_links) else None))
             p.append('</div>')
 
         p.append('<div class="card"><h2>Open items</h2>')

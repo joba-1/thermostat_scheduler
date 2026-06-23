@@ -60,6 +60,73 @@ def test_manual_override_listed():
     assert mgr.manual_overrides() == []
 
 
+def test_manual_override_colored_and_reonboard_instructions():
+    """A left-alone (manual) TRV gets a coloured state cell plus a section
+    telling the operator how to re-onboard it (back to schedule mode)."""
+    mgr = make_mgr()
+    mgr.last_state['Bad OG'] = {'preset': 'manual'}
+    d = mgr._report_data()
+
+    # state cell coloured with the manual style
+    ri = d['thermo']['rows'].index(next(r for r in d['thermo']['rows']
+                                        if r[0] == 'Bad OG'))
+    assert d['thermo']['styles'][ri].get('state') == mgr._CSS_MANUAL
+
+    # re-onboard instructions name the schedule-mode field/value
+    assert d['override_head'] == 'Bad OG'
+    assert d['override_rows'] == [('Bad OG', mgr._reonboard_hint(
+        mgr.thermostat_types['VNTH-T2_v2']))]
+    assert 'preset = schedule' in d['override_rows'][0][1]
+
+    # surfaced in all three renderings
+    assert 'Manual (left alone)' in mgr._render_text(d)
+    assert 'preset = schedule' in mgr._render_text(d)
+    assert 'Manual (left alone)' in mgr._render_html(d)
+    assert 'Manual (left alone)' in mgr._render_web(d)
+
+
+def test_manual_override_section_absent_when_none():
+    mgr = make_mgr()
+    mgr.last_state['Bad OG'] = {'system_mode': 'heat', 'preset': 'schedule'}
+    d = mgr._report_data()
+    assert d['override_head'] is None
+    assert 'Manual (left alone)' not in mgr._render_web(d)
+
+
+def test_z2m_device_links_for_trv_and_sensor():
+    """Each TRV/sensor name cell links to its z2m device page (keyed by ieee),
+    opening in a new tab; the temp cell still links to the history chart."""
+    cfg = {k: (dict(v) if isinstance(v, dict) else v) for k, v in CFG.items()}
+    cfg['mqtt'] = {'base_topic': 'zigbee2mqtt', 'broker': 'mqtt.lan'}
+    cfg['device_state_file'] = tempfile.mkdtemp() + '/devices.json'
+    mgr = tm.Manager(cfg)
+    mgr.thermo_ieee['Bad OG'] = '0x1111'
+    mgr.sensor_ieee['Bad OG Luft'] = '0x2222'
+    mgr.last_state['Bad OG'] = {'preset': 'schedule'}
+    mgr.sensor_state['Bad OG Luft'] = {'temperature': 21.0}
+
+    d = mgr._report_data()
+    assert d['thermo']['z2m'] == ['http://mqtt.lan:8080/#/device/0x1111/info']
+    luft_i = d['sensors']['rows'].index(next(r for r in d['sensors']['rows']
+                                             if r[0] == 'Bad OG Luft'))
+    assert d['sensors']['z2m'][luft_i] == 'http://mqtt.lan:8080/#/device/0x2222/info'
+
+    html = mgr._render_web(d, link_rooms=True)
+    assert 'href="http://mqtt.lan:8080/#/device/0x1111/info" target="_blank"' in html
+    assert 'href="http://mqtt.lan:8080/#/device/0x2222/info" target="_blank"' in html
+    assert 'href="/room?' in html          # temp cell still links to history
+
+
+def test_z2m_link_omitted_when_ieee_unknown_or_disabled():
+    mgr = make_mgr()                        # no broker -> base http://None:8080
+    mgr.z2m_base = ''                       # explicitly disabled
+    mgr.thermo_ieee['Bad OG'] = '0x1111'
+    mgr.last_state['Bad OG'] = {'preset': 'schedule'}
+    d = mgr._report_data()
+    assert d['thermo']['z2m'] == [None]
+    assert '/#/device/' not in mgr._render_web(d, link_rooms=True)
+
+
 def test_window_ignore_warns_and_does_not_switch_off():
     cfg = {k: (dict(v) if isinstance(v, dict) else v) for k, v in CFG.items()}
     cfg['window_control'] = {'enabled': True, 'act': True, 'ignore': True}
