@@ -97,6 +97,18 @@ if [ ! -x "${USER_HOME}/bin/send-mail.py" ]; then
   echo "         or set alerts.send_mail_cmd in config.yaml to an absolute path."
 fi
 
+# 4d) install the re-onboard convenience wrapper into PATH so day-to-day use is
+# just `thermostat-reonboard "Room"` (no venv/user/config to remember).
+WRAPPER_SRC="${INSTALL_DIR}/thermostat-reonboard"
+WRAPPER_DST="/usr/local/bin/thermostat-reonboard"
+if [ -f "${WRAPPER_SRC}" ]; then
+  echo "Installing ${WRAPPER_DST}"
+  # Point the wrapper at the chosen service user (repo default is 'thermostat').
+  sed "s/^USER_NAME=thermostat$/USER_NAME=${USERNAME}/" \
+    "${WRAPPER_SRC}" > "${WRAPPER_DST}"
+  chmod 755 "${WRAPPER_DST}"
+fi
+
 # 5) install systemd unit
 SERVICE_PATH="/etc/systemd/system/thermostat_monitor.service"
 echo "Writing systemd unit to ${SERVICE_PATH} (backing up existing if present)"

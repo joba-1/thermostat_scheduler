@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Re-onboard one or more TRVs from manual override back into active-season
+# control (cooling -> open, heating -> schedule). Off/window rooms are left off.
+#
+# Usage:
+#   thermostat-reonboard "Julians"            # one room (quote names with spaces)
+#   thermostat-reonboard Julians Caros        # several
+#   thermostat-reonboard                      # all rooms currently in manual override
+#   thermostat-reonboard --list               # just list manual-override rooms
+#
+# Thin wrapper around thermostat_scheduler.py so day-to-day use needs no memory
+# of the service user, venv path, or config location.
+set -euo pipefail
+
+USER_NAME=thermostat
+INSTALL_DIR="/home/${USER_NAME}/thermostat_scheduler"
+PY="${INSTALL_DIR}/venv/bin/python"
+SCHED="${INSTALL_DIR}/thermostat_scheduler.py"
+CONFIG="${INSTALL_DIR}/config.yaml"
+
+if [ ! -x "${PY}" ]; then
+  echo "thermostat-reonboard: venv not found at ${PY} — is the service installed?" >&2
+  exit 1
+fi
+
+# Choose action: --list maps to the scheduler's --list-manual; otherwise reset.
+if [ "${1:-}" = "--list" ]; then
+  action=(--list-manual)
+else
+  action=(--reset-manual "$@")   # no args -> reset all manual-override rooms
+fi
+
+# Run as the service user so it reads the right state files and owns its config.
+# Re-exec under sudo if we are not already that user.
+cmd=("${PY}" "${SCHED}" --config "${CONFIG}" "${action[@]}")
+
+if [ "$(id -un)" = "${USER_NAME}" ]; then
+  exec "${cmd[@]}"
+else
+  exec sudo -u "${USER_NAME}" -- "${cmd[@]}"
+fi
