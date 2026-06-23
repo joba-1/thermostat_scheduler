@@ -106,8 +106,13 @@ class Manager:
         self.registry = devices.Registry()
         self.bridge_devices_topic = f"{self.base}/bridge/devices"
 
-        self.last_seen = {}          # room -> iso ts  (thermostats)
+        self.last_seen = {}          # room -> iso ts  (thermostats: any message)
         self.last_state = {}         # room -> payload (thermostats)
+        # When a temperature *value* was last freshly reported (changed). Lets the
+        # report show the age of the oldest displayed datum: a TRV that keeps pinging
+        # but stops sending fresh local_temperature reads as stale, not "0m".
+        self.trv_temp_seen = {}      # room -> iso ts of last local_temperature change
+        self.sensor_temp_seen = {}   # label -> iso ts of last temperature change
         self.thermo_topic = {}       # state topic -> room
         self.thermo_ieee = {}        # room -> TRV ieee
         self.thermo_sub_topic = {}   # room -> currently-subscribed state topic
@@ -258,6 +263,14 @@ class Manager:
         self.hp_boiler = data.get('hp_boiler', self.hp_boiler)
         self.hp_thermostat = data.get('hp_thermostat', self.hp_thermostat)
         self._hp_alarm_notified = data.get('hp_alarm_notified', self._hp_alarm_notified)
+        # restore temp-value-change stamps so a multi-day-frozen reading stays stale
+        # across a restart (a fresh restart must not reset its age to "0m")
+        for room in self.last_state:
+            if room in data.get('trv_temp_seen', {}):
+                self.trv_temp_seen[room] = data['trv_temp_seen'][room]
+        for name in self.sensor_state:
+            if name in data.get('sensor_temp_seen', {}):
+                self.sensor_temp_seen[name] = data['sensor_temp_seen'][name]
         # only keep window-off latches for rooms still in config
         self.window_off = {r: ts for r, ts in (data.get('window_off') or {}).items()
                            if r in self.thermostats}
@@ -274,6 +287,8 @@ class Manager:
             'hp_thermostat': self.hp_thermostat,
             'window_off': self.window_off,
             'hp_alarm_notified': self._hp_alarm_notified,
+            'trv_temp_seen': self.trv_temp_seen,
+            'sensor_temp_seen': self.sensor_temp_seen,
         }
         try:
             os.makedirs(os.path.dirname(self.device_state_file), exist_ok=True)
@@ -358,13 +373,20 @@ class Manager:
 
         room = self.thermo_topic.get(t)
         if room:
+            new = self._safe_json(payload)
+            self._track_temp_change(self.trv_temp_seen, room,
+                                    self.last_state.get(room), new, 'local_temperature')
             self.last_seen[room] = iso_now()
-            self.last_state[room] = self._safe_json(payload)
+            self.last_state[room] = new
             return
         sensor = self.sensor_topic.get(t)
         if sensor:
+            new = self._safe_json(payload)
+            if self.sensor_kind.get(sensor) != 'window':
+                self._track_temp_change(self.sensor_temp_seen, sensor,
+                                        self.sensor_state.get(sensor), new, 'temperature')
             self.sensor_seen[sensor] = iso_now()
-            self.sensor_state[sensor] = self._safe_json(payload)
+            self.sensor_state[sensor] = new
             if self.sensor_kind.get(sensor) == 'window':
                 self._on_window_event(sensor, client)
 
@@ -723,6 +745,46 @@ class Manager:
         if ts is None:
             return self.start_ts
         return max(ts, self.start_ts)
+
+    @staticmethod
+    def _track_temp_change(store, key, prev, new, field):
+        """Stamp `store[key]` with now whenever `field`'s value first appears or
+        changes between the previous and new payload. A device that re-publishes the
+        same cached value (no change) keeps its old stamp, so the value's age grows —
+        that's how a frozen reading surfaces while the device still reports."""
+        nv = new.get(field) if isinstance(new, dict) else None
+        if nv is None:
+            return
+        pv = prev.get(field) if isinstance(prev, dict) else None
+        if store.get(key) is None or pv != nv:
+            store[key] = iso_now()
+
+    def _room_temp_seen(self, room):
+        """ISO time the *displayed* room temperature was last freshly reported,
+        mirroring _room_temp_state's source choice (air sensor while fresh, else the
+        TRV's local_temperature). Used so the row's 'seen' reflects the temperature's
+        real age — catching a TRV that stopped sending fresh reads days ago."""
+        sensor = self.room_temp_sensor.get(room)
+        st = self.sensor_state.get(sensor) if sensor else None
+        if isinstance(st, dict) and st.get('temperature') is not None:
+            seen = parse_iso(self.sensor_seen.get(sensor))
+            stale_after = self.sensors_cfg.get('unseen_interval', 21600)
+            if seen is None or (time.time() - seen) <= stale_after:
+                return self.sensor_temp_seen.get(sensor)
+        trv = self.last_state.get(room)
+        if isinstance(trv, dict) and trv.get('local_temperature') is not None:
+            return self.trv_temp_seen.get(room)
+        return self.sensor_temp_seen.get(sensor) if sensor else None
+
+    @staticmethod
+    def _oldest_iso(*isos):
+        """The oldest (smallest-timestamp) of the given ISO strings, ignoring None."""
+        best, best_ts = None, None
+        for s in isos:
+            ts = parse_iso(s)
+            if ts is not None and (best_ts is None or ts < best_ts):
+                best, best_ts = s, ts
+        return best
 
     def _room_temp_state(self, room):
         """Best current room temperature: the configured air sensor while it's fresh,
@@ -1216,12 +1278,16 @@ class Manager:
                     style['temp'] = self._CSS_COLD
             if self._battery_low(st, thermo_bat_limit):
                 style['bat'] = self._CSS_BAD
-            seen_css = self._seen_style(self.last_seen.get(name))
+            # 'seen' = oldest of the displayed data: device liveness AND the age of
+            # the shown temperature, so a frozen temp surfaces as stale even while
+            # the TRV keeps pinging (a TRV silent on temp for days isn't normal).
+            seen_iso = self._oldest_iso(self.last_seen.get(name),
+                                        self._room_temp_seen(name))
+            seen_css = self._seen_style(seen_iso)
             if seen_css:
                 style['seen'] = seen_css
             records.append((name, state_cell, sp, temp,
-                            st.get('battery'), self._age(self.last_seen.get(name)),
-                            style))
+                            st.get('battery'), self._age(seen_iso), style))
 
         # Set points live in the overview, not as a table column: uniform (cooling's
         # single open target) -> one summary line; per-room (heating's day/night

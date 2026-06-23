@@ -101,6 +101,54 @@ def test_seen_style_highlights_stale_and_warming_page_polls_fast():
         'sensors': None, 'issues': []}, refresh=60)
 
 
+def test_seen_reflects_oldest_displayed_datum_when_temp_frozen():
+    """A TRV that keeps pinging (fresh last_seen) but stopped sending fresh
+    temperature reads days ago must show 'seen' as the temperature's age, not 0m."""
+    import time
+    mgr = make_mgr()
+    fresh = time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime())
+    stale = '2026-06-19T10:00:00'                 # days old
+    # TRV is the temp source (no fresh air sensor); device pings now, temp frozen long ago
+    mgr.last_state['Bad OG'] = {'local_temperature': 20.5}
+    mgr.last_seen['Bad OG'] = fresh
+    mgr.trv_temp_seen['Bad OG'] = stale
+    assert mgr._room_temp_seen('Bad OG') == stale
+    # 'seen' = oldest of device-liveness and temperature age -> the stale temp wins
+    assert mgr._oldest_iso(fresh, stale) == stale
+    assert mgr._seen_style(mgr._oldest_iso(fresh, stale)) == mgr._CSS_WARN
+
+
+def test_track_temp_change_stamps_only_on_change():
+    import time
+    mgr = make_mgr()
+    store = {}
+    mgr._track_temp_change(store, 'k', None, {'local_temperature': 20.5}, 'local_temperature')
+    first = store['k']
+    assert first is not None
+    # same value re-published -> stamp unchanged (age grows)
+    mgr._track_temp_change(store, 'k', {'local_temperature': 20.5},
+                           {'local_temperature': 20.5}, 'local_temperature')
+    assert store['k'] == first
+    # value changed -> stamp refreshed
+    store['k'] = '2026-06-19T10:00:00'
+    mgr._track_temp_change(store, 'k', {'local_temperature': 20.5},
+                           {'local_temperature': 21.0}, 'local_temperature')
+    assert tm.parse_iso(store['k']) > tm.parse_iso('2026-06-19T10:00:00')
+
+
+def test_temp_seen_stamps_persist_across_restart(tmp_path):
+    sf = str(tmp_path / 'devices.json')
+    mgr = make_mgr(sf)
+    mgr.last_state['Bad OG'] = {'local_temperature': 20.5}
+    mgr.sensor_state['Bad OG Luft'] = {'temperature': 22.0}
+    mgr.trv_temp_seen['Bad OG'] = '2026-06-19T10:00:00'
+    mgr.sensor_temp_seen['Bad OG Luft'] = '2026-06-19T10:01:00'
+    mgr._save_device_state()
+    mgr2 = make_mgr(sf)                            # simulated restart
+    assert mgr2.trv_temp_seen['Bad OG'] == '2026-06-19T10:00:00'
+    assert mgr2.sensor_temp_seen['Bad OG Luft'] == '2026-06-19T10:01:00'
+
+
 def test_room_temp_falls_back_to_trv_when_air_sensor_stale():
     import time
     mgr = make_mgr()                                  # Bad OG sensor = "Bad OG Luft"
