@@ -38,7 +38,7 @@ import devices
 import sensors as sensors_mod
 from alerts import Alerter, make_issue
 
-__version__ = "3.0.0"
+__version__ = "3.0.1"
 
 DAY_MINUTES = 24 * 60
 
@@ -1115,16 +1115,12 @@ class Manager:
         return out
 
     @staticmethod
-    def _reonboard_hint(type_cfg):
-        """Human instruction to bring a manual-override TRV back under control:
-        set it back to its weekly-schedule mode (the field/value our schedule_mode
-        defines), after which the next eval reclassifies it as 'schedule'. Falls
-        back to generic wording if the type declares no schedule_mode."""
-        sm = type_cfg.get('schedule_mode') or {}
-        if sm:
-            parts = ", ".join(f"{k} = {v}" for k, v in sm.items())
-            return f"set the TRV to schedule mode ({parts})"
-        return "set the TRV back to its normal weekly-schedule mode"
+    def _reonboard_hint(room):
+        """Instruction to bring a manual-override TRV back under control: run the
+        re-onboard wrapper, which pushes the active-season intended state (cooling
+        -> open, heating -> schedule). Preferred over hand-setting schedule mode,
+        which does not reliably reach the open state in cooling."""
+        return f'run: thermostat-reonboard "{room}"'
 
     def _age(self, iso_seen):
         ts = parse_iso(iso_seen)
@@ -1248,10 +1244,8 @@ class Manager:
         if override_rooms:
             override_head = ", ".join(override_rooms)
             override_line = ", ".join(override_rooms)
-            for name in override_rooms:
-                type_cfg = self.thermostat_types.get(
-                    self.thermostats[name].get('type'), {})
-                override_rows.append((name, self._reonboard_hint(type_cfg)))
+            override_rows = [(name, self._reonboard_hint(name))
+                             for name in override_rooms]
 
         window_line = None        # text/mail: single line
         window_head = None        # web: summary (which rooms) — always visible
@@ -1774,8 +1768,16 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
     def _web_table(headers, rows, styles=None, links=None):
         """Render an HTML table. `links` is an optional per-row {header: url} map;
         a matching cell is wrapped in an <a> (used to link a room's temp to its
-        history chart, and a device name to its z2m page). External http(s) links
-        open in a new tab. Cell text is always escaped."""
+        history chart, and a device name to its z2m page). Cell text is always
+        escaped.
+
+        All links navigate in the same tab. We deliberately do *not* open the
+        external z2m links with target="_blank": the z2m frontend deep-link is a
+        hash route (#/device/...), and iOS Safari opening such a URL in a fresh
+        _blank tab races the SPA's hash router against its boot redirect, landing
+        on the device *list* instead of the device. A top-level navigation hands
+        the SPA the hash at boot and resolves correctly. The cost is that tapping
+        a device leaves the auto-refreshing status page — Back returns to it."""
         esc = html.escape
         th = "".join(f'<th>{esc(str(h))}</th>' for h in headers)
         trs = []
@@ -1786,12 +1788,7 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
             for h, c in zip(headers, row):
                 inner = esc(str(c))
                 if ls.get(h):
-                    url = ls[h]
-                    # external (z2m) links open in a new tab so the auto-refreshing
-                    # status page isn't navigated away; internal /room links don't.
-                    ext = (' target="_blank" rel="noopener"'
-                           if url.startswith(('http://', 'https://')) else '')
-                    inner = f'<a href="{esc(url)}"{ext}>{inner}</a>'
+                    inner = f'<a href="{esc(ls[h])}">{inner}</a>'
                 style = f' style="{cs[h]}"' if cs.get(h) else ''
                 cells.append(f'<td{style}>{inner}</td>')
             trs.append(f"<tr>{''.join(cells)}</tr>")

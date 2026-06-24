@@ -141,9 +141,13 @@ EOF
 
 chmod 644 "${SERVICE_PATH}"
 
-echo "Reloading systemd daemon and enabling service"
+echo "Reloading systemd daemon, enabling and (re)starting service"
 systemctl daemon-reload
-systemctl enable --now thermostat_monitor.service
+systemctl enable thermostat_monitor.service
+# Always restart so freshly-synced code is actually loaded: `enable --now` only
+# *starts* a stopped unit and would leave an already-running daemon on the old
+# code. `restart` starts it if stopped and reloads new code if already running.
+systemctl restart thermostat_monitor.service
 
 echo "Installation complete. Check status with: sudo systemctl status thermostat_monitor.service"
 echo "Logs: sudo journalctl -u thermostat_monitor.service -f"

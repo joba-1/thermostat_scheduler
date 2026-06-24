@@ -72,15 +72,13 @@ def test_manual_override_colored_and_reonboard_instructions():
                                         if r[0] == 'Bad OG'))
     assert d['thermo']['styles'][ri].get('state') == mgr._CSS_MANUAL
 
-    # re-onboard instructions name the schedule-mode field/value
+    # re-onboard instructions point at the wrapper command, keyed by room
     assert d['override_head'] == 'Bad OG'
-    assert d['override_rows'] == [('Bad OG', mgr._reonboard_hint(
-        mgr.thermostat_types['VNTH-T2_v2']))]
-    assert 'preset = schedule' in d['override_rows'][0][1]
+    assert d['override_rows'] == [('Bad OG', 'run: thermostat-reonboard "Bad OG"')]
 
     # surfaced in all three renderings
     assert 'Manual (left alone)' in mgr._render_text(d)
-    assert 'preset = schedule' in mgr._render_text(d)
+    assert 'thermostat-reonboard' in mgr._render_text(d)
     assert 'Manual (left alone)' in mgr._render_html(d)
     assert 'Manual (left alone)' in mgr._render_web(d)
 
@@ -112,8 +110,11 @@ def test_z2m_device_links_for_trv_and_sensor():
     assert d['sensors']['z2m'][luft_i] == 'http://mqtt.lan:8080/#/device/0/0x2222/info'
 
     html = mgr._render_web(d, link_rooms=True)
-    assert 'href="http://mqtt.lan:8080/#/device/0/0x1111/info" target="_blank"' in html
-    assert 'href="http://mqtt.lan:8080/#/device/0/0x2222/info" target="_blank"' in html
+    # device links navigate in the same tab (no target="_blank"): an iOS-Safari
+    # _blank tab races the z2m hash router and lands on the device list.
+    assert 'href="http://mqtt.lan:8080/#/device/0/0x1111/info">' in html
+    assert 'href="http://mqtt.lan:8080/#/device/0/0x2222/info">' in html
+    assert 'target="_blank"' not in html
     assert 'href="/room?' in html          # temp cell still links to history
 
 
