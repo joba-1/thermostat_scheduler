@@ -104,16 +104,20 @@ def test_z2m_device_links_for_trv_and_sensor():
     mgr.sensor_state['Bad OG Luft'] = {'temperature': 21.0}
 
     d = mgr._report_data()
-    assert d['thermo']['z2m'] == ['http://mqtt.lan:8080/#/device/0/0x1111/info']
+    # device-name links route through our /z2m?d=<ieee> endpoint (which logs the tap
+    # and 302s to the frontend); the real target is built by z2m_target().
+    assert d['thermo']['z2m'] == ['/z2m?d=0x1111']
+    assert mgr.z2m_target('0x1111') == 'http://mqtt.lan:8080/#/device/0/0x1111/info'
     luft_i = d['sensors']['rows'].index(next(r for r in d['sensors']['rows']
                                              if r[0] == 'Bad OG Luft'))
-    assert d['sensors']['z2m'][luft_i] == 'http://mqtt.lan:8080/#/device/0/0x2222/info'
+    assert d['sensors']['z2m'][luft_i] == '/z2m?d=0x2222'
 
     html = mgr._render_web(d, link_rooms=True)
-    # device links navigate in the same tab (no target="_blank"): an iOS-Safari
-    # _blank tab races the z2m hash router and lands on the device list.
-    assert 'href="http://mqtt.lan:8080/#/device/0/0x1111/info">' in html
-    assert 'href="http://mqtt.lan:8080/#/device/0/0x2222/info">' in html
+    # same-tab internal links (no target="_blank"): a direct in-page link to the
+    # z2m hash route bounces to the device list on iOS Safari; the /z2m redirect
+    # turns it into a fresh top-level load that resolves.
+    assert 'href="/z2m?d=0x1111">' in html
+    assert 'href="/z2m?d=0x2222">' in html
     assert 'target="_blank"' not in html
     assert 'href="/room?' in html          # temp cell still links to history
 
@@ -125,7 +129,7 @@ def test_z2m_link_omitted_when_ieee_unknown_or_disabled():
     mgr.last_state['Bad OG'] = {'preset': 'schedule'}
     d = mgr._report_data()
     assert d['thermo']['z2m'] == [None]
-    assert '/#/device/' not in mgr._render_web(d, link_rooms=True)
+    assert '/z2m?' not in mgr._render_web(d, link_rooms=True)
 
 
 def test_window_ignore_warns_and_does_not_switch_off():

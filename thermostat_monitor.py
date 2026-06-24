@@ -38,7 +38,7 @@ import devices
 import sensors as sensors_mod
 from alerts import Alerter, make_issue
 
-__version__ = "3.0.1"
+__version__ = "3.0.2"
 
 DAY_MINUTES = 24 * 60
 
@@ -1624,14 +1624,25 @@ class Manager:
     def room_url(room, hours=history.DEFAULT_HOURS):
         return '/room?' + urllib.parse.urlencode({'name': room, 'hours': hours})
 
-    def z2m_url(self, ieee):
-        """Link to a device's page in the z2m frontend, keyed by its ieee. Returns
-        None when the base URL is disabled or the ieee is unknown (not yet resolved
-        from bridge/devices). The `/0/` is the frontend's source index (a single
-        z2m instance is 0); without it the route falls back to the device list."""
+    def z2m_target(self, ieee):
+        """The real z2m-frontend device-page URL, keyed by ieee. None when the base
+        URL is disabled or the ieee is unknown (not yet resolved from bridge/devices).
+        The `/0/` is the frontend's source index (a single z2m instance is 0); without
+        it the route falls back to the device list."""
         if not self.z2m_base or not ieee:
             return None
         return f"{self.z2m_base}/#/device/0/{ieee}/info"
+
+    def z2m_url(self, ieee):
+        """Page link for a device's z2m page. We do NOT link straight to the z2m
+        frontend: instead we route through our own `/z2m?d=<ieee>` endpoint, which
+        logs the tap and then 302-redirects to z2m_target(). The redirect makes the
+        browser do a fresh top-level load of the `#/device/...` hash URL — the form
+        that reliably resolves on iOS Safari (a direct in-page link to the hash route
+        bounces to the device list). Returns None when there is no z2m target."""
+        if not self.z2m_target(ieee):
+            return None
+        return '/z2m?' + urllib.parse.urlencode({'d': ieee})
 
     def _trv_friendly(self, room):
         """The room TRV's current friendly name (topic minus base, registry-resolved)."""
@@ -1979,6 +1990,27 @@ def start_web_server(mgr):
                 return
             if parsed.path == '/apple-touch-icon.png':
                 self._send_asset(mgr.apple_icon_png(), 'image/png')
+                return
+            if parsed.path == '/z2m':
+                # Device-name links route through here: log which device was tapped,
+                # then 302 to the z2m frontend. The browser-followed redirect is a
+                # fresh top-level load of the #/device/... hash route (the form that
+                # resolves on iOS Safari). ieee is validated against the registry, so
+                # this is not an open redirect.
+                qs = urllib.parse.parse_qs(parsed.query)
+                ieee = (qs.get('d') or [''])[0]
+                target = mgr.z2m_target(ieee)
+                ua = self.headers.get('User-Agent', '?')
+                if not target:
+                    log.warning("z2m link: unknown device ieee=%r ua=%s", ieee, ua)
+                    self.send_error(404)
+                    return
+                log.info("z2m link tap: %s (%s) -> %s [ua=%s]",
+                         mgr.registry.name_of(ieee), ieee, target, ua)
+                self.send_response(302)
+                self.send_header('Location', target)
+                self.send_header('Cache-Control', 'no-store')
+                self.end_headers()
                 return
             if parsed.path == '/room':
                 qs = urllib.parse.parse_qs(parsed.query)
