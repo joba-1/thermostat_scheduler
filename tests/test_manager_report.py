@@ -281,6 +281,8 @@ def test_registry_backfills_ieee_and_resubscribes_on_rename():
 def test_mode_change_notifies_manual_valves():
     cfg = {k: (dict(v) if isinstance(v, dict) else v) for k, v in CFG.items()}
     cfg['manual_thermostats'] = ['Keller', 'Gäste WC']
+    cfg['alerts'] = {'enabled': True,
+                     'state_file': tempfile.mkdtemp() + '/alerts.json'}
     mgr = tm.Manager(cfg)
     sent = []
     mgr.alerter.enabled = True

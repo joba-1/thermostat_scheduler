@@ -17,6 +17,7 @@ CFG = {
 def make_mgr():
     cfg = {k: (dict(v) if isinstance(v, dict) else v) for k, v in CFG.items()}
     cfg['device_state_file'] = tempfile.mkdtemp() + '/devices.json'
+    cfg['alerts'] = dict(cfg['alerts'], state_file=tempfile.mkdtemp() + '/alerts.json')
     mgr = tm.Manager(cfg)
     sent = []
     mgr.alerter.enabled = True

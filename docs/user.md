@@ -44,9 +44,14 @@ running: `python3 thermostat_monitor.py --report [--mail]`.
 
 The overview shows the desired mode, heat-pump telemetry (with units), every
 thermostat (state, setpoint, room temp, battery, last seen), every sensor, any
-manual valves, and the open issues. The daemon also mails this automatically
-every `report_interval_hours`. Mail arrives from the sender name
-`thermostat_monitor`.
+manual valves, and the open issues. The daemon attaches this same overview to
+every alert and to the daily digest, so each mail is self-contained — there's no
+separate periodic report mail. Issues are collected over a short window
+(`batch_window_minutes`, default 10) and sent as one combined mail, so a burst of
+problems — or a sensor that briefly drops off the mesh and comes back — produces a
+single mail (or none), not a stream. A daily backstop cap (`max_mails_per_day`,
+default 6; the digest is exempt) bounds the worst case. Mail arrives from the
+sender name `thermostat_monitor`.
 
 ### Status web page
 

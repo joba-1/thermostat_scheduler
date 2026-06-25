@@ -94,6 +94,9 @@ class Manager:
         self.monitor_topic = 'thermostat_monitor'
 
         self.alerter = Alerter(self.alerts_cfg)
+        # Every alert/digest mail carries the current status report (text + html)
+        # so each notification is self-contained.
+        self.alerter.report_provider = self._alert_report
 
         # Thermostats and sensors are separate namespaces: a contact sensor may
         # share a friendly name with a thermostat room (e.g. "Bad OG"), so they
@@ -361,7 +364,8 @@ class Manager:
                                json.dumps({'report': report}), qos=1)
                 if cmd == 'status-mail':
                     self.alerter.notify("[thermostat] status report", report,
-                                        html_body=self._render_html(d))
+                                        html_body=self._render_html(d),
+                                        essential=True, attach_report=False)
                     log.info("status report mailed on request")
             return
 
@@ -727,13 +731,9 @@ class Manager:
             log.warning("ALERT %s: %s", iss.subject, iss.detail)
         for key in cleared:
             log.info("cleared: %s", key)
+        # The daily digest now carries the full status report (see Alerter), so
+        # there is no separate periodic status mail — that just added volume.
         self.alerter.maybe_send_digest()
-
-        # periodic full status overview (not just problems)
-        interval = self.alerts_cfg.get('report_interval_hours', 24) * 3600
-        if interval > 0 and self.alerter.due('status_report', interval):
-            self.alerter.notify("[thermostat] status report",
-                                self._render_text(d), html_body=self._render_html(d))
 
         self._save_device_state()
         return issues
@@ -1571,6 +1571,18 @@ class Manager:
         p.append('</div>')
         return "".join(p)
 
+    def _alert_report(self):
+        """(text, html) status report for the Alerter to append to every mail.
+
+        Uses the cached snapshot from the last eval pass so it adds no work and
+        no SMTP-time recompute. Returns None before the first pass (nothing to
+        show yet), in which case the mail simply goes out without it.
+        """
+        d = self._last_report
+        if not d:
+            return None
+        return self._render_text(d), self._render_html(d)
+
     def status_report(self, mode=None, hp=None):
         """Plain-text overview (terminal / mail text part)."""
         return self._render_text(self._report_data(mode, hp))
@@ -2081,7 +2093,8 @@ def main():
         print(report)
         if args.mail:
             mgr.alerter.notify("[thermostat] status report", report,
-                               html_body=mgr._render_html(d))
+                               html_body=mgr._render_html(d),
+                               essential=True, attach_report=False)
         client.loop_stop()
         client.disconnect()
         return

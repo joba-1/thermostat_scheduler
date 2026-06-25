@@ -23,6 +23,12 @@ alerts:
   # from_name: thermostat_monitor  # sender display name (default: script name)
   cooldown_hours: 24           # don't re-mail the same ongoing issue more often than this
   digest_hour: 7              # daily digest of open issues at this local hour
+  batch_window_minutes: 10     # coalesce issues across eval passes into one mail
+                              # at most this often (a burst, or a brief flap,
+                              # becomes one attempt or none).
+  max_mails_per_day: 6         # backstop cap on issue mails/day (digest exempt);
+                              # the overflow waits for the digest. Every mail
+                              # carries the full status report.
   battery_limit: 20           # percent
   eval_interval: 300          # seconds between evaluation passes
   state_file: ~/.local/state/thermostat_manager/alerts.json

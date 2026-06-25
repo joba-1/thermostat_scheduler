@@ -22,9 +22,20 @@ and on a timer (`alerts.eval_interval`, default 300 s) runs one evaluation pass.
    non-manual thermostat's `cooling_open` payload when entering cooling, or
    `cooling_restore` when entering heating. Per-device `applied_mode` avoids
    re-publishing; heating is seeded as the startup baseline without writing.
-6. `Alerter.process(issues)` mails new / cooled-down alerts and records cleared
-   ones; `maybe_send_digest()` sends the daily open-issues digest; `due()` gates
-   the periodic full status report (`alerts.report_interval_hours`).
+6. `Alerter.process(issues)` records new / cleared issues every pass but only
+   *mails* on the batch boundary (`alerts.batch_window_minutes`, default 10): one
+   combined mail for all alert issues still open and due, plus one for recoveries
+   queued since the last flush. So a burst across many eval passes — and any issue
+   that opens then clears within a window — collapses into a single attempt (or
+   none), which is what actually keeps the volume down. The first issue after a
+   quiet spell still goes out promptly (the window starts empty).
+   `maybe_send_digest()` sends the daily open-issues digest. All mail goes through
+   one `Alerter._emit` choke point: issue mails are also capped at
+   `alerts.max_mails_per_day` per local day as a backstop (overflow waits for the
+   digest, which is exempt), and every alert/digest mail carries the full status
+   report (injected via `report_provider`), so each notification is
+   self-contained. There is no separate periodic status mail — the daily digest
+   carries it.
 
 ## Heat-pump remote sensor feed
 

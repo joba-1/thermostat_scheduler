@@ -81,6 +81,20 @@ class Alerter:
             cfg.get('send_mail_cmd', '~/bin/send-mail.py'))
         self.cooldown = cfg.get('cooldown_hours', 24) * 3600
         self.digest_hour = cfg.get('digest_hour', 7)
+        # Coalescing window: issues are collected across eval passes and mailed in
+        # one combined attempt at most once per window. A burst of new issues, and
+        # any issue that opens then clears again within the window, collapse into a
+        # single mail (or none) instead of one attempt per pass. The first issue
+        # after a quiet spell still goes out promptly (the window starts empty).
+        self.batch_window = cfg.get('batch_window_minutes', 10) * 60
+        # Hard ceiling on *issue* mails per local day. The daily digest is exempt
+        # (it always gets through), so total daily volume is digest + this cap.
+        # Anything suppressed by the cap still surfaces in the next digest.
+        self.max_mails_per_day = cfg.get('max_mails_per_day', 6)
+        # Optional callable -> (text, html) full status report, injected by the
+        # daemon. When set, every mail carries the current status report so each
+        # notification is self-contained ("important issue + full status").
+        self.report_provider = None
         self.state_file = os.path.expanduser(
             cfg.get('state_file', '~/.local/state/thermostat_manager/alerts.json'))
         # Sender display name: configured value, else the running script/service
@@ -100,6 +114,49 @@ class Alerter:
         except Exception:
             return {'issues': {}, 'last_digest_day': None}
 
+    # ---- mail budget + unified send ----------------------------------
+    def _budget(self):
+        """The {day, count} mail-budget record, reset at each local-day rollover."""
+        day = time.strftime('%Y-%m-%d', time.localtime(self._now()))
+        b = self.state.setdefault('mailbudget', {'day': day, 'count': 0})
+        if b.get('day') != day:
+            b['day'], b['count'] = day, 0
+        return b
+
+    def _emit(self, subject, text, html_body=None, *, essential=False,
+              attach_report=True):
+        """Single choke point for all outgoing mail.
+
+        Enforces the daily issue-mail cap (non-essential mail beyond the cap is
+        dropped and left to the next digest), and appends the full status report
+        so every notification stands on its own. `essential` mail (the digest, an
+        explicitly requested report) always sends and ignores the cap.
+        """
+        if not self.enabled:
+            return False
+        b = self._budget()
+        if not essential and b['count'] >= self.max_mails_per_day:
+            log.info("mail budget reached (%d/day); suppressing %r (will appear "
+                     "in the daily digest)", self.max_mails_per_day, subject)
+            return False
+        if attach_report and self.report_provider:
+            try:
+                rep = self.report_provider()
+            except Exception as e:
+                log.warning("report_provider failed: %s", e)
+                rep = None
+            if rep:
+                rep_text, rep_html = rep
+                if rep_text:
+                    text = f"{text}\n\n{'=' * 60}\n{rep_text}"
+                if html_body and rep_html:
+                    html_body = f"{html_body}<hr style='margin:18px 0'>{rep_html}"
+        ok = self._sender(subject, text, html_body)
+        if ok:
+            b['count'] += 1
+            self._save()
+        return ok
+
     def _save(self):
         try:
             os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
@@ -114,14 +171,16 @@ class Alerter:
     def process(self, issues):
         """Reconcile the currently observed issues with stored state.
 
-        Mails new/cooled-down alert-severity issues, records cleared ones, and
-        updates the open-issue table. Returns (mailed, cleared) for logging.
+        Records new/cleared issues every pass, but only *mails* on the batch
+        boundary (`batch_window`): one combined mail for all alert-severity
+        issues still open and due, plus one for recoveries queued since the last
+        flush. Returns (mailed, cleared) for logging — `mailed` is empty on passes
+        that only collect.
         """
         now = self._now()
         open_state = self.state.setdefault('issues', {})
         seen = {iss.key: iss for iss in issues}
 
-        to_mail = []
         for key, iss in seen.items():
             st = open_state.get(key)
             if st is None:
@@ -130,32 +189,36 @@ class Alerter:
                     'subject': iss.subject, 'detail': iss.detail,
                     'first': now, 'last_alert': 0,
                 }
-                if iss.severity == 'alert':
-                    open_state[key]['last_alert'] = now
-                    to_mail.append(iss)
             else:
                 st.update(kind=iss.kind, severity=iss.severity,
                           subject=iss.subject, detail=iss.detail)
-                if iss.severity == 'alert' and (now - st.get('last_alert', 0)) >= self.cooldown:
-                    st['last_alert'] = now
-                    to_mail.append(iss)
 
         cleared = [k for k in list(open_state.keys()) if k not in seen]
-        resolved = []
+        # Recoveries accumulate across passes and flush with the next batch. Only
+        # queue issues that actually alerted; an issue that opened and cleared
+        # within a window (never mailed) leaves no trace -> no flap mail.
+        pending_resolved = self.state.setdefault('pending_resolved', [])
         for k in cleared:
             st = open_state.pop(k, None)
-            # Only announce recovery for issues that actually alerted (loud
-            # enough to warn about -> loud enough to confirm resolved). Cleared
-            # info-only items stay quiet.
             if st and st.get('severity') == 'alert' and st.get('last_alert'):
-                resolved.append(st)
+                pending_resolved.append(st)
 
-        if to_mail and self.enabled:
-            self._mail_issues(to_mail)
-        if resolved and self.enabled:
-            self._mail_resolved(resolved)
+        mailed = []
+        if self.enabled and (now - self.state.get('last_batch', 0)) >= self.batch_window:
+            to_mail = [iss for key, iss in seen.items()
+                       if iss.severity == 'alert' and (
+                           open_state[key].get('last_alert', 0) == 0
+                           or (now - open_state[key]['last_alert']) >= self.cooldown)]
+            if to_mail or pending_resolved:
+                if to_mail and self._mail_issues(to_mail):
+                    for iss in to_mail:
+                        open_state[iss.key]['last_alert'] = now
+                    mailed = to_mail
+                if pending_resolved and self._mail_resolved(pending_resolved):
+                    self.state['pending_resolved'] = []
+                self.state['last_batch'] = now
         self._save()
-        return to_mail, cleared
+        return mailed, cleared
 
     @staticmethod
     def html_message(intro, items, outro=None):
@@ -194,7 +257,7 @@ class Alerter:
         outro = ("You will get a daily digest while these remain open, "
                  "and another mail if an issue persists past the cooldown.")
         text = "\n".join([intro, ""] + [f"  - {it}" for it in items] + ["", outro])
-        self._sender(subject, text, self.html_message(intro, items, outro))
+        return self._emit(subject, text, self.html_message(intro, items, outro))
 
     def _mail_resolved(self, resolved):
         n = len(resolved)
@@ -203,7 +266,7 @@ class Alerter:
         intro = "The following thermostat issue(s) have cleared:"
         items = [f"{st.get('subject')}: {st.get('detail')} — now OK" for st in resolved]
         text = "\n".join([intro, ""] + [f"  - {it}" for it in items])
-        self._sender(subject, text, self.html_message(intro, items))
+        return self._emit(subject, text, self.html_message(intro, items))
 
     def maybe_send_digest(self, localtime_fn=time.localtime):
         """Send the daily digest once, when the configured hour is reached."""
@@ -221,11 +284,17 @@ class Alerter:
         self._save()
         return True
 
-    def notify(self, subject, body, html_body=None):
-        """Send an arbitrary mail through the configured sender (if enabled)."""
-        if not self.enabled:
-            return False
-        return self._sender(subject, body, html_body)
+    def notify(self, subject, body, html_body=None, *, essential=False,
+               attach_report=True):
+        """Send an arbitrary mail through the unified send path (if enabled).
+
+        Defaults treat it as a budget-counted issue notification that carries the
+        full status report. Pass `attach_report=False` when the body already *is*
+        the report, and `essential=True` to bypass the daily cap (user-requested
+        reports).
+        """
+        return self._emit(subject, body, html_body, essential=essential,
+                           attach_report=attach_report)
 
     def due(self, key, interval_seconds):
         """Return True at most once per `interval_seconds` for `key`.
@@ -247,8 +316,8 @@ class Alerter:
             # Nothing open: a quiet "all clear" once a day is reassuring but
             # easy to filter; keep it short.
             msg = "No open thermostat/sensor/heat-pump issues. All good."
-            self._sender(f"[thermostat] daily digest {day}: all clear", msg,
-                         self.html_message(msg, []))
+            self._emit(f"[thermostat] daily digest {day}: all clear", msg,
+                       self.html_message(msg, []), essential=True)
             return
         intro = f"Open thermostat issues as of {day}:"
         items, text_lines = [], [intro, ""]
@@ -257,5 +326,6 @@ class Alerter:
             text = f"{st.get('subject')}: {st.get('detail')}"
             items.append((sev, text))
             text_lines.append(f"  [{sev}] {text}")
-        self._sender(f"[thermostat] daily digest {day}: {len(open_issues)} open",
-                     "\n".join(text_lines), self.html_message(intro, items))
+        self._emit(f"[thermostat] daily digest {day}: {len(open_issues)} open",
+                   "\n".join(text_lines), self.html_message(intro, items),
+                   essential=True)
