@@ -19,6 +19,25 @@ from alerts import make_issue
 import cooling
 
 
+def stale_temp_issue(key, subject, what, temp_seen_ts, now_ts, stale_secs):
+    """Flag a temperature reading that has not *changed* for too long.
+
+    `temp_seen_ts` is the (restart-grace-floored) epoch of the last change in the
+    monitored reading. A device can still be on the mesh and publishing — a frozen
+    value is its own warning sign of an unreliable sensor to restart or replace, so
+    this is an alert independent of the no-life-sign check. Returns an Issue or None.
+    """
+    if temp_seen_ts is None or stale_secs <= 0:
+        return None
+    age = now_ts - temp_seen_ts
+    if age <= stale_secs:
+        return None
+    hours = age / 3600.0
+    return make_issue(
+        key, 'stale_temperature', subject,
+        f"{what} unchanged for {hours:.1f}h (frozen — restart or replace the device)")
+
+
 def battery_issue(reported, limit):
     """Return a human battery string if the battery is low/flagged, else None."""
     if not isinstance(reported, dict):

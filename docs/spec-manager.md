@@ -15,8 +15,15 @@ and on a timer (`alerts.eval_interval`, default 300 s) runs one evaluation pass.
    - per thermostat: `health.classify_device` (life sign, battery, and — heating
      only — manual override vs settings mismatch); plus, when **not** manual,
      `sensors.evaluate_room` (temp vs setpoint, window-aware) and
-     `health.no_reaction_issue` (valve demanding but room temp not following);
-   - per sensor: `sensors.classify_sensor` (life sign, battery);
+     `health.no_reaction_issue` (valve demanding but room temp not following).
+     Also `health.stale_temp_issue` on the TRV's own `local_temperature`: a value
+     that hasn't *changed* within `mqtt.stale_temp_hours` (default 4) alerts even
+     while the device still pings — a frozen reading is an unreliable-sensor sign.
+     Checked regardless of manual override; floored at `start_ts` for restart grace;
+     `0` disables;
+   - per sensor: `sensors.classify_sensor` (life sign, battery), plus the same
+     frozen-reading check on a standalone temperature sensor's `temperature`
+     (`sensors.stale_temp_hours`);
    - heat pump: `heatpump.check_bounds` (only while `active`), as digest notes.
 5. Cooling control (`_apply_cooling`): if `season.control`, publish each
    non-manual thermostat's `cooling_open` payload when entering cooling, or

@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(python -m pytest -q)",
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(./venv/bin/python -c \"import thermostat_monitor, health\")",
+      "Bash(./venv/bin/python -m pytest tests/test_health_sensors.py -q)"
     ]
   }
 }

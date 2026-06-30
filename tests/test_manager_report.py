@@ -563,3 +563,27 @@ def test_html_color_cues():
     assert tm.Manager._CSS_BAD in html      # low battery coloured
     assert tm.Manager._CSS_HOT in html      # too-warm temp coloured
     assert tm.Manager._CSS_WARN in html     # open window coloured
+
+
+def _iso(epoch):
+    import time
+    return time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(epoch))
+
+
+def test_collect_issues_flags_frozen_trv_temperature():
+    import time
+    mgr = make_mgr()
+    now = time.time()
+    mgr.start_ts = now - 10 * 3600                 # past restart grace
+    mgr.last_state['Bad OG'] = {'preset': 'schedule', 'system_mode': 'heat',
+                                'local_temperature': 22.0, 'battery': 80}
+    mgr.last_seen['Bad OG'] = _iso(now - 60)       # device alive (recent message)
+    mgr.trv_temp_seen['Bad OG'] = _iso(now - 6 * 3600)   # but temp frozen 6 h
+    issues = mgr.collect_issues('heating', now, time.localtime(now), None)
+    stale = [i for i in issues if i.kind == 'stale_temperature']
+    assert stale and stale[0].key == 'Bad OG:tempstale'
+    assert stale[0].severity == 'alert'
+    # a fresh temperature must NOT flag
+    mgr.trv_temp_seen['Bad OG'] = _iso(now - 600)
+    issues = mgr.collect_issues('heating', now, time.localtime(now), None)
+    assert not [i for i in issues if i.kind == 'stale_temperature']

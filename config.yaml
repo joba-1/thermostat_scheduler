@@ -7,6 +7,9 @@ mqtt:
   unseen_interval: 21600      # thermostat "no life sign" threshold (seconds); TRVs
                               # only publish on change and routinely go 5 h quiet, so
                               # don't flag until 6 h without a sign of life
+  stale_temp_hours: 4         # alert if a TRV's local_temperature hasn't *changed*
+                              # within this long — a frozen reading on a still-alive
+                              # device flags an unreliable sensor. 0 disables.
   # username: mqtt_user       # optional; prefer env THERMOSTAT_MQTT_USER/PASS or a 600 secrets file
   # password: mqtt_pass
 
@@ -125,6 +128,8 @@ sensors:
   battery_limit: 20
   unseen_interval: 21600      # contact/temp sensors report less often than TRVs;
                               # 5 h quiet is common, so don't flag until 6 h
+  stale_temp_hours: 4         # alert if a temperature sensor's reading hasn't
+                              # *changed* within this long (frozen value). 0 disables.
 
 
 # --- Window/door -> TRV control (moved here from Home Assistant) ---

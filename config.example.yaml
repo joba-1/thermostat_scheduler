@@ -13,6 +13,9 @@ mqtt:
                                # TRVs publish only on change and often go 5 h quiet —
                                # keep this generous (6 h here; per-thermostat override
                                # allowed under thermostats:)
+  stale_temp_hours: 4          # alert if a TRV's local_temperature hasn't *changed*
+                               # within this long (a frozen reading on a live device
+                               # = unreliable sensor). 0 disables.
   # username: mqtt_user
   # password: mqtt_pass
 
@@ -117,6 +120,8 @@ comfort_minutes_per_degree: 60
 sensors:
   battery_limit: 20
   unseen_interval: 21600       # 5 h quiet is common for battery sensors; flag at 6 h
+  stale_temp_hours: 4          # alert if a sensor's temperature reading is frozen
+                               # (unchanged) this long. 0 disables.
 
 # Window/door -> TRV control. Open a room's contact -> switch its TRV off; close
 # it -> restore the intended (season-aware) state. Only rooms the monitor itself

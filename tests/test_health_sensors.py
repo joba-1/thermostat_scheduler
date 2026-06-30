@@ -94,3 +94,26 @@ def test_sensor_battery_and_life():
                                          {'battery': 5, 'temperature': 21.0},
                                          NOW - 10, NOW, {'battery_limit': 20})
     assert 'battery_low' in kinds(issues)
+
+
+def test_stale_temp_issue_fires_past_threshold():
+    iss = health.stale_temp_issue('Caros:tempstale', 'Caros thermostat',
+                                  'TRV temperature', NOW - 5 * 3600, NOW, 4 * 3600)
+    assert iss is not None
+    assert iss.kind == 'stale_temperature' and iss.severity == 'alert'
+    assert '5.0h' in iss.detail
+
+
+def test_stale_temp_issue_quiet_within_threshold():
+    assert health.stale_temp_issue('x', 'x', 'temperature',
+                                   NOW - 3600, NOW, 4 * 3600) is None
+
+
+def test_stale_temp_issue_disabled_with_zero():
+    assert health.stale_temp_issue('x', 'x', 'temperature',
+                                   NOW - 99 * 3600, NOW, 0) is None
+
+
+def test_stale_temp_issue_none_when_no_timestamp():
+    assert health.stale_temp_issue('x', 'x', 'temperature',
+                                   None, NOW, 4 * 3600) is None

@@ -603,9 +603,11 @@ class Manager:
         return {
             'battery_limit': self.alerts_cfg.get('battery_limit', 20),
             'unseen_interval': self.mqtt_cfg.get('unseen_interval', 1800),
+            'stale_temp_secs': self.mqtt_cfg.get('stale_temp_hours', 4) * 3600,
         }, {
             'battery_limit': self.sensors_cfg.get('battery_limit', 20),
             'unseen_interval': self.sensors_cfg.get('unseen_interval', 7200),
+            'stale_temp_secs': self.sensors_cfg.get('stale_temp_hours', 4) * 3600,
         }
 
     def collect_issues(self, mode, now_ts, now_lt, hp):
@@ -624,6 +626,17 @@ class Manager:
             issues += health.classify_device(
                 name, item, self.thermostat_types, self.mqtt_cfg,
                 reported, seen_ts, now_ts, limits, mode=mode)
+
+            # frozen temperature: the TRV's own local_temperature normally drifts
+            # several times a day; a value stuck for hours means an unreliable
+            # sensor to act on, even while the device still pings the mesh.
+            if isinstance(reported, dict) and reported.get('local_temperature') is not None:
+                st = health.stale_temp_issue(
+                    f"{name}:tempstale", f"{name} thermostat", "TRV temperature",
+                    self._effective_seen(self.trv_temp_seen.get(name)),
+                    now_ts, limits['stale_temp_secs'])
+                if st:
+                    issues.append(st)
 
             type_cfg = self.thermostat_types.get(item.get('type'), {})
             manual = cooling.is_manual_override(type_cfg, reported)
@@ -663,8 +676,19 @@ class Manager:
         # standalone sensors (battery / life sign / leak)
         for name, kind in self.sensor_kind.items():
             seen_ts = self._effective_seen(self.sensor_seen.get(name))
+            reported = self.sensor_state.get(name)
             issues += sensors_mod.classify_sensor(
-                name, kind, self.sensor_state.get(name), seen_ts, now_ts, sensor_limits)
+                name, kind, reported, seen_ts, now_ts, sensor_limits)
+            # frozen temperature from a standalone temp/humidity sensor (same
+            # warning sign as a TRV; keyed per-sensor so it points at the device).
+            if kind == 'temperature' and isinstance(reported, dict) \
+                    and reported.get('temperature') is not None:
+                st = health.stale_temp_issue(
+                    f"{name}:tempstale", f"{name} sensor", "temperature",
+                    self._effective_seen(self.sensor_temp_seen.get(name)),
+                    now_ts, sensor_limits['stale_temp_secs'])
+                if st:
+                    issues.append(st)
 
         # heat-pump remote sensor feed freshness (dew-point safety -> alert)
         rf_issue = self._remote_feed_issue(now_ts)
