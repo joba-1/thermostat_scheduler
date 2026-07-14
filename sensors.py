@@ -67,6 +67,37 @@ def evaluate_room(room, temp_state, windows_states, setpoint, mode, tolerance,
     return issues
 
 
+def extreme_issues(key_prefix, label, reported, limits):
+    """Critical issues for extraordinary temperature/humidity readings.
+
+    Fires when a reading crosses a hard safety threshold (defaults: temp <10°C or
+    >45°C, humidity <20% or >90%). These are `critical` so the Alerter mails them
+    immediately instead of waiting for the daily report. Keyed per sensor+quantity
+    so each device points at itself and clears independently.
+    """
+    issues = []
+    if not isinstance(reported, dict):
+        return issues
+    checks = (
+        ('temperature', '°C', limits.get('temp_min', 10), limits.get('temp_max', 45)),
+        ('humidity', '%', limits.get('humidity_min', 20), limits.get('humidity_max', 90)),
+    )
+    for field, unit, lo, hi in checks:
+        val = reported.get(field)
+        if not isinstance(val, (int, float)):
+            continue
+        if val < lo:
+            where = f"below {lo}{unit}"
+        elif val > hi:
+            where = f"above {hi}{unit}"
+        else:
+            continue
+        issues.append(make_issue(
+            f"{key_prefix}:{field}extreme", f'{field}_extreme', label,
+            f"{field} {val}{unit} is {where} (extraordinary)", severity='critical'))
+    return issues
+
+
 def classify_sensor(name, kind, reported, last_seen_ts, now_ts, limits):
     """Battery + life-sign check for a standalone sensor (temp / contact)."""
     issues = []

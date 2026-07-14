@@ -4,7 +4,14 @@
       "Bash(python -m pytest -q)",
       "Bash(python -c ' *)",
       "Bash(./venv/bin/python -c \"import thermostat_monitor, health\")",
-      "Bash(./venv/bin/python -m pytest tests/test_health_sensors.py -q)"
+      "Bash(./venv/bin/python -m pytest tests/test_health_sensors.py -q)",
+      "Bash(python -m pytest tests/test_hp_alarm.py -q)",
+      "Bash(grep -rn \"http://job4:8000\\\\|/wiki/\\\\|base_url\\\\|env\\\\b\" ~/.claude/skills/trac-wiki/SKILL.md ~/.claude/skills/trac-wiki/scripts/* 2>/dev/null | head -20)",
+      "Read(//home/joachim/.claude/skills/trac-wiki/**)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" \"http://job4:8000/wiki/WikiStart\")",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" \"http://job4:8000/wiki/ThermostatScheduler\")",
+      "Bash(grep -oP \"'[a-z_]+'$\")",
+      "Bash(ssh job4 *)"
     ]
   }
 }

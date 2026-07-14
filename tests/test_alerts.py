@@ -1,15 +1,15 @@
-import os
+import time
 
 from alerts import Alerter, make_issue
 
 
-def make_alerter(tmp_path, now_box, cooldown_hours=24):
+def make_alerter(tmp_path, now_box, **extra):
     cfg = {
         'enabled': True,
         'mail_to': 'x@example.com',
-        'cooldown_hours': cooldown_hours,
         'digest_hour': 7,
         'state_file': str(tmp_path / 'alerts.json'),
+        **extra,
     }
     sent = []
     a = Alerter(cfg,
@@ -18,21 +18,14 @@ def make_alerter(tmp_path, now_box, cooldown_hours=24):
     return a, sent
 
 
-def test_new_alert_mails_once_then_throttled(tmp_path):
+# ---- routine (alert/info) issues: daily report only, no immediate mail -------
+
+def test_alert_issue_never_mails_immediately(tmp_path):
     now_box = [1000.0]
     a, sent = make_alerter(tmp_path, now_box)
     iss = make_issue('d:battery', 'battery_low', 'D thermostat', 'battery low')
-
-    a.process([iss])
-    assert len(sent) == 1                      # first sighting -> mail
-
-    now_box[0] += 3600                          # 1h later, still open
-    a.process([iss])
-    assert len(sent) == 1                      # within cooldown -> no new mail
-
-    now_box[0] += 24 * 3600                     # past cooldown
-    a.process([iss])
-    assert len(sent) == 2                      # re-alert
+    mailed, cleared = a.process([iss])
+    assert mailed == [] and sent == []          # routine issues wait for the report
 
 
 def test_info_severity_never_mails_immediately(tmp_path):
@@ -51,185 +44,174 @@ def test_cleared_issue_removed_from_state(tmp_path):
     mailed, cleared = a.process([])             # issue gone now
     assert cleared == ['d:life']
     assert 'd:life' not in a.state['issues']
+    assert sent == []                           # non-critical clear -> no mail
 
 
-def test_resolved_alert_sends_recovery_mail(tmp_path):
+# ---- critical issues: mail on open + on clear --------------------------------
+
+def test_critical_mails_on_open_and_clear(tmp_path):
     now_box = [1000.0]
     a, sent = make_alerter(tmp_path, now_box)
-    iss = make_issue('d:battery', 'battery_low', 'D thermostat', 'battery 13%')
-    a.process([iss])
-    assert len(sent) == 1                       # initial alert
-    now_box[0] += 11 * 60                        # past the batch window
-    a.process([])                               # battery swapped -> cleared
+    iss = make_issue('s:tempextreme', 'temperature_extreme', 'S sensor',
+                     'temperature 4°C is below 10°C', severity='critical')
+    mailed, _ = a.process([iss])
+    assert len(sent) == 1 and mailed == [iss]
+    assert 'CRITICAL' in sent[0][0]
+
+    a.process([iss])                            # still open -> no re-mail
+    assert len(sent) == 1
+
+    a.process([])                               # recovered -> one resolved mail
     assert len(sent) == 2
-    assert sent[1][0].startswith('[thermostat] resolved:')
+    assert 'resolved (critical)' in sent[1][0]
 
 
-def test_resolved_not_sent_for_info_only(tmp_path):
+def test_critical_reoccurrence_mails_again(tmp_path):
     now_box = [1000.0]
     a, sent = make_alerter(tmp_path, now_box)
-    iss = make_issue('r:manual', 'manual_override', 'R thermostat', 'manual', severity='info')
+    iss = make_issue('s:tempextreme', 'temperature_extreme', 'S', 'hot', severity='critical')
     a.process([iss])
-    a.process([])                               # cleared, but never alerted
-    assert sent == []
+    a.process([])                               # open + clear -> 2 mails
+    assert len(sent) == 2
+    a.process([iss])                            # comes back -> mails once more
+    assert len(sent) == 3
 
 
-def test_alert_mail_has_clean_html(tmp_path):
+# ---- service start/stop ------------------------------------------------------
+
+def test_service_notifications_mail(tmp_path):
     now_box = [1000.0]
     a, sent = make_alerter(tmp_path, now_box)
-    a.process([make_issue('d:battery', 'battery_low', 'D thermostat', 'battery 13%')])
+    a.notify_service('started', 'Version 9.9')
+    a.notify_service('stopped')
+    assert len(sent) == 2
+    assert 'service started' in sent[0][0]
+    assert 'service stopped' in sent[1][0]
+
+
+# ---- daily report: everything seen that day, resolved or not -----------------
+
+def test_daily_report_includes_resolved(tmp_path):
+    now_box = [1000.0]
+    a, sent = make_alerter(tmp_path, now_box)
+    a.process([make_issue('a:battery', 'battery_low', 'A', 'low'),
+               make_issue('b:life', 'no_life_sign', 'B', 'gone')])
+    a.process([make_issue('a:battery', 'battery_low', 'A', 'low')])   # B resolved
+    assert sent == []                           # nothing mailed during the day
+
+    lt = time.struct_time((2026, 6, 19, 8, 0, 0, 4, 170, -1))
+    assert a.maybe_send_digest(localtime_fn=lambda _ts: lt) is True
     subj, body, html = sent[0]
-    assert html is not None
-    # proportional font + list, not the monospace <pre> block
-    assert '<ul' in html and '<pre' not in html
-    assert 'battery 13%' in html
+    assert '1 open, 1 resolved' in subj
+    assert 'A: low' in body and 'B: gone' in body       # both, open + resolved
+    assert 'resolved' in body
 
 
-def test_state_persists_across_restart(tmp_path):
+def test_daily_report_all_clear_when_quiet(tmp_path):
     now_box = [1000.0]
     a, sent = make_alerter(tmp_path, now_box)
-    iss = make_issue('d:battery', 'battery_low', 'D thermostat', 'battery low')
+    lt = time.struct_time((2026, 6, 19, 8, 0, 0, 4, 170, -1))
+    assert a.maybe_send_digest(localtime_fn=lambda _ts: lt) is True
+    assert 'all clear' in sent[0][0]
+
+
+def test_daily_report_sends_once_per_day(tmp_path):
+    now_box = [1000.0]
+    a, sent = make_alerter(tmp_path, now_box)
+    a.process([make_issue('d:battery', 'battery_low', 'D thermostat', 'low')])
+    lt = time.struct_time((2026, 6, 19, 8, 0, 0, 4, 170, -1))
+    assert a.maybe_send_digest(localtime_fn=lambda _ts: lt) is True
+    assert a.maybe_send_digest(localtime_fn=lambda _ts: lt) is False
+    assert len(sent) == 1
+
+
+def test_report_resets_but_keeps_open_issues(tmp_path):
+    now_box = [1000.0]
+    a, sent = make_alerter(tmp_path, now_box)
+    a.process([make_issue('a:battery', 'battery_low', 'A', 'low')])
+    lt = time.struct_time((2026, 6, 19, 8, 0, 0, 4, 170, -1))
+    a.maybe_send_digest(localtime_fn=lambda _ts: lt)
+    # the still-open issue carries into the next report window
+    log = a.state['daily_log']['issues']
+    assert 'a:battery' in log and log['a:battery']['resolved'] is False
+
+
+# ---- backstop cap, persistence, html -----------------------------------------
+
+def test_daily_mail_budget_caps_immediate_mails(tmp_path):
+    now_box = [1000.0]
+    a, sent = make_alerter(tmp_path, now_box, max_mails_per_day=2)
+    for i in range(4):
+        iss = make_issue(f's{i}:tempextreme', 'temperature_extreme',
+                         f'S{i}', 'hot', severity='critical')
+        a.process([iss])
+    assert len(sent) == 2                       # capped
+
+    # The daily report is exempt from the cap.
+    lt = time.struct_time((2026, 6, 19, 8, 0, 0, 4, 170, -1))
+    a.maybe_send_digest(localtime_fn=lambda _ts: lt)
+    assert len(sent) == 3
+
+
+def test_critical_state_persists_across_restart(tmp_path):
+    now_box = [1000.0]
+    a, sent = make_alerter(tmp_path, now_box)
+    iss = make_issue('s:tempextreme', 'temperature_extreme', 'S', 'hot', severity='critical')
     a.process([iss])
     assert len(sent) == 1
 
-    # New Alerter instance, same state file, within cooldown -> no re-spam
-    a2, sent2 = make_alerter(tmp_path, now_box)
+    a2, sent2 = make_alerter(tmp_path, now_box)   # same state file, still open
     a2.process([iss])
-    assert sent2 == []
+    assert sent2 == []                            # no re-spam on restart
+
+
+def test_critical_mail_has_clean_html(tmp_path):
+    now_box = [1000.0]
+    a, sent = make_alerter(tmp_path, now_box)
+    a.process([make_issue('s:tempextreme', 'temperature_extreme', 'S',
+                          'temperature 4°C is below 10°C', severity='critical')])
+    subj, body, html = sent[0]
+    assert html is not None
+    assert '<ul' in html and '<pre' not in html
+    assert '4°C' in html
 
 
 def test_due_fires_once_per_interval(tmp_path):
     now_box = [1_000_000.0]
     a, _ = make_alerter(tmp_path, now_box)
-    assert a.due('status_report', 3600) is True     # first call (never fired)
-    assert a.due('status_report', 3600) is False     # within interval
+    assert a.due('status_report', 3600) is True
+    assert a.due('status_report', 3600) is False
     now_box[0] += 3601
-    assert a.due('status_report', 3600) is True      # interval elapsed
+    assert a.due('status_report', 3600) is True
 
 
-def test_daily_digest_sends_once_per_day(tmp_path):
-    import time
+def test_wiki_url_appended_to_every_mail(tmp_path):
+    now_box = [1000.0]
+    a, sent = make_alerter(tmp_path, now_box,
+                           wiki_url='http://trac/wiki/ThermostatScheduler#Alarms')
+    a.process([make_issue('s:tx', 'temperature_extreme', 'S', 'hot', severity='critical')])
+    subj, body, html = sent[0]
+    assert 'http://trac/wiki/ThermostatScheduler#Alarms' in body
+    assert 'href="http://trac/wiki/ThermostatScheduler#Alarms"' in html
+    # also on the daily report
+    lt = time.struct_time((2026, 6, 19, 8, 0, 0, 4, 170, -1))
+    a.maybe_send_digest(localtime_fn=lambda _ts: lt)
+    assert 'ThermostatScheduler#Alarms' in sent[-1][1]
+
+
+def test_no_wiki_footer_when_unset(tmp_path):
     now_box = [1000.0]
     a, sent = make_alerter(tmp_path, now_box)
-    a.process([make_issue('d:battery', 'battery_low', 'D thermostat', 'battery low')])
-    sent.clear()
-
-    # 08:00 local -> digest fires once
-    lt = time.struct_time((2026, 6, 19, 8, 0, 0, 4, 170, -1))
-    assert a.maybe_send_digest(localtime_fn=lambda _ts: lt) is True
-    assert a.maybe_send_digest(localtime_fn=lambda _ts: lt) is False
-    assert len(sent) == 1
-    assert 'open' in sent[0][0]
+    a.notify_service('started')
+    assert 'What to do about these alarms' not in sent[0][1]
 
 
-def _budget_alerter(tmp_path, now_box, cap):
-    cfg = {
-        'enabled': True, 'mail_to': 'x@example.com',
-        'max_mails_per_day': cap,
-        'batch_window_minutes': 0,      # flush every pass, to isolate the cap
-        'cooldown_hours': 999,          # no re-alert noise during the test
-        'state_file': str(tmp_path / 'alerts.json'),
-    }
-    sent = []
-    a = Alerter(cfg,
-                sender=lambda subj, body, html=None: sent.append((subj, body, html)) or True,
-                now_fn=lambda: now_box[0])
-    return a, sent
-
-
-def test_daily_mail_budget_caps_issue_mails(tmp_path):
-    now_box = [1000.0]
-    a, sent = _budget_alerter(tmp_path, now_box, cap=3)
-    # Distinct issues appearing one at a time (kept open) -> one mail each, but
-    # only 3 get through before the daily cap suppresses the rest.
-    open_now = []
-    for i in range(5):
-        open_now.append(make_issue(f'd{i}:battery', 'battery_low', f'T{i}', 'low'))
-        a.process(list(open_now))
-    assert len(sent) == 3                          # capped at the daily budget
-
-    # The daily digest is exempt from the cap and still goes out.
-    import time
-    lt = time.struct_time((2026, 6, 19, 8, 0, 0, 4, 170, -1))
-    assert a.maybe_send_digest(localtime_fn=lambda _ts: lt) is True
-    assert len(sent) == 4
-
-
-def test_budget_resets_next_day(tmp_path):
-    now_box = [1000.0]
-    a, sent = _budget_alerter(tmp_path, now_box, cap=1)
-    a.process([make_issue('a:battery', 'battery_low', 'A', 'low')])
-    a.process([make_issue('a:battery', 'battery_low', 'A', 'low'),
-               make_issue('b:battery', 'battery_low', 'B', 'low')])
-    assert len(sent) == 1                           # second is over budget
-    now_box[0] += 24 * 3600                          # next day -> budget resets
-    a.process([make_issue('a:battery', 'battery_low', 'A', 'low'),
-               make_issue('b:battery', 'battery_low', 'B', 'low'),
-               make_issue('c:battery', 'battery_low', 'C', 'low')])
-    assert len(sent) == 2
-
-
-def test_batch_window_coalesces_burst_into_one_mail(tmp_path):
-    now_box = [1000.0]
-    cfg = {
-        'enabled': True, 'mail_to': 'x@example.com',
-        'batch_window_minutes': 10,
-        'state_file': str(tmp_path / 'alerts.json'),
-    }
-    sent = []
-    a = Alerter(cfg,
-                sender=lambda subj, body, html=None: sent.append((subj, body, html)) or True,
-                now_fn=lambda: now_box[0])
-    # First issue flushes promptly (window starts empty).
-    a.process([make_issue('a:life', 'no_life_sign', 'A', 'gone')])
-    assert len(sent) == 1
-    # More issues arrive over the next few passes, still inside the window:
-    # collected, not mailed.
-    for dt in (60, 120, 180):
-        now_box[0] += dt
-        a.process([make_issue('a:life', 'no_life_sign', 'A', 'gone'),
-                   make_issue('b:life', 'no_life_sign', 'B', 'gone'),
-                   make_issue('c:life', 'no_life_sign', 'C', 'gone')])
-    assert len(sent) == 1                            # nothing extra mid-window
-    # Once the window elapses, the backlog goes out in one combined mail.
-    now_box[0] += 11 * 60
-    a.process([make_issue('a:life', 'no_life_sign', 'A', 'gone'),
-               make_issue('b:life', 'no_life_sign', 'B', 'gone'),
-               make_issue('c:life', 'no_life_sign', 'C', 'gone')])
-    assert len(sent) == 2
-    assert '2 new alerts' in sent[1][0]             # B and C batched together
-
-
-def test_transient_flap_within_window_never_mails(tmp_path):
-    now_box = [1000.0]
-    cfg = {
-        'enabled': True, 'mail_to': 'x@example.com',
-        'batch_window_minutes': 10,
-        'state_file': str(tmp_path / 'alerts.json'),
-    }
-    sent = []
-    a = Alerter(cfg,
-                sender=lambda subj, body, html=None: sent.append((subj, body, html)) or True,
-                now_fn=lambda: now_box[0])
-    # Use up the prompt first-flush on an unrelated issue so the window is armed.
-    a.process([make_issue('keep:life', 'no_life_sign', 'K', 'gone')])
-    assert len(sent) == 1
-    # A sensor flaps: appears then clears, all inside the same window.
-    now_box[0] += 60
-    a.process([make_issue('keep:life', 'no_life_sign', 'K', 'gone'),
-               make_issue('flap:life', 'no_life_sign', 'F', 'gone')])
-    now_box[0] += 60
-    a.process([make_issue('keep:life', 'no_life_sign', 'K', 'gone')])  # flap gone
-    now_box[0] += 11 * 60
-    a.process([make_issue('keep:life', 'no_life_sign', 'K', 'gone')])
-    assert len(sent) == 1                            # flap left no alert, no recovery
-
-
-def test_report_provider_appended_to_mail(tmp_path):
+def test_report_provider_appended_to_critical_mail(tmp_path):
     now_box = [1000.0]
     a, sent = make_alerter(tmp_path, now_box)
     a.report_provider = lambda: ("PLAINREPORT", "<b>HTMLREPORT</b>")
-    a.process([make_issue('d:battery', 'battery_low', 'D', 'low')])
+    a.process([make_issue('s:tempextreme', 'temperature_extreme', 'S', 'hot',
+                          severity='critical')])
     subj, body, html = sent[0]
-    assert 'PLAINREPORT' in body                     # full status report attached
+    assert 'PLAINREPORT' in body
     assert 'HTMLREPORT' in html

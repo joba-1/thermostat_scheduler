@@ -3,11 +3,20 @@
 Low-noise operator alerting.
 
 An `Issue` is anything worth telling the operator about. The `Alerter`
-deduplicates issues by a stable `key`, mails each new `alert`-severity issue
-once, re-mails an ongoing one only after a cooldown, notes cleared issues, and
-sends a daily digest of everything still open. State persists to a JSON file so
-a daemon restart does not re-spam. `info`-severity issues never trigger an
-immediate mail; they only appear in the digest.
+deduplicates issues by a stable `key` and, by default, is quiet during the day:
+every issue is folded into a per-day log and reported once in the daily report,
+which lists everything seen that day — including issues that already cleared
+before the report went out.
+
+Only two things break the silence with an immediate mail:
+  * service start/stop (`notify_service`), and
+  * `critical`-severity issues — extraordinary readings (see the daemon's
+    extreme temp/humidity checks). A critical issue mails once when it opens and
+    again once when it clears; it is never re-mailed while it persists.
+
+`alert`- and `info`-severity issues never mail on their own; they only shape the
+daily report. State (the day's log and per-key notification marks) persists to a
+JSON file so a daemon restart does not re-spam.
 
 Delivery uses the `send-mail` helper (`~/bin/send-mail.py`). A custom sender
 callable can be injected for testing.
@@ -24,7 +33,10 @@ from collections import namedtuple
 
 from common import log
 
-# severity: 'alert' (mail immediately) or 'info' (digest only)
+# severity, in order of urgency:
+#   'critical' -> mail immediately when it opens and when it clears
+#   'alert'    -> daily report only (was: mail immediately); the day's headline items
+#   'info'     -> daily report only, low priority
 Issue = namedtuple('Issue', ['key', 'kind', 'severity', 'subject', 'detail'])
 
 
@@ -79,18 +91,14 @@ class Alerter:
         self.mail_to = cfg.get('mail_to')
         self.send_mail_cmd = os.path.expanduser(
             cfg.get('send_mail_cmd', '~/bin/send-mail.py'))
-        self.cooldown = cfg.get('cooldown_hours', 24) * 3600
         self.digest_hour = cfg.get('digest_hour', 7)
-        # Coalescing window: issues are collected across eval passes and mailed in
-        # one combined attempt at most once per window. A burst of new issues, and
-        # any issue that opens then clears again within the window, collapse into a
-        # single mail (or none) instead of one attempt per pass. The first issue
-        # after a quiet spell still goes out promptly (the window starts empty).
-        self.batch_window = cfg.get('batch_window_minutes', 10) * 60
-        # Hard ceiling on *issue* mails per local day. The daily digest is exempt
-        # (it always gets through), so total daily volume is digest + this cap.
-        # Anything suppressed by the cap still surfaces in the next digest.
+        # Hard ceiling on immediate (critical/service) mails per local day, a
+        # backstop against a flapping critical sensor. The daily report is exempt
+        # (it always gets through). Anything suppressed still surfaces in the report.
         self.max_mails_per_day = cfg.get('max_mails_per_day', 6)
+        # Optional Trac wiki page for the project: appended as a footer link to
+        # every mail, so the operator can jump to per-alarm remediation notes.
+        self.wiki_url = cfg.get('wiki_url')
         # Optional callable -> (text, html) full status report, injected by the
         # daemon. When set, every mail carries the current status report so each
         # notification is self-contained ("important issue + full status").
@@ -151,6 +159,13 @@ class Alerter:
                     text = f"{text}\n\n{'=' * 60}\n{rep_text}"
                 if html_body and rep_html:
                     html_body = f"{html_body}<hr style='margin:18px 0'>{rep_html}"
+        if self.wiki_url:
+            text = (f"{text}\n\nWhat to do about these alarms: {self.wiki_url}")
+            if html_body:
+                url = html.escape(self.wiki_url, quote=True)
+                html_body = (f"{html_body}<p style=\"margin:14px 0 0;font-size:13px;"
+                             f"color:#555\">What to do about these alarms: "
+                             f"<a href=\"{url}\">{html.escape(self.wiki_url)}</a></p>")
         ok = self._sender(subject, text, html_body)
         if ok:
             b['count'] += 1
@@ -171,15 +186,24 @@ class Alerter:
     def process(self, issues):
         """Reconcile the currently observed issues with stored state.
 
-        Records new/cleared issues every pass, but only *mails* on the batch
-        boundary (`batch_window`): one combined mail for all alert-severity
-        issues still open and due, plus one for recoveries queued since the last
-        flush. Returns (mailed, cleared) for logging — `mailed` is empty on passes
-        that only collect.
+        Folds every observed issue into the day's log (`daily_log`) so the daily
+        report can list everything that happened, resolved or not. Mails nothing
+        for `alert`/`info` issues. `critical` issues mail immediately: once when
+        they open and once when they clear. Returns (mailed, cleared) for logging
+        — `mailed` holds the critical issues mailed this pass (usually empty).
         """
         now = self._now()
+        day = time.strftime('%Y-%m-%d', time.localtime(now))
         open_state = self.state.setdefault('issues', {})
         seen = {iss.key: iss for iss in issues}
+
+        # per-day log: key -> {severity, subject, detail, first, last, resolved}
+        log_day = self.state.setdefault('daily_log', {'day': day, 'issues': {}})
+        if log_day.get('day') != day:
+            # New local day started before the report hour rolled it over (or the
+            # report is disabled): start a fresh log so it never grows unbounded.
+            log_day['day'], log_day['issues'] = day, {}
+        day_issues = log_day['issues']
 
         for key, iss in seen.items():
             st = open_state.get(key)
@@ -192,31 +216,36 @@ class Alerter:
             else:
                 st.update(kind=iss.kind, severity=iss.severity,
                           subject=iss.subject, detail=iss.detail)
+            rec = day_issues.get(key)
+            if rec is None:
+                day_issues[key] = {
+                    'severity': iss.severity, 'subject': iss.subject,
+                    'detail': iss.detail, 'first': now, 'last': now,
+                    'resolved': False,
+                }
+            else:
+                rec.update(severity=iss.severity, subject=iss.subject,
+                           detail=iss.detail, last=now, resolved=False)
 
         cleared = [k for k in list(open_state.keys()) if k not in seen]
-        # Recoveries accumulate across passes and flush with the next batch. Only
-        # queue issues that actually alerted; an issue that opened and cleared
-        # within a window (never mailed) leaves no trace -> no flap mail.
-        pending_resolved = self.state.setdefault('pending_resolved', [])
-        for k in cleared:
-            st = open_state.pop(k, None)
-            if st and st.get('severity') == 'alert' and st.get('last_alert'):
-                pending_resolved.append(st)
 
         mailed = []
-        if self.enabled and (now - self.state.get('last_batch', 0)) >= self.batch_window:
-            to_mail = [iss for key, iss in seen.items()
-                       if iss.severity == 'alert' and (
-                           open_state[key].get('last_alert', 0) == 0
-                           or (now - open_state[key]['last_alert']) >= self.cooldown)]
-            if to_mail or pending_resolved:
-                if to_mail and self._mail_issues(to_mail):
-                    for iss in to_mail:
-                        open_state[iss.key]['last_alert'] = now
-                    mailed = to_mail
-                if pending_resolved and self._mail_resolved(pending_resolved):
-                    self.state['pending_resolved'] = []
-                self.state['last_batch'] = now
+        for key, iss in seen.items():
+            # A critical issue mails once on open; the mark clears on recovery so
+            # a genuine re-occurrence mails again, but a persistent one stays quiet.
+            if iss.severity == 'critical' and open_state[key].get('last_alert', 0) == 0:
+                if self._mail_critical(iss):
+                    open_state[key]['last_alert'] = now
+                    mailed.append(iss)
+
+        for k in cleared:
+            st = open_state.pop(k, None)
+            if k in day_issues:
+                day_issues[k]['resolved'] = True
+            # Critical recovery: mail once, only if we mailed the opening.
+            if st and st.get('severity') == 'critical' and st.get('last_alert'):
+                self._mail_critical_resolved(st)
+
         self._save()
         return mailed, cleared
 
@@ -237,7 +266,13 @@ class Alerter:
         for it in items:
             if isinstance(it, tuple):
                 prefix, text = it
-                color = '#b00020' if str(prefix).upper() == 'ALERT' else '#777'
+                p_up = str(prefix).upper()
+                if 'RESOLVED' in p_up:
+                    color = '#2e7d32'                       # green: cleared
+                elif p_up.startswith(('CRITICAL', 'ALERT')):
+                    color = '#b00020'                       # red: needs attention
+                else:
+                    color = '#777'                          # grey: info
                 p.append(f'<li style="margin:3px 0"><span style="color:{color};'
                          f'font-weight:bold">[{esc(str(prefix))}]</span> {esc(text)}</li>')
             else:
@@ -248,28 +283,40 @@ class Alerter:
         p.append('</div>')
         return "".join(p)
 
-    def _mail_issues(self, issues):
-        n = len(issues)
-        subject = (f"[thermostat] {issues[0].subject}: {issues[0].detail}"
-                   if n == 1 else f"[thermostat] {n} new alerts")
-        intro = "The thermostat manager detected the following new issue(s):"
-        items = [f"{iss.subject}: {iss.detail}" for iss in issues]
-        outro = ("You will get a daily digest while these remain open, "
-                 "and another mail if an issue persists past the cooldown.")
+    def _mail_critical(self, iss):
+        subject = f"[thermostat] CRITICAL: {iss.subject}: {iss.detail}"
+        intro = "The thermostat manager detected an extraordinary reading:"
+        items = [f"{iss.subject}: {iss.detail}"]
+        outro = ("You are getting this immediately because it crossed a critical "
+                 "threshold. Everything else is collected into the daily report.")
         text = "\n".join([intro, ""] + [f"  - {it}" for it in items] + ["", outro])
         return self._emit(subject, text, self.html_message(intro, items, outro))
 
-    def _mail_resolved(self, resolved):
-        n = len(resolved)
-        subject = (f"[thermostat] resolved: {resolved[0]['subject']}"
-                   if n == 1 else f"[thermostat] {n} issues resolved")
-        intro = "The following thermostat issue(s) have cleared:"
-        items = [f"{st.get('subject')}: {st.get('detail')} — now OK" for st in resolved]
+    def _mail_critical_resolved(self, st):
+        subject = f"[thermostat] resolved (critical): {st.get('subject')}"
+        intro = "A critical thermostat reading has returned to normal:"
+        items = [f"{st.get('subject')}: {st.get('detail')} — now OK"]
         text = "\n".join([intro, ""] + [f"  - {it}" for it in items])
         return self._emit(subject, text, self.html_message(intro, items))
 
+    def notify_service(self, event, detail=None):
+        """Immediate mail on daemon start/stop. `event` is e.g. 'started'/'stopped'."""
+        subject = f"[thermostat] service {event}"
+        body = f"The thermostat manager {event}." + (f"\n\n{detail}" if detail else "")
+        intro = f"The thermostat manager {event}."
+        items = [detail] if detail else []
+        # Never attach the status report to a shutdown notice — the daemon is on
+        # its way down and the snapshot may be empty/stale.
+        return self._emit(subject, body, self.html_message(intro, items),
+                          attach_report=(event != 'stopped'))
+
     def maybe_send_digest(self, localtime_fn=time.localtime):
-        """Send the daily digest once, when the configured hour is reached."""
+        """Send the daily report once, when the configured hour is reached.
+
+        The report covers everything logged since the last report — issues still
+        open and issues that already cleared during the day — then the day's log
+        is reset. Kept the name `maybe_send_digest` for the daemon's call site.
+        """
         if not self.enabled:
             return False
         lt = localtime_fn(self._now())
@@ -279,8 +326,18 @@ class Alerter:
         if self.state.get('last_digest_day') == day:
             return False
         self.state['last_digest_day'] = day
-        open_issues = self.state.get('issues', {})
-        self._send_digest(open_issues, day)
+        log_day = self.state.get('daily_log') or {'issues': {}}
+        self._send_report(log_day.get('issues', {}), day)
+        # Start a fresh log for the new reporting day (keep currently-open issues
+        # so they still show tomorrow if unresolved).
+        open_now = self.state.get('issues', {})
+        self.state['daily_log'] = {
+            'day': day,
+            'issues': {k: {'severity': st.get('severity'), 'subject': st.get('subject'),
+                           'detail': st.get('detail'), 'first': st.get('first'),
+                           'last': self._now(), 'resolved': False}
+                       for k, st in open_now.items()},
+        }
         self._save()
         return True
 
@@ -311,21 +368,31 @@ class Alerter:
         self._save()
         return True
 
-    def _send_digest(self, open_issues, day):
-        if not open_issues:
-            # Nothing open: a quiet "all clear" once a day is reassuring but
-            # easy to filter; keep it short.
-            msg = "No open thermostat/sensor/heat-pump issues. All good."
-            self._emit(f"[thermostat] daily digest {day}: all clear", msg,
+    def _send_report(self, day_issues, day):
+        if not day_issues:
+            # A quiet day: a short "all clear" once a day is reassuring but easy
+            # to filter.
+            msg = "No thermostat/sensor/heat-pump issues in the last 24h. All good."
+            self._emit(f"[thermostat] daily report {day}: all clear", msg,
                        self.html_message(msg, []), essential=True)
             return
-        intro = f"Open thermostat issues as of {day}:"
+        # Still-open issues first, then those that already resolved during the day.
+        open_recs = {k: st for k, st in day_issues.items() if not st.get('resolved')}
+        resolved_recs = {k: st for k, st in day_issues.items() if st.get('resolved')}
+        n_open, n_res = len(open_recs), len(resolved_recs)
+        intro = f"Thermostat issues in the last 24h ({n_open} open, {n_res} resolved):"
         items, text_lines = [], [intro, ""]
-        for key, st in sorted(open_issues.items()):
-            sev = st.get('severity', 'info').upper()
-            text = f"{st.get('subject')}: {st.get('detail')}"
-            items.append((sev, text))
-            text_lines.append(f"  [{sev}] {text}")
-        self._emit(f"[thermostat] daily digest {day}: {len(open_issues)} open",
+
+        def _add(recs, tag):
+            for key, st in sorted(recs.items()):
+                sev = st.get('severity', 'info').upper()
+                label = sev if not tag else f"{sev} · {tag}"
+                text = f"{st.get('subject')}: {st.get('detail')}"
+                items.append((label, text))
+                text_lines.append(f"  [{label}] {text}")
+
+        _add(open_recs, "")
+        _add(resolved_recs, "resolved")
+        self._emit(f"[thermostat] daily report {day}: {n_open} open, {n_res} resolved",
                    "\n".join(text_lines), self.html_message(intro, items),
                    essential=True)

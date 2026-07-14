@@ -19,15 +19,22 @@ alerts:
   enabled: true
   mail_to: joachim.banzhaf@gmail.com
   send_mail_cmd: ~/bin/send-mail.py
-  cooldown_hours: 24          # re-mail an ongoing issue at most this often
-  digest_hour: 7             # send the daily digest of open issues at this local hour
-  batch_window_minutes: 10    # collect issues across eval passes and send one
-                             # combined mail at most this often. A burst, and any
-                             # issue that opens then clears within the window,
-                             # collapse into a single attempt (or none).
-  max_mails_per_day: 6        # backstop cap on issue mails/day (the daily digest is
-                             # exempt). Anything over the cap waits for the digest.
-                             # Every alert/digest mail carries the full status report.
+  digest_hour: 7             # send the daily report at this local hour. It lists
+                             # every issue seen in the last 24h — still-open AND
+                             # already-resolved — then resets. Routine issues only
+                             # appear here; they never mail on their own.
+  # Immediate mail is reserved for service start/stop and `critical` readings
+  # (extraordinary temperature/humidity):
+  extreme:
+    temp_min: 10              # °C
+    temp_max: 45              # °C
+    humidity_min: 20          # %RH
+    humidity_max: 90          # %RH
+  max_mails_per_day: 6        # backstop cap on immediate (critical/service) mails/day
+                             # (the daily report is exempt).
+  # Project wiki page with per-alarm remediation hints; linked as a footer in
+  # every mail. The #Alarms anchor jumps straight to the alarm table.
+  wiki_url: "http://job4:8000/wiki/ThermostatScheduler#Alarms"
   battery_limit: 20          # percent; below this -> battery_low
   eval_interval: 60          # seconds between evaluation passes (cheap, all in-memory;
                              # matches the web page's 60s refresh so it shows fresh data)

@@ -1,4 +1,5 @@
-"""Heat-pump fault surfacing: warning line while a fault is open, mail when it clears."""
+"""Heat-pump fault surfacing: warning line while a fault is open, mail when it
+appears and again when it clears."""
 import tempfile
 
 import thermostat_monitor as tm
@@ -30,32 +31,35 @@ def hp(lastcode):
             'telemetry': {'outdoor': 30.0}, 'raw': {'lastcode': lastcode}}
 
 
-def test_open_fault_shows_line_no_mail_then_clears_with_mail():
+def test_open_fault_mails_on_appearance_then_again_on_clear():
     mgr, sent = make_mgr()
-    # fault opens -> tracked, surfaced as a warning line, but no mail yet
+    # fault opens -> tracked, surfaced as a warning line, AND mailed immediately
     mgr._apply_hp_alarm(hp(' --(5140) 22.06.2026 08:01 - now'), now_ts=1000)
     assert mgr._hp_alarm and mgr._hp_alarm['code'] == '5140'
-    assert sent == []
+    assert len(sent) == 1
+    subj, body = sent[0]
+    assert '5140' in subj and 'alarm' in subj.lower() and 'cleared' not in subj.lower()
+    assert 'ACTIVE' in body
     line = mgr._report_data(mode='cooling', hp=hp(' --(5140) 22.06.2026 08:01 - now'),
                             issues=[])['hp_alarm_line']
     assert line and '5140' in line and '08:01' in line
 
-    # still open next pass -> no duplicate mail
+    # still open next pass -> no duplicate appearance mail
     mgr._apply_hp_alarm(hp(' --(5140) 22.06.2026 08:01 - now'), now_ts=1100)
-    assert sent == []
+    assert len(sent) == 1
 
-    # clears -> one mail announcing recovery, line gone
+    # clears -> a second mail announcing recovery, line gone
     mgr._apply_hp_alarm(hp(' --(5140) 22.06.2026 08:01 - 22.06.2026 08:07'), now_ts=2000)
     assert mgr._hp_alarm is None
-    assert len(sent) == 1
-    subj, body = sent[0]
-    assert '5140' in subj and 'alarm' in subj.lower()
+    assert len(sent) == 2
+    subj, body = sent[1]
+    assert '5140' in subj and 'cleared' in subj.lower()
     assert '08:07' in body
     assert 'already ended' not in body            # we saw it open -> live clear
 
-    # stays cleared -> no further mail (signature already notified)
+    # stays cleared -> no further mail (both marks set)
     mgr._apply_hp_alarm(hp(' --(5140) 22.06.2026 08:01 - 22.06.2026 08:07'), now_ts=2100)
-    assert len(sent) == 1
+    assert len(sent) == 2
 
 
 def test_old_already_ended_fault_is_mailed_once_with_note():

@@ -24,14 +24,22 @@ alerts:
   mail_to: you@example.com     # default recipient (send-mail uses its own default if unset)
   send_mail_cmd: ~/bin/send-mail.py
   # from_name: thermostat_monitor  # sender display name (default: script name)
-  cooldown_hours: 24           # don't re-mail the same ongoing issue more often than this
-  digest_hour: 7              # daily digest of open issues at this local hour
-  batch_window_minutes: 10     # coalesce issues across eval passes into one mail
-                              # at most this often (a burst, or a brief flap,
-                              # becomes one attempt or none).
-  max_mails_per_day: 6         # backstop cap on issue mails/day (digest exempt);
-                              # the overflow waits for the digest. Every mail
-                              # carries the full status report.
+  digest_hour: 7              # send the daily report at this local hour. It lists
+                              # every issue seen in the last 24h — still-open AND
+                              # already-resolved — then resets. Routine issues
+                              # (battery, life-sign, comfort drift, ...) only ever
+                              # appear here; they never mail on their own.
+  # Immediate mail is reserved for two things: service start/stop, and
+  # `critical` readings — extraordinary temperature/humidity. Tune those here:
+  extreme:
+    temp_min: 10               # °C; a reading below this mails immediately
+    temp_max: 45               # °C; a reading above this mails immediately
+    humidity_min: 20           # %RH
+    humidity_max: 90           # %RH
+  max_mails_per_day: 6         # backstop cap on immediate (critical/service) mails/day
+                              # (daily report exempt). Overflow waits for the report.
+  # wiki_url: http://trac/wiki/ThermostatScheduler#Alarms  # per-alarm remediation
+                              # hints; appended as a footer link to every mail.
   battery_limit: 20           # percent
   eval_interval: 300          # seconds between evaluation passes
   state_file: ~/.local/state/thermostat_manager/alerts.json

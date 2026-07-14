@@ -8,8 +8,9 @@ One always-on process that:
   * remembers last-seen time + last state, and answers `get` on the
     `thermostat_monitor` topic (kept for `thermostat_scheduler.py --check`);
   * on a timer, classifies thermostat/sensor health and room comfort, checks
-    heat-pump bounds, and feeds issues to the throttled `Alerter` (mail +
-    daily digest);
+    heat-pump bounds, and feeds issues to the low-noise `Alerter` (routine issues
+    surface in the daily report; only service start/stop and extraordinary
+    temp/humidity readings mail immediately);
   * drives cooling mode: when the season is cooling (config or heat pump),
     forces every non-manual thermostat fully open, and restores the stored
     weekly schedule when heating resumes.
@@ -38,7 +39,7 @@ import devices
 import sensors as sensors_mod
 from alerts import Alerter, make_issue
 
-__version__ = "3.0.2"
+__version__ = "3.1.0"
 
 DAY_MINUTES = 24 * 60
 
@@ -94,8 +95,8 @@ class Manager:
         self.monitor_topic = 'thermostat_monitor'
 
         self.alerter = Alerter(self.alerts_cfg)
-        # Every alert/digest mail carries the current status report (text + html)
-        # so each notification is self-contained.
+        # Every mail (critical alert, service notice, daily report) carries the
+        # current status report (text + html) so each notification stands alone.
         self.alerter.report_provider = self._alert_report
 
         # Thermostats and sensors are separate namespaces: a contact sensor may
@@ -161,9 +162,12 @@ class Manager:
         self._free_cooling_notified_ts = None
 
         # Heat-pump fault: surfaced as a warning line while a fault is open
-        # (lastcode "- now"), with a mail when it clears. See _apply_hp_alarm.
+        # (lastcode "- now"), with a mail when it appears AND when it clears.
+        # See _apply_hp_alarm. Both marks are persisted so a restart never
+        # re-sends either mail for the same occurrence.
         self._hp_alarm = None             # {'code','since','until','active'} while open
-        self._hp_alarm_notified = None    # signature of the last fault we mailed (persisted)
+        self._hp_alarm_opened = None      # signature whose *appearance* we mailed
+        self._hp_alarm_notified = None    # signature whose *clear* we mailed
 
         # Optional read-only status web page. The eval loop caches the latest
         # report data here; the HTTP server only renders this snapshot (it never
@@ -271,6 +275,7 @@ class Manager:
                 self.sensor_seen[name] = data.get('sensor_seen', {}).get(name)
         self.hp_boiler = data.get('hp_boiler', self.hp_boiler)
         self.hp_thermostat = data.get('hp_thermostat', self.hp_thermostat)
+        self._hp_alarm_opened = data.get('hp_alarm_opened', self._hp_alarm_opened)
         self._hp_alarm_notified = data.get('hp_alarm_notified', self._hp_alarm_notified)
         # restore temp-value-change stamps so a multi-day-frozen reading stays stale
         # across a restart (a fresh restart must not reset its age to "0m")
@@ -295,6 +300,7 @@ class Manager:
             'hp_boiler': self.hp_boiler,
             'hp_thermostat': self.hp_thermostat,
             'window_off': self.window_off,
+            'hp_alarm_opened': self._hp_alarm_opened,
             'hp_alarm_notified': self._hp_alarm_notified,
             'trv_temp_seen': self.trv_temp_seen,
             'sensor_temp_seen': self.sensor_temp_seen,
@@ -600,14 +606,24 @@ class Manager:
         return heatpump.parse(self.hp_boiler, self.hp_thermostat, self.heatpump_cfg)
 
     def _limits(self):
+        # Extraordinary-reading thresholds: shared across all temp/humidity sources,
+        # configured once under `alerts.extreme`. Crossing one mails immediately.
+        ex = self.alerts_cfg.get('extreme', {}) or {}
+        extreme = {
+            'temp_min': ex.get('temp_min', 10), 'temp_max': ex.get('temp_max', 45),
+            'humidity_min': ex.get('humidity_min', 20),
+            'humidity_max': ex.get('humidity_max', 90),
+        }
         return {
             'battery_limit': self.alerts_cfg.get('battery_limit', 20),
             'unseen_interval': self.mqtt_cfg.get('unseen_interval', 1800),
             'stale_temp_secs': self.mqtt_cfg.get('stale_temp_hours', 4) * 3600,
+            **extreme,
         }, {
             'battery_limit': self.sensors_cfg.get('battery_limit', 20),
             'unseen_interval': self.sensors_cfg.get('unseen_interval', 7200),
             'stale_temp_secs': self.sensors_cfg.get('stale_temp_hours', 4) * 3600,
+            **extreme,
         }
 
     def collect_issues(self, mode, now_ts, now_lt, hp):
@@ -645,6 +661,10 @@ class Manager:
             # room; a manually overridden room deviating is the user's choice.
             setpoint = current_setpoint(item, now_lt, mode, self.season_cfg)
             temp_state = self._room_temp_state(name)
+            # extraordinary reading from the room's dedicated temp/humidity sensor
+            # -> immediate (critical) mail, regardless of manual/setpoint state.
+            issues += sensors_mod.extreme_issues(
+                f"{name}:room", f"{name} room", temp_state, limits)
             self._record_history(name, item, reported, temp_state, now_ts)
             # In cooling, flag a non-manual thermostat that isn't actually fully
             # open. A room switched *off* (e.g. window open) is intended, not a
@@ -679,6 +699,9 @@ class Manager:
             reported = self.sensor_state.get(name)
             issues += sensors_mod.classify_sensor(
                 name, kind, reported, seen_ts, now_ts, sensor_limits)
+            # extraordinary temperature/humidity -> immediate (critical) mail
+            issues += sensors_mod.extreme_issues(
+                name, f"{name} sensor", reported, sensor_limits)
             # frozen temperature from a standalone temp/humidity sensor (same
             # warning sign as a TRV; keyed per-sensor so it points at the device).
             if kind == 'temperature' and isinstance(reported, dict) \
@@ -755,8 +778,8 @@ class Manager:
             log.warning("ALERT %s: %s", iss.subject, iss.detail)
         for key in cleared:
             log.info("cleared: %s", key)
-        # The daily digest now carries the full status report (see Alerter), so
-        # there is no separate periodic status mail — that just added volume.
+        # The daily report (everything seen in the last 24h, resolved or not)
+        # carries the full status report, so there's no separate status mail.
         self.alerter.maybe_send_digest()
 
         self._save_device_state()
@@ -982,10 +1005,11 @@ class Manager:
 
     def _apply_hp_alarm(self, hp, now_ts):
         """Track the heat pump's `lastcode` fault. While a fault is open it shows
-        as a warning line (status/web/mail). Each distinct fault is mailed exactly
-        once, when it has cleared — including one that was already off when first
-        seen (the mail then notes it had already ended). The last-mailed signature
-        is persisted (with device state), so a restart never re-sends it."""
+        as a warning line (status/web/mail). Each distinct fault is mailed twice at
+        most: once when it appears, and once when it clears — a fault discovered
+        after it had already ended (startup / between polls) skips straight to the
+        cleared mail. Both marks are persisted (with device state), so a restart
+        never re-sends either mail for the same occurrence."""
         info = heatpump.alarm_state((hp or {}).get('raw')) if hp else None
         prev = self._hp_alarm
         # warning line only while the fault is still open
@@ -993,17 +1017,31 @@ class Manager:
         if not info:
             return
         sig = f"{info['code']}@{info['since']}"   # one signature per occurrence
-        if info['active'] or sig == self._hp_alarm_notified:
-            return                                # still open, or already mailed
-        # a cleared fault we haven't mailed yet: live-cleared (we saw it open) or
-        # discovered after it had already ended (startup / between polls)
-        was_open = bool(prev and f"{prev['code']}@{prev['since']}" == sig)
+
+        if info['active']:
+            if sig == self._hp_alarm_opened:
+                return                            # appearance already mailed
+            self._hp_alarm_opened = sig
+            log.warning("HP alarm: code %s active since %s",
+                        info['code'], info['since'])
+            self.alerter.notify(
+                f"[thermostat] heat-pump alarm (code {info['code']})",
+                f"Heat-pump fault code {info['code']} is ACTIVE: started "
+                f"{info['since']}. The compressor is in a fault state; you'll get "
+                f"another mail when it clears.")
+            return
+
+        # cleared: mail once (live-cleared, or discovered already-ended)
+        if sig == self._hp_alarm_notified:
+            return                                # clear already mailed
+        was_open = bool(prev and f"{prev['code']}@{prev['since']}" == sig) \
+            or sig == self._hp_alarm_opened
         self._hp_alarm_notified = sig
         note = "" if was_open else " (detected after it had already ended)"
-        log.warning("HP alarm: code %s (%s - %s)%s",
+        log.warning("HP alarm cleared: code %s (%s - %s)%s",
                     info['code'], info['since'], info['until'], note)
         self.alerter.notify(
-            f"[thermostat] heat-pump alarm (code {info['code']})",
+            f"[thermostat] heat-pump alarm cleared (code {info['code']})",
             f"Heat-pump fault code {info['code']}: started {info['since']}, "
             f"ended {info['until']}{note}. The compressor resumed normal operation.")
 
@@ -2163,14 +2201,22 @@ def main():
     try:
         # let initial retained/periodic messages arrive before first pass
         time.sleep(min(eval_interval, 15))
+        first = True
         while True:
             try:
                 mgr.evaluate(client)
             except Exception as e:
                 log.exception("evaluation error: %s", e)
+            if first:
+                # Announce startup after the first pass, so the attached status
+                # report reflects real device state rather than a blank snapshot.
+                mgr.alerter.notify_service(
+                    "started", f"Version {__version__}, evaluating every {eval_interval}s.")
+                first = False
             time.sleep(eval_interval)
     except KeyboardInterrupt:
         mgr._save_device_state()
+        mgr.alerter.notify_service("stopped")
         client.loop_stop()
         client.disconnect()
 

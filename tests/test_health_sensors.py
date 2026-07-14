@@ -89,6 +89,33 @@ def test_stuck_deviation_is_alert():
     assert issues[0].severity == 'alert'
 
 
+EXTREME = {'temp_min': 10, 'temp_max': 45, 'humidity_min': 20, 'humidity_max': 90}
+
+
+def test_extreme_cold_is_critical():
+    issues = sensors_mod.extreme_issues('S', 'S sensor', {'temperature': 4.0}, EXTREME)
+    assert len(issues) == 1
+    assert issues[0].severity == 'critical' and issues[0].kind == 'temperature_extreme'
+    assert 'below 10°C' in issues[0].detail
+
+
+def test_extreme_hot_and_humid_both_fire():
+    issues = sensors_mod.extreme_issues(
+        'S', 'S sensor', {'temperature': 47.0, 'humidity': 95}, EXTREME)
+    assert kinds(issues) == {'temperature_extreme', 'humidity_extreme'}
+    assert all(i.severity == 'critical' for i in issues)
+
+
+def test_normal_readings_no_extreme():
+    assert sensors_mod.extreme_issues(
+        'S', 'S sensor', {'temperature': 21.0, 'humidity': 45}, EXTREME) == []
+
+
+def test_extreme_ignores_missing_and_non_dict():
+    assert sensors_mod.extreme_issues('S', 'S sensor', None, EXTREME) == []
+    assert sensors_mod.extreme_issues('S', 'S sensor', {'battery': 90}, EXTREME) == []
+
+
 def test_sensor_battery_and_life():
     issues = sensors_mod.classify_sensor('Bad OG Luft', 'temperature',
                                          {'battery': 5, 'temperature': 21.0},
