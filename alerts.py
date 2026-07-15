@@ -353,6 +353,27 @@ class Alerter:
         return self._emit(subject, body, html_body, essential=essential,
                            attach_report=attach_report)
 
+    def notify_rich(self, subject, intro, items=(), outro=None, *,
+                    essential=False, attach_report=True):
+        """Send a reminder mail built from intro + bulleted items (+ optional
+        outro), rendering both a clean HTML body and a matching plain-text
+        fallback. Used by the ad-hoc reminders (free cooling, mode change,
+        heat-pump alarm) so they read like the rest of the mail instead of a
+        monospace block. `items` may be strings or (prefix, text) tuples."""
+        items = list(items)
+
+        def _line(it):
+            return f"[{it[0]}] {it[1]}" if isinstance(it, tuple) else str(it)
+
+        lines = [intro]
+        if items:
+            lines += [""] + [f"  - {_line(it)}" for it in items]
+        if outro:
+            lines += ["", outro]
+        return self._emit(subject, "\n".join(lines),
+                          self.html_message(intro, items, outro),
+                          essential=essential, attach_report=attach_report)
+
     def due(self, key, interval_seconds):
         """Return True at most once per `interval_seconds` for `key`.
 

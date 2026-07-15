@@ -39,7 +39,7 @@ import devices
 import sensors as sensors_mod
 from alerts import Alerter, make_issue
 
-__version__ = "3.1.0"
+__version__ = "3.1.1"
 
 DAY_MINUTES = 24 * 60
 
@@ -992,11 +992,14 @@ class Manager:
             last = self._free_cooling_notified_ts
             throttle = self.free_cooling_cfg.get('remind_interval_hours', 8) * 3600
             if last is None or now_ts - last > throttle:
-                self.alerter.notify(
+                self.alerter.notify_rich(
                     "[thermostat] open windows — free cooling available",
-                    f"Outside is {fc['outside']:.1f}°C, warmest room ~{fc['temp']:.1f}°C "
-                    f"({fc['room']}). Open windows to ventilate and cool for free "
-                    f"(the heat pump barely cools when it's this cool outside).")
+                    "Open windows to ventilate — the outside air is cool enough "
+                    "to cool the house for free:",
+                    [f"Outside air: {fc['outside']:.1f}°C",
+                     f"Warmest room: {fc['room']} ~{fc['temp']:.1f}°C"],
+                    "The heat pump barely cools when it's this cool outside, so "
+                    "ventilation does the work.")
                 self._free_cooling_notified_ts = now_ts
                 log.info("free-cooling: available (outside %.1f < %s %.1f) -> reminded",
                          fc['outside'], fc['room'], fc['temp'])
@@ -1024,11 +1027,12 @@ class Manager:
             self._hp_alarm_opened = sig
             log.warning("HP alarm: code %s active since %s",
                         info['code'], info['since'])
-            self.alerter.notify(
+            self.alerter.notify_rich(
                 f"[thermostat] heat-pump alarm (code {info['code']})",
-                f"Heat-pump fault code {info['code']} is ACTIVE: started "
-                f"{info['since']}. The compressor is in a fault state; you'll get "
-                f"another mail when it clears.")
+                "The heat pump reported a fault that is currently active:",
+                [("ALERT", f"Fault code {info['code']} — started {info['since']}")],
+                "The compressor is in a fault state; you'll get another mail "
+                "when it clears.")
             return
 
         # cleared: mail once (live-cleared, or discovered already-ended)
@@ -1040,10 +1044,12 @@ class Manager:
         note = "" if was_open else " (detected after it had already ended)"
         log.warning("HP alarm cleared: code %s (%s - %s)%s",
                     info['code'], info['since'], info['until'], note)
-        self.alerter.notify(
+        self.alerter.notify_rich(
             f"[thermostat] heat-pump alarm cleared (code {info['code']})",
-            f"Heat-pump fault code {info['code']}: started {info['since']}, "
-            f"ended {info['until']}{note}. The compressor resumed normal operation.")
+            "A heat-pump fault has ended:",
+            [("RESOLVED", f"Fault code {info['code']} — started {info['since']}, "
+              f"ended {info['until']}{note}")],
+            "The compressor resumed normal operation.")
 
     def _apply_window_control(self, room, client):
         """Fired after the debounce: switch the room's TRV off (window open) or
@@ -1161,11 +1167,10 @@ class Manager:
                   else "set back to normal heating")
         intro = (f"House operating mode changed: {old} -> {new}. "
                  f"Please {action} these manual (non-controllable) thermostats:")
-        lines = [intro] + [f"  - {loc}" for loc in self.manual_thermostats]
         log.warning("mode change %s -> %s; manual valves to %s: %s",
                     old, new, action, ", ".join(self.manual_thermostats))
-        self.alerter.notify(f"[thermostat] mode changed to {new}", "\n".join(lines),
-                            html_body=Alerter.html_message(intro, self.manual_thermostats))
+        self.alerter.notify_rich(f"[thermostat] mode changed to {new}", intro,
+                                 self.manual_thermostats)
 
     def manual_overrides(self):
         """List rooms whose thermostat currently reports a manual override."""

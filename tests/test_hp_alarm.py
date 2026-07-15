@@ -39,7 +39,7 @@ def test_open_fault_mails_on_appearance_then_again_on_clear():
     assert len(sent) == 1
     subj, body = sent[0]
     assert '5140' in subj and 'alarm' in subj.lower() and 'cleared' not in subj.lower()
-    assert 'ACTIVE' in body
+    assert 'active' in body.lower() and '08:01' in body
     line = mgr._report_data(mode='cooling', hp=hp(' --(5140) 22.06.2026 08:01 - now'),
                             issues=[])['hp_alarm_line']
     assert line and '5140' in line and '08:01' in line

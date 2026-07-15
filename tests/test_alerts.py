@@ -199,6 +199,34 @@ def test_wiki_url_appended_to_every_mail(tmp_path):
     assert 'ThermostatScheduler#Alarms' in sent[-1][1]
 
 
+def test_notify_rich_renders_html_and_text(tmp_path):
+    now_box = [1000.0]
+    a, sent = make_alerter(tmp_path, now_box)
+    a.notify_rich("[thermostat] open windows — free cooling available",
+                  "Open windows to ventilate:",
+                  ["Outside air: 15.0°C", "Warmest room: Wohnzimmer ~21.0°C"],
+                  "Ventilation does the work.")
+    subj, body, html = sent[0]
+    # plain-text fallback carries intro, bulleted items and outro
+    assert "Open windows to ventilate:" in body
+    assert "- Outside air: 15.0°C" in body
+    assert "Ventilation does the work." in body
+    # HTML is the clean proportional list, not a monospace block
+    assert html is not None and '<ul' in html and '<pre' not in html
+    assert 'Wohnzimmer' in html
+
+
+def test_notify_rich_colours_tagged_items(tmp_path):
+    now_box = [1000.0]
+    a, sent = make_alerter(tmp_path, now_box)
+    a.notify_rich("[thermostat] heat-pump alarm cleared (code 5140)",
+                  "A heat-pump fault has ended:",
+                  [("RESOLVED", "Fault code 5140 — ended")])
+    subj, body, html = sent[0]
+    assert "[RESOLVED] Fault code 5140 — ended" in body      # text keeps the tag
+    assert '#2e7d32' in html                                  # green in HTML
+
+
 def test_no_wiki_footer_when_unset(tmp_path):
     now_box = [1000.0]
     a, sent = make_alerter(tmp_path, now_box)
