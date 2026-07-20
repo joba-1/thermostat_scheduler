@@ -71,6 +71,16 @@ is not involved, by design (fewer moving parts, no HA dependency).
   used for the status report, not valve control — and `coolingon` was observed
   to stay `off` even while actively cooling; `hp4way` reads "cooling & defrost"
   from a resting valve even in winter. All configurable via `heatpump.cooling_when`.
+- **Three seasons: heating / cooling / standby.** Heating and cooling are the
+  binary the heat pump itself distinguishes. **Standby** (shoulder weather —
+  neither wanted, valves off, warm water only) has no equivalent on the pump
+  (`hpmode` is a `heating | cooling | heating & cooling` enum with no "off"),
+  so it is derived by *this* software from the **outdoor temperature** against
+  `season.standby_below` / `standby_above` (with `standby_hysteresis` to prevent
+  flapping) when `season.source: outdoor_temp`. Domestic hot water is produced
+  independently of the heating circuit (`dhw.*`, not `hc1`), so standby never
+  affects it. Standby reuses each type's existing window-off `off_signature`
+  rather than a new per-type payload.
 - **Device identity = zigbee ieee, display = friendly name** (`devices.py`).
   Friendly names are mutable and differ between zigbee2mqtt and Home Assistant, so
   each device is anchored on its **ieee address** (the one stable id shared by both).

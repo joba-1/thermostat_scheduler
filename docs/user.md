@@ -137,5 +137,35 @@ Rooms without a contact sensor (e.g. Julians, Wohnzimmer) are not window-control
 When `season.mode: auto` and the heat pump reports cooling (`coolingon: on`),
 the manager forces every controllable thermostat fully open (valves let cold
 water through) and restores the weekly schedule when heating resumes. Rooms in
-manual override are left alone. Set `season.mode: cooling`/`heating` to force a
-mode regardless of the heat pump.
+manual override are left alone. Set `season.mode: cooling`/`heating`/`standby`
+to force a mode regardless of the automatic decision.
+
+## Standby (shoulder season — warm water only)
+
+For mild weather where you want **neither heating nor cooling**, just domestic
+hot water, the manager has a third season, **standby**: every controllable
+thermostat is switched off, and warm-water production keeps running (the heat
+pump makes it independently of the heating circuit, so it is unaffected).
+
+Two ways to use it:
+
+- **Manual:** set `season.mode: standby`. The house stays in standby until you
+  change it back.
+- **Automatic by outdoor temperature:** set `season.mode: auto` and
+  `season.source: outdoor_temp`, then pick the boundaries:
+  - below `season.standby_below` °C → **heating**
+  - above `season.standby_above` °C → **cooling**
+  - in between → **standby**
+
+  `season.standby_hysteresis` (°C) widens the standby band slightly once the
+  house is already in standby, so an outdoor temperature hovering right at a
+  boundary doesn't flip the season back and forth.
+
+On entering standby the manager mails a reminder to CLOSE any **manual
+(non-controllable) valves**; a controllable valve that somehow isn't off is
+flagged `standby_not_off` in the daily report.
+
+> The heat pump itself has no "off" mode — it always allows heating, cooling, or
+> both. Standby is therefore decided entirely by this software from the outdoor
+> temperature; it switches the room valves off rather than changing anything on
+> the pump. Warm water is never interrupted.

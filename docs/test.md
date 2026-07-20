@@ -13,7 +13,7 @@ Coverage (`tests/`):
 | File | What it covers |
 |------|----------------|
 | `test_schedule.py` | schedule generation (midnight, 6 points), schedule/state comparison, `build_expected_payload` prefix |
-| `test_heatpump_cooling.py` | EMS-ESP parse + `is_cooling`, `check_bounds`, `desired_mode`, manual-override detection, open/restore payloads |
+| `test_heatpump_cooling.py` | EMS-ESP parse + `is_cooling`, `check_bounds`, `desired_mode` (incl. 3-season outdoor-temp + hysteresis), standby off-payload/intended-payload, `current_setpoint` standby, manual-override detection, open/restore payloads |
 | `test_health_sensors.py` | life sign / battery / manual vs mismatch / cooling-mode skip / no-reaction; window-open suppression; sensor battery+life |
 | `test_alerts.py` | dedup + cooldown, info never mails, cleared removal, restart persistence, daily digest, periodic `due()` |
 | `test_manager_report.py` | manual-overrides listing, sensor/thermostat namespace isolation, status report, mode-change notify |
@@ -40,8 +40,13 @@ Fixtures use the real captured `boiler_data` / `thermostat_data` field shapes.
    `cooling_restore` and confirm the weekly schedule resumes unchanged.
    *(Open item: verify the AVATTO setpoint key and that the TECH/Tuya `comfort`
    preset tracks `comfort_temperature`.)*
-2. **Mode flip**: force `season.mode: cooling` then `heating`; watch the daemon
-   open all non-manual valves and then restore; confirm the manual-valve
-   reminder mail fires on each transition.
+2. **Mode flip**: force `season.mode: cooling` then `heating` then `standby`;
+   watch the daemon open all non-manual valves, then restore the schedule, then
+   switch them off; confirm the manual-valve reminder mail fires on each
+   transition (with the right OPEN / normal / CLOSE wording).
+2a. **Standby by outdoor temp**: with `season.source: outdoor_temp`, feed
+   outdoor temperatures across both thresholds and confirm heating → standby →
+   cooling transitions (and that hysteresis holds standby near a boundary).
+   Confirm warm water (`dhw`) is unaffected throughout.
 3. **Manual respect**: put one room in manual; confirm cooling skips it and a
    note (not an alert) is raised.

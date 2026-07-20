@@ -113,12 +113,23 @@ heatpump:
 
 # --- Season / cooling control ---
 season:
-  mode: auto                  # auto | heating | cooling
-  source: heatpump            # when mode==auto: heatpump | config
-  control: false              # report-only: another controller (HA/z2m/cron?) keeps
-                              # resetting the valves, so we don't fight it — we only
-                              # flag thermostats that aren't open (cooling_not_open)
+  mode: auto                  # auto | heating | cooling | standby
+  source: outdoor_temp        # when mode==auto: heatpump | outdoor_temp | config
+                              #   heatpump      -> binary heat/cool from the pump's
+                              #                    live cooling signal (no standby)
+                              #   outdoor_temp  -> 3-season heat/standby/cool from the
+                              #                    outdoor temperature (see below)
+  control: true               # true = actively drive TRVs to the season state;
+                              # false = report-only (flag drifted valves, don't push)
   cool_target: 21             # reference room temp used by the comfort check in cooling
+  # Standby ("shoulder weather"): neither heating nor cooling — TRVs switched off,
+  # warm-water production continues (it is independent of the heating circuit).
+  # With source==outdoor_temp: heat below standby_below, cool above standby_above,
+  # standby in between. hysteresis widens the standby band by that many °C on the
+  # side we're already in, so a reading hovering near a threshold doesn't flap.
+  standby_below: 15           # °C outdoor: below this -> heating
+  standby_above: 24           # °C outdoor: above this -> cooling
+  standby_hysteresis: 1       # °C band to avoid flapping at either threshold
 
 
 # Grace before a room temperature deviation becomes a loud alert: while the

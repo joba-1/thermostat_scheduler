@@ -90,8 +90,10 @@ def build_intended_payload(name, cfg_item, thermostat_types, mqtt_cfg, mode,
     """Build the payload that reinstates a thermostat's *currently intended* state.
 
     Season-aware: in cooling the intended active state is `cooling_open`; in
-    heating it is the weekly `schedule_mode`. Either way the stored weekly
-    schedule strings + calibration come along.
+    heating it is the weekly `schedule_mode`; in standby (shoulder weather,
+    neither heating nor cooling wanted) it is switched off, same as a window-
+    open off. Either way the stored weekly schedule strings + calibration come
+    along (except standby, which — like any off — carries no active setpoint).
 
     Exceptions — a device in **manual override** or **off** keeps that mode: we
     strip every control field (mode/preset/setpoint) and push only the stored
@@ -123,22 +125,52 @@ def build_intended_payload(name, cfg_item, thermostat_types, mqtt_cfg, mode,
         payload = dict(config_only)
         payload.update(build_open_payload(type_cfg) or {})
         return payload, topic, "cooling: open" + suffix
+    if mode == 'standby':
+        payload = dict(config_only)
+        payload.update(build_off_payload(type_cfg))
+        return payload, topic, "standby: off (warm water only)" + suffix
     return base, topic, "heating: schedule" + suffix
 
 
-def desired_mode(season_cfg, heatpump_state):
-    """Return 'heating' or 'cooling'.
+def desired_mode(season_cfg, heatpump_state, outdoor_temp=None, last_mode=None):
+    """Return 'heating', 'standby', or 'cooling'.
 
-    season.mode = heating|cooling forces that mode. season.mode = auto derives
-    it from season.source: 'heatpump' uses the live EMS-ESP cooling signal,
-    anything else defaults to heating (the safe winter default).
+    season.mode = heating|cooling|standby forces that mode. season.mode = auto
+    derives it from season.source:
+
+    - 'heatpump': the live EMS-ESP cooling signal (binary — no standby; the
+      heat pump itself has no "neither" state, see `heatpump.hpmode`).
+    - 'outdoor_temp': shoulder-season standby derived from `outdoor_temp`
+      against `season.standby_below` / `season.standby_above`, so heating and
+      cooling stay for genuinely cold/hot weather and the pump only otherwise
+      runs its domestic hot water production. While already in standby
+      (`last_mode == 'standby'`), `season.standby_hysteresis` widens the standby
+      band by that many degrees on *both* sides, so a reading oscillating near a
+      threshold doesn't flap the season every pass; `last_mode` is the mode
+      returned by the previous call (None on the first evaluation, no hysteresis).
+
+    Anything else (no telemetry yet, unknown source) defaults to heating (the
+    safe winter default).
     """
-    mode = (season_cfg or {}).get('mode', 'auto')
-    if mode in ('heating', 'cooling'):
+    season_cfg = season_cfg or {}
+    mode = season_cfg.get('mode', 'auto')
+    if mode in ('heating', 'cooling', 'standby'):
         return mode
-    source = (season_cfg or {}).get('source', 'heatpump')
+    source = season_cfg.get('source', 'heatpump')
     if source == 'heatpump' and heatpump_state is not None:
         return 'cooling' if heatpump_state.get('cooling') else 'heating'
+    if source == 'outdoor_temp' and outdoor_temp is not None:
+        below = season_cfg.get('standby_below')
+        above = season_cfg.get('standby_above')
+        # While already in standby, widen the band by hysteresis on *both* sides
+        # (heat only below below-h, cool only above above+h) so a reading hovering
+        # at a threshold doesn't flap the season every pass.
+        h = season_cfg.get('standby_hysteresis', 0) if last_mode == 'standby' else 0
+        if below is not None and outdoor_temp < below - h:
+            return 'heating'
+        if above is not None and outdoor_temp > above + h:
+            return 'cooling'
+        return 'standby'
     return 'heating'
 
 
@@ -152,6 +184,25 @@ def build_restore_payload(type_cfg):
     """Payload that returns a thermostat to its stored weekly schedule, or None."""
     payload = type_cfg.get('cooling_restore')
     return dict(payload) if isinstance(payload, dict) else None
+
+
+def build_off_payload(type_cfg):
+    """Payload that switches a thermostat off for standby season (shoulder
+    weather — neither heating nor cooling wanted, DHW keeps running on its own).
+
+    Reuses the type's `off_signature` (the same "our off" signature window
+    control uses), falling back to a plain `system_mode: off` for a type with
+    no signature configured (e.g. TRVZB, see docs/control-model.md)."""
+    return dict(type_cfg.get('off_signature') or {'system_mode': 'off'})
+
+
+def clear_off_marker(payload, type_cfg):
+    """Merge the type's `off_clear` into a restore/open `payload`, undoing the
+    off marker so a valve we had switched off (window-open or standby) actually
+    wakes up — `cooling_restore`/`cooling_open` alone only set the season fields
+    and would leave e.g. `frost_protection` on. Mutates and returns `payload`."""
+    payload.update(type_cfg.get('off_clear') or {})
+    return payload
 
 
 def is_open(type_cfg, reported_state):

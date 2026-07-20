@@ -1,5 +1,8 @@
+import time
+
 import heatpump
 import cooling
+import thermostat_monitor as tm
 
 HP_CFG = {
     'fields': {'vorlauf': 'curflowtemp', 'ruecklauf': 'rettemp',
@@ -54,11 +57,65 @@ def test_alarm_state_parses_open_and_cleared_lastcode():
 
 def test_desired_mode_forced_and_auto():
     assert cooling.desired_mode({'mode': 'cooling'}, None) == 'cooling'
+    assert cooling.desired_mode({'mode': 'standby'}, None) == 'standby'
     assert cooling.desired_mode({'mode': 'auto', 'source': 'heatpump'},
                                 {'cooling': True}) == 'cooling'
     assert cooling.desired_mode({'mode': 'auto', 'source': 'heatpump'},
                                 {'cooling': False}) == 'heating'
     assert cooling.desired_mode({'mode': 'auto', 'source': 'config'}, None) == 'heating'
+
+
+SEASON_OUTDOOR = {'mode': 'auto', 'source': 'outdoor_temp',
+                  'standby_below': 15, 'standby_above': 24, 'standby_hysteresis': 1}
+
+
+def test_desired_mode_outdoor_three_seasons():
+    # below standby_below -> heating; above standby_above -> cooling; between -> standby
+    assert cooling.desired_mode(SEASON_OUTDOOR, None, outdoor_temp=8) == 'heating'
+    assert cooling.desired_mode(SEASON_OUTDOOR, None, outdoor_temp=30) == 'cooling'
+    assert cooling.desired_mode(SEASON_OUTDOOR, None, outdoor_temp=19) == 'standby'
+    # thresholds are exclusive: exactly at a bound is not (yet) heating/cooling
+    assert cooling.desired_mode(SEASON_OUTDOOR, None, outdoor_temp=15) == 'standby'
+    assert cooling.desired_mode(SEASON_OUTDOOR, None, outdoor_temp=24) == 'standby'
+    # no telemetry -> safe winter default
+    assert cooling.desired_mode(SEASON_OUTDOOR, None, outdoor_temp=None) == 'heating'
+
+
+def test_desired_mode_outdoor_hysteresis_holds_standby():
+    # 14.5°C is below standby_below(15), so from any non-standby mode it heats...
+    assert cooling.desired_mode(SEASON_OUTDOOR, None, outdoor_temp=14.5,
+                                last_mode='heating') == 'heating'
+    # ...but coming *from* standby, the 1°C band (15 -> 14) keeps it in standby
+    # until it drops below 14, so a reading hovering at 14.5 doesn't flap.
+    assert cooling.desired_mode(SEASON_OUTDOOR, None, outdoor_temp=14.5,
+                                last_mode='standby') == 'standby'
+    assert cooling.desired_mode(SEASON_OUTDOOR, None, outdoor_temp=13.5,
+                                last_mode='standby') == 'heating'
+    # symmetric at the cooling boundary (24 -> 25 while already in standby)
+    assert cooling.desired_mode(SEASON_OUTDOOR, None, outdoor_temp=24.5,
+                                last_mode='standby') == 'standby'
+    assert cooling.desired_mode(SEASON_OUTDOOR, None, outdoor_temp=25.5,
+                                last_mode='standby') == 'cooling'
+
+
+def test_build_off_payload_uses_signature_or_plain_off():
+    with_sig = {'off_signature': {'system_mode': 'off', 'frost_protection': 'ON'}}
+    assert cooling.build_off_payload(with_sig) == {'system_mode': 'off',
+                                                   'frost_protection': 'ON'}
+    # no signature (e.g. TRVZB) -> plain off
+    assert cooling.build_off_payload({}) == {'system_mode': 'off'}
+
+
+def test_current_setpoint_standby_has_no_target():
+    # standby: the room is intentionally off, so there is no comfort target and
+    # (via the setpoint-is-None short-circuit) no deviation is ever reported.
+    item = {'day_hour': '05:00', 'day_temperature': 21.5,
+            'night_hour': '23:00', 'night_temperature': 19.5}
+    now = time.localtime()
+    assert tm.current_setpoint(item, now, 'standby', {'cool_target': 21}) is None
+    # heating still returns a scheduled temp; cooling returns the cool target
+    assert tm.current_setpoint(item, now, 'cooling', {'cool_target': 21}) == 21
+    assert tm.current_setpoint(item, now, 'heating', {}) in (21.5, 19.5)
 
 
 def test_manual_override_detection():
@@ -107,6 +164,7 @@ INTENDED_TYPES = {
         'schedule_mode': {'system_mode': 'heat', 'preset': 'schedule',
                           'temperature_sensitivity': 0.5},
         'cooling_open': {'preset': 'comfort', 'comfort_temperature': 34},
+        'off_signature': {'system_mode': 'off', 'frost_protection': 'ON'},
         'manual_marker': {'field': 'preset', 'equals': 'manual'},
     },
 }
@@ -133,6 +191,19 @@ def test_intended_cooling_pushes_open():
     assert 'system_mode' not in payload          # heating mode field stripped
     assert payload['temperature_sensitivity'] == 0.5   # calibration kept
     assert any(k.startswith('schedule_') for k in payload)  # stored schedule kept
+
+
+def test_intended_standby_pushes_off():
+    # standby season on a scheduled (not-yet-off) TRV -> push the off signature,
+    # dropping active control fields but keeping the stored schedule/calibration.
+    payload, topic, note = cooling.build_intended_payload(
+        'Bad OG', INTENDED_ITEM, INTENDED_TYPES, MQTT, 'standby',
+        {'preset': 'schedule'})
+    assert payload['system_mode'] == 'off' and payload['frost_protection'] == 'ON'
+    assert 'preset' not in payload               # active control fields stripped
+    assert payload['temperature_sensitivity'] == 0.5   # calibration kept
+    assert any(k.startswith('schedule_') for k in payload)  # stored schedule kept
+    assert 'standby' in note and 'warm water' in note
 
 
 def test_intended_manual_keeps_only_config():

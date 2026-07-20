@@ -109,12 +109,21 @@ heatpump:
                                  # pump's dew-point floor (colder flow, bounded by hpminflowtemp).
 
 season:
-  mode: auto                   # auto | heating | cooling
-  source: heatpump             # when auto: derive from heatpump | config
-  control: true                # true: manager drives thermostats open in cooling;
-                               # false: report-only (flag thermostats not open, but
-                               # don't write — e.g. if another controller owns them)
+  mode: auto                   # auto | heating | cooling | standby
+  source: outdoor_temp         # when auto: heatpump | outdoor_temp | config
+                               #   heatpump     -> binary heat/cool from the pump
+                               #   outdoor_temp -> 3-season heat/standby/cool below
+  control: true                # true: manager drives thermostats to the season state;
+                               # false: report-only (flag drifted valves, don't write —
+                               # e.g. if another controller owns them)
   cool_target: 24              # comfort-check reference temperature in cooling
+  # Standby ("shoulder weather"): neither heating nor cooling — TRVs off, warm
+  # water keeps running (independent of the heating circuit). With source==
+  # outdoor_temp: heat below standby_below, cool above standby_above, standby
+  # between; hysteresis widens the band on the side we're in to avoid flapping.
+  standby_below: 15            # °C outdoor: below this -> heating
+  standby_above: 24            # °C outdoor: above this -> cooling
+  standby_hysteresis: 1        # °C anti-flap band at each threshold
 
 # Grace before a room-temperature deviation becomes a loud alert. While the
 # room is still moving toward target (or the target changed less than this many

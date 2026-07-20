@@ -8,7 +8,8 @@ cooling, not off with a window open, stuck in an odd mode).
 
 | Setting / signal | Where | What it means |
 |---|---|---|
-| **Season** (`season.mode`, `season.source`) | config + heat pump | `heating` or `cooling`. `auto` + `source: heatpump` derives it from the EMS-ESP `coolingon` signal. The season decides the *intended active state*. |
+| **Season** (`season.mode`, `season.source`) | config + heat pump / outdoor temp | `heating`, `cooling`, or `standby`. `auto` derives it: `source: heatpump` → binary heat/cool from the EMS-ESP `coolingon` signal; `source: outdoor_temp` → 3-season heat/standby/cool from the outdoor temperature (below). The season decides the *intended active state*. |
+| **Standby thresholds** (`season.standby_below`, `season.standby_above`, `season.standby_hysteresis`) | config | With `source: outdoor_temp`: heat below `standby_below`, cool above `standby_above`, **standby** (valves off, warm water only) in between. `standby_hysteresis` widens the standby band by that many °C on both sides *while already in standby*, so a reading hovering at a threshold doesn't flap the season. |
 | **Schedule** (`day/night_hour`, `day/night_temperature`) | per room | The weekly heating program pushed to the device as `schedule_*` strings + the type's `schedule_mode`. Used in **heating**. |
 | **cooling_open / cooling_restore** (`thermostat_types`) | per type | How to force a TRV fully open for cooling, and how to restore it. Used in **cooling**. |
 | **Manual override** (`manual_marker`) | per type | The reported field/value that means *the user took control at the device*. Such rooms are left alone (comfort control suspended) and flagged as info. |
@@ -25,12 +26,22 @@ For each room, on every relevant event, the monitor resolves the state like this
    "we turned it off" so only *we* restore it later (a hand-set off stays off).
    The laundry room only ventilates when dry (`humidity_guard`).
 3. **Window closed** (and we had turned it off) → restore the **season-intended**
-   state: cooling → `cooling_open`; heating → `schedule_mode` + schedule.
-4. Otherwise the season-intended state is what `thermostat_scheduler.py` (no args)
-   reinstates: cooling → open, heating → schedule.
+   state: cooling → `cooling_open`; heating → `schedule_mode` + schedule;
+   standby → off (`off_signature`).
+4. Otherwise the season-intended state is what the daemon (and
+   `thermostat_scheduler.py` no-args) reinstates: cooling → open, heating →
+   schedule, standby → off.
 
-So: *manual* beats *window* beats *season*. The heat pump only chooses the season;
-it never directly drives a valve.
+So: *manual* beats *window* beats *season*. The heat pump only chooses the season
+(when `source: heatpump`); it never directly drives a valve.
+
+**Standby** is the shoulder-season state: outdoor temperature sits between
+`season.standby_below` and `season.standby_above`, so neither heating nor cooling
+is wanted. Every controllable valve is switched off (the same `off_signature` a
+window-open uses), and **domestic hot water keeps running** — it is produced by
+the heat pump independently of the heating circuit (`dhw.*`, not `hc1`), so
+switching the circuit off doesn't touch it. A non-manual valve that isn't off in
+standby is flagged `standby_not_off` (the mirror of `cooling_not_open`).
 
 ## Per-type mechanics
 

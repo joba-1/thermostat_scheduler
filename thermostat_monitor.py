@@ -39,7 +39,7 @@ import devices
 import sensors as sensors_mod
 from alerts import Alerter, make_issue
 
-__version__ = "3.1.1"
+__version__ = "3.2.0"
 
 DAY_MINUTES = 24 * 60
 
@@ -61,9 +61,13 @@ def current_setpoint(cfg_item, now_lt, mode, season_cfg):
     Heating: scheduled day/night temperature for the current local time.
     Cooling: the configured cool target (we force valves open regardless, but
     this is the reference the comfort check compares the room temperature to).
+    Standby: no target — the room is intentionally off (warm water only), so
+    there is nothing to hold it to and no comfort deviation to report.
     """
     if mode == 'cooling':
         return (season_cfg or {}).get('cool_target')
+    if mode == 'standby':
+        return None
     cur = now_lt.tm_hour * 60 + now_lt.tm_min
     try:
         dh = time_to_minutes(cfg_item['day_hour'])
@@ -605,6 +609,12 @@ class Manager:
             return None
         return heatpump.parse(self.hp_boiler, self.hp_thermostat, self.heatpump_cfg)
 
+    def _desired_mode(self, hp):
+        """The active season (heating/cooling/standby) for this pass, deriving the
+        outdoor temperature from `hp` and threading `last_mode` for hysteresis."""
+        outdoor = (hp.get('telemetry') or {}).get('outdoor') if hp else None
+        return cooling.desired_mode(self.season_cfg, hp, outdoor, self.last_mode)
+
     def _limits(self):
         # Extraordinary-reading thresholds: shared across all temp/humidity sources,
         # configured once under `alerts.extreme`. Crossing one mails immediately.
@@ -679,6 +689,14 @@ class Manager:
                     f"{name}:notopen", 'cooling_not_open', f"{name} thermostat",
                     "not fully open in cooling mode (drifted from the open setpoint)",
                     severity='info'))
+            # Standby: flag a non-manual thermostat that isn't switched off (same
+            # drifted-state idea as cooling_not_open, mirrored for the off season).
+            if (mode == 'standby' and not manual and isinstance(reported, dict)
+                    and not cooling.is_off(reported)):
+                issues.append(make_issue(
+                    f"{name}:notoff", 'standby_not_off', f"{name} thermostat",
+                    "not switched off in standby season (drifted from the off state)",
+                    severity='info'))
 
             if not manual:
                 windows = {w: self.sensor_state.get(w) for w in self.room_windows.get(name, [])}
@@ -732,7 +750,7 @@ class Manager:
         now_ts = time.time()
         now_lt = time.localtime(now_ts)
         hp = self.heatpump_state()
-        mode = cooling.desired_mode(self.season_cfg, hp)
+        mode = self._desired_mode(hp)
         issues = self.collect_issues(mode, now_ts, now_lt, hp)
 
         # heating<->cooling transition: remind operator about manual valves
@@ -1097,7 +1115,7 @@ class Manager:
                 return
             # "our off" = the type's off_signature (e.g. off + frost_protection ON),
             # distinct from a user's plain off so we only auto-restore what we set.
-            off_payload = type_cfg.get('off_signature') or {'system_mode': 'off'}
+            off_payload = cooling.build_off_payload(type_cfg)
             log.info("window-control %s: window OPEN -> off %s%s",
                      room, off_payload, "" if act else " (act=false, not sent)")
             if act and client is not None:
@@ -1113,12 +1131,12 @@ class Manager:
                     self.window_off.pop(room, None)
                     self._save_device_state()
                 return
-            mode = cooling.desired_mode(self.season_cfg, self.heatpump_state())
+            mode = self._desired_mode(self.heatpump_state())
             payload, _, _ = cooling.build_intended_payload(
                 room, item, self.thermostat_types, self.mqtt_cfg, mode, None)
             if mode == 'cooling':
                 payload.setdefault('system_mode', 'heat')  # ensure the valve turns on
-            payload.update(type_cfg.get('off_clear') or {})  # undo the off marker
+            cooling.clear_off_marker(payload, type_cfg)     # undo the off marker
             log.info("window-control %s: window CLOSED -> restore (%s)%s",
                      room, mode, "" if act else " (act=false, not sent)")
             if act and client is not None:
@@ -1164,6 +1182,7 @@ class Manager:
         if not self.manual_thermostats:
             return  # nothing actionable to remind about
         action = ("OPEN fully (for cooling)" if new == 'cooling'
+                  else "CLOSE (standby — warm water only)" if new == 'standby'
                   else "set back to normal heating")
         intro = (f"House operating mode changed: {old} -> {new}. "
                  f"Please {action} these manual (non-controllable) thermostats:")
@@ -1296,7 +1315,9 @@ class Manager:
 
         manual_line = None
         if self.manual_thermostats:
-            want = "OPEN fully" if mode == 'cooling' else "normal heating"
+            want = ("OPEN fully" if mode == 'cooling'
+                    else "CLOSE (warm water only)" if mode == 'standby'
+                    else "normal heating")
             manual_line = f"{want}: " + ", ".join(self.manual_thermostats)
 
         # Runtime manual *override* rooms: a TRV whose reported state matches none
@@ -2005,13 +2026,13 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
         return "".join(p)
 
     def _apply_cooling(self, client, mode, issues):
-        want = 'cooling' if mode == 'cooling' else 'heating'
+        want = mode if mode in ('cooling', 'standby') else 'heating'
         for name, item in self.thermostats.items():
             type_cfg = self.thermostat_types.get(item.get('type'), {})
             reported = self.last_state.get(name)
-            # Respect user manual control, but don't mistake the cooling state
-            # we ourselves applied (system_mode=heat on some types) for manual.
-            if (self.applied_mode.get(name) != 'cooling'
+            # Respect user manual control, but don't mistake a state we applied
+            # ourselves (system_mode=heat/off on some types) for manual.
+            if (self.applied_mode.get(name) not in ('cooling', 'standby')
                     and cooling.is_manual_override(type_cfg, reported)):
                 continue  # user wins; already surfaced as info issue
             # seed heating baseline at startup without writing
@@ -2021,9 +2042,19 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
             if self.applied_mode.get(name) == want:
                 continue
             payload = (cooling.build_open_payload(type_cfg) if want == 'cooling'
+                       else cooling.build_off_payload(type_cfg) if want == 'standby'
                        else cooling.build_restore_payload(type_cfg))
             if not payload:
                 continue
+            # Leaving standby: the valve was switched off (off_signature), so the
+            # restore/open payload must also undo that marker (e.g. frost_protection
+            # OFF, system_mode back on) — cooling_restore alone only sets the
+            # schedule/cooling fields and would leave the valve stuck off.
+            if want != 'standby' and (self.applied_mode.get(name) == 'standby'
+                                      or cooling.is_our_off(type_cfg, reported)):
+                payload = cooling.clear_off_marker(dict(payload), type_cfg)
+                if want == 'heating':
+                    payload.setdefault('system_mode', 'heat')  # ensure it turns back on
             topic = self._trv_set_topic(name)
             try:
                 client.publish(topic, json.dumps(payload), qos=1)
