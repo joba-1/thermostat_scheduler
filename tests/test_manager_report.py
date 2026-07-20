@@ -441,12 +441,24 @@ def test_hp_line_shows_current_activity():
                             'vorlauf 22.1°C, ruecklauf 55.4°C')
 
 
+def test_hp_line_shows_our_season_when_it_differs_from_pump():
+    # season.source=outdoor_temp: our TRV season (standby) can differ from the
+    # pump's own heat/cool telemetry (still reads cooling). The header must show
+    # OUR season, noting the pump's mode only because it disagrees.
+    mgr = make_mgr()
+    hp = {'mode': 'cooling', 'active': False,
+          'telemetry': {'vorlauf': 18.0, 'ruecklauf': 18.2},
+          'raw': {'hpactivity': 'off'}}
+    d = mgr._report_data(mode='standby', hp=hp, issues=[])
+    assert d['hp_line'].startswith('standby (pump: cooling) season — off (idle):')
+
+
 def test_hp_line_without_activity_field():
     mgr = make_mgr()
     hp = {'mode': 'heating', 'active': False,
           'telemetry': {'vorlauf': 35.0}, 'raw': {}}
     d = mgr._report_data(mode='heating', hp=hp, issues=[])
-    assert d['hp_line'] == 'heating (idle): vorlauf 35°C'
+    assert d['hp_line'] == 'heating season (idle): vorlauf 35°C'
 
 
 def test_report_data_reuses_passed_issues():

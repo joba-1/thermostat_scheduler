@@ -1250,7 +1250,7 @@ class Manager:
         if hp is None:
             hp = self.heatpump_state()
         if mode is None:
-            mode = cooling.desired_mode(self.season_cfg, hp)
+            mode = self._desired_mode(hp)
         if issues is None:
             issues = self.collect_issues(mode, now_ts, now_lt, hp)
         n_alert = sum(1 for i in issues if i.severity == 'alert')
@@ -1308,8 +1308,15 @@ class Manager:
             # so flow/return read hot even though the season is cooling; showing
             # the activity stops that looking like a sensor fault.
             activity = (hp.get('raw') or {}).get('hpactivity')
-            head = (f"{hp['mode']} season — {activity} ({act})"
-                    if activity else f"{hp['mode']} ({act})")
+            # `mode` is *our* scheduler season (drives the TRVs); `hp['mode']` is
+            # the pump's own heat/cool telemetry. With season.source=outdoor_temp
+            # they can differ (e.g. we're in standby while the pump still reads
+            # cooling), so show ours as the season and the pump's only when it
+            # disagrees, to avoid the header looking wrong.
+            pump = hp['mode']
+            season_seg = mode if pump == mode else f"{mode} (pump: {pump})"
+            head = (f"{season_seg} season — {activity} ({act})"
+                    if activity else f"{season_seg} season ({act})")
             hp_line = f"{head}: " + ", ".join(parts)   # text/mail (parts has outdoor)
             hp_head = head
 
