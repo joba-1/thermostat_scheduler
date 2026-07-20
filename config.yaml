@@ -54,6 +54,9 @@ web:
   port: 8099
   refresh: 60          # client auto-refresh interval (seconds)
   z2m_url: "http://192.168.1.4:8082"   # zigbee2mqtt frontend; device name cells link here
+  history:             # per-room history charts (read on demand from HA InfluxDB)
+    influx_url: http://job4:8086
+    database: homeassistant
 
 
 # --- EMS-ESP heat pump (read directly from MQTT, not Home Assistant) ---
@@ -147,9 +150,32 @@ sensors:
 window_control:
   enabled: true
   act: true                   # false = detect + log + show in status, but don't publish
+  ignore: true                # cool/heat regardless of open windows (warning shown)
   open_debounce: 5            # seconds a window must stay open before switching off
   close_debounce: 5           # seconds closed before restoring
   disable_builtin: true       # on connect, turn off each TRV's own window detection
+
+
+# --- Radiator fans (smart plugs) --- switched on while the HP actively cools.
+# Fill in the actual device names and set enabled: true when the ventilators are in.
+fan_control:
+  enabled: true
+  act: true
+  on_debounce: 30
+  off_delay: 600
+  fans:
+    - { type: tasmota, topic: "nous3", power: POWER }  # Nous A1T plug -> cmnd/nous3/POWER - Schlafzimmer
+    - { type: tasmota, topic: "nous4", power: POWER }  # Nous A1T plug -> cmnd/nous4/POWER - Bad OG
+    - { type: zigbee, name: "Wohnzimmer Fan Plug" }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
+    - { type: zigbee, name: "NZ1 Esszimmer Lüfter" }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
+    - { type: zigbee, name: "NZ2 Julians Lüfter" }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
+    - { type: zigbee, name: "NZ3 Dusche" }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
+
+# --- Free-cooling reminder: mail "open windows" when outside air < warmest room ---
+free_cooling:
+  enabled: true
+  margin: 2
+  remind_interval_hours: 8
 
 
 # Dumb / manual radiator valves that cannot be controlled remotely. The manager
