@@ -205,6 +205,27 @@ def test_render_room_svg_has_lines_and_stripes():
         assert label in svg
 
 
+def test_render_room_svg_humidity_adds_right_axis_and_line():
+    """A sensor chart (humidity present) draws a second polyline, a right-hand %
+    axis, and a legend entry; a room chart (no humidity) shows none of these."""
+    now = 10_000
+    base = {'now': now, 't_start': now - 6 * 3600, 'hours': 6,
+            'temp': [(now - 3600, 24.0), (now - 60, 23.0)],
+            'outdoor': [(now - 3600, 30.0), (now - 60, 31.0)], 'outdoor_ref': [],
+            'hp_cooling': [], 'hp_heating': [], 'window': [], 'conditioned': []}
+    # room chart: no humidity -> no % axis, no humidity legend
+    room_svg = history.render_room_svg('Arbeitszimmer', base)
+    assert 'humidity (%RH)' not in room_svg and '%<' not in room_svg
+
+    # sensor chart: humidity present -> extra polyline + % tick label + legend
+    data = dict(base, humidity=[(now - 3600, 45.0), (now - 60, 55.0)])
+    svg = history.render_room_svg('Wohnzimmer Luft', data)
+    assert svg.count('<polyline') == 3          # temp + outdoor + humidity
+    assert 'humidity (%RH)' in svg
+    assert f'fill="{history._COL["humidity"]}"' in svg   # right-axis ticks + line
+    assert '%<' in svg                          # a "NN%" right-axis label
+
+
 def test_render_room_svg_omits_damped_when_absent():
     """Damping off -> collect_room_history leaves outdoor_ref empty -> the chart
     drops both the damped polyline and its legend entry (just real outdoor)."""
@@ -225,4 +246,4 @@ def test_render_room_svg_empty_temp_is_graceful():
             'temp': [], 'outdoor': [], 'hp_cooling': [], 'hp_heating': [],
             'window': [], 'conditioned': []}
     svg = history.render_room_svg('Leer', data)
-    assert '<svg' in svg and 'no temperature history' in svg
+    assert '<svg' in svg and 'no history' in svg

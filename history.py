@@ -268,6 +268,10 @@ def collect_room_history(client, spec, hours, now=None):
     t_start = now - int(hours) * 3600
 
     temp = hold_to_edges(client.series_best(spec.get('temp'), hours), t_start, now)
+    # Optional relative-humidity line (sensor charts only; room specs omit it, so
+    # series_best(None) -> [] and the renderer draws no second axis).
+    humidity = hold_to_edges(client.series_best(spec.get('humidity'), hours),
+                             t_start, now)
     outdoor = hold_to_edges(client.series(spec.get('outdoor'), hours), t_start, now)
     outdoor_ref = hold_to_edges(client.series(spec.get('outdoor_ref'), hours),
                                 t_start, now)
@@ -296,7 +300,8 @@ def collect_room_history(client, spec, hours, now=None):
 
     return {
         'now': now, 't_start': t_start, 'hours': int(hours),
-        'temp': temp, 'outdoor': outdoor, 'outdoor_ref': outdoor_ref,
+        'temp': temp, 'humidity': humidity,
+        'outdoor': outdoor, 'outdoor_ref': outdoor_ref,
         'hp_cooling': hp_cooling, 'hp_heating': hp_heating,
         'window': window, 'conditioned': conditioned,
     }
@@ -323,6 +328,7 @@ def _intersect(a, b):
 
 _W, _H = 720, 300          # plot box (narrower viewBox -> larger apparent text on phones)
 _L, _R, _T, _B = 56, 14, 14, 40   # margins inside the plot box
+_RH = 48                   # wider right margin when a humidity (right) axis is drawn
 _STRIPE_H = 24
 _STRIPE_GAP = 7
 _FS = 16                   # axis + stripe-label font size
@@ -333,7 +339,7 @@ _COL = {
     'temp': '#b42318', 'outdoor': '#6b7280', 'outdoor_ref': '#b8bcc4',
     'cooling': '#1f6feb', 'heating': '#bf6b00',
     'window': '#d4a017', 'conditioned': '#1a7f37', 'grid': '#e5e7eb',
-    'label': '#6b7280',
+    'label': '#6b7280', 'humidity': '#0e7490',
 }
 
 
@@ -434,29 +440,32 @@ def _legend(items, x0, x1, y, font, cols=3):
 def render_room_svg(room, data):
     """Render one room's history as a standalone inline SVG string."""
     t0, t1 = data['t_start'], data['now']
-    x0, x1 = _L, _W - _R
+    humidity = data.get('humidity') or []
+    x0 = _L
+    x1 = _W - (_RH if humidity else _R)   # leave room for a right-hand humidity axis
     y0, y1 = _T, _H - _B
     temp, outdoor = data['temp'], data['outdoor']
     outdoor_ref = data.get('outdoor_ref') or []
 
     vals = [v for _, v in temp] + [v for _, v in outdoor] + [v for _, v in outdoor_ref]
     body = []
-    if not vals:
+    if not vals and not humidity:
         body.append(f'<text x="{_W/2}" y="{_H/2}" text-anchor="middle" '
-                    f'fill="{_COL["label"]}" font-size="{_FS_EMPTY}">no temperature '
-                    f'history for the selected window</text>')
+                    f'fill="{_COL["label"]}" font-size="{_FS_EMPTY}">no history '
+                    f'for the selected window</text>')
     else:
-        # y gridlines at round temperatures (nice-number axis), not the raw data edges
-        vmin, vmax, vstep = _temp_axis(min(vals), max(vals))
-        tv = vmin
-        while tv <= vmax + 1e-9:
-            yy = y1 - (tv - vmin) / (vmax - vmin) * (y1 - y0)
-            body.append(f'<line x1="{x0}" y1="{yy:.1f}" x2="{x1}" y2="{yy:.1f}" '
-                        f'stroke="{_COL["grid"]}"/>')
-            body.append(f'<text x="{x0 - 7}" y="{yy + _FS * 0.35:.1f}" '
-                        f'text-anchor="end" font-size="{_FS}" fill="{_COL["label"]}">'
-                        f'{tv:g}°</text>')
-            tv += vstep
+        if vals:
+            # y gridlines at round temps (nice-number axis), not the raw data edges
+            vmin, vmax, vstep = _temp_axis(min(vals), max(vals))
+            tv = vmin
+            while tv <= vmax + 1e-9:
+                yy = y1 - (tv - vmin) / (vmax - vmin) * (y1 - y0)
+                body.append(f'<line x1="{x0}" y1="{yy:.1f}" x2="{x1}" y2="{yy:.1f}" '
+                            f'stroke="{_COL["grid"]}"/>')
+                body.append(f'<text x="{x0 - 7}" y="{yy + _FS * 0.35:.1f}" '
+                            f'text-anchor="end" font-size="{_FS}" fill="{_COL["label"]}">'
+                            f'{tv:g}°</text>')
+                tv += vstep
         # x time ticks at even local-time boundaries (round hours/days), with a
         # vertical gridline each; the label format widens with the range.
         hrs = data['hours']
@@ -470,12 +479,31 @@ def render_room_svg(room, data):
                         f'text-anchor="middle" font-size="{_FS}" '
                         f'fill="{_COL["label"]}">{time.strftime(tfmt, time.localtime(t))}'
                         f'</text>')
+        # Relative humidity on its own right-hand axis (its own nice scale, so a
+        # 40–60% line fills the plot). Ticks + line share the humidity colour so the
+        # second scale is unambiguous; drawn dashed and behind the temp trace.
+        if humidity:
+            hvals = [v for _, v in humidity]
+            hmin, hmax, hstep = _temp_axis(min(hvals), max(hvals))
+            hv = hmin
+            while hv <= hmax + 1e-9:
+                yy = y1 - (hv - hmin) / (hmax - hmin) * (y1 - y0)
+                body.append(f'<line x1="{x1}" y1="{yy:.1f}" x2="{x1 + 4}" y2="{yy:.1f}" '
+                            f'stroke="{_COL["humidity"]}"/>')
+                body.append(f'<text x="{x1 + 7}" y="{yy + _FS * 0.35:.1f}" '
+                            f'text-anchor="start" font-size="{_FS}" '
+                            f'fill="{_COL["humidity"]}">{hv:g}%</text>')
+                hv += hstep
+            body.append(_polyline(humidity, t0, t1, hmin, hmax, x0, x1, y0, y1,
+                                  _COL['humidity'], dash='4 2'))
         # damped HP-ref behind (faint dotted), real outdoor (dashed), room temp on top
-        body.append(_polyline(outdoor_ref, t0, t1, vmin, vmax, x0, x1, y0, y1,
-                              _COL['outdoor_ref'], dash='2 3'))
-        body.append(_polyline(outdoor, t0, t1, vmin, vmax, x0, x1, y0, y1,
-                              _COL['outdoor'], dash='5 4'))
-        body.append(_polyline(temp, t0, t1, vmin, vmax, x0, x1, y0, y1, _COL['temp']))
+        if vals:
+            body.append(_polyline(outdoor_ref, t0, t1, vmin, vmax, x0, x1, y0, y1,
+                                  _COL['outdoor_ref'], dash='2 3'))
+            body.append(_polyline(outdoor, t0, t1, vmin, vmax, x0, x1, y0, y1,
+                                  _COL['outdoor'], dash='5 4'))
+            body.append(_polyline(temp, t0, t1, vmin, vmax, x0, x1, y0, y1,
+                                  _COL['temp']))
 
     # stripe rows beneath the plot: conditioned (green) first, the unified heat/cool
     # row next, window open last. Labels are short (legend below spells them out).
@@ -490,6 +518,8 @@ def render_room_svg(room, data):
 
     legend_items = [
         ('line', _COL['temp'], None, 'room temp'),
+        # humidity is only present on sensor charts (right axis); room specs omit it
+        *([('line', _COL['humidity'], '4 2', 'humidity (%RH)')] if humidity else []),
         ('line', _COL['outdoor'], '5 4', 'outdoor (real)'),
         # the damped HP-ref line is only drawn when damping is active (off -> it
         # just mirrors the real outdoor, so collect_room_history omits the series)

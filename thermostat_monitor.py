@@ -1794,9 +1794,12 @@ class Manager:
         temp_groups = [devices.ha_entity_candidates(
             self.sensor_ieee.get(label), self.sensor_friendly.get(label),
             'temperature')]
+        humidity_groups = [devices.ha_entity_candidates(
+            self.sensor_ieee.get(label), self.sensor_friendly.get(label),
+            'humidity')]
         ref = history.HP_OUTDOOR_TEMP if self._hp_damping_on() else None
-        return {'temp': temp_groups, 'outdoor': history.HP_OUTDOOR_RAW,
-                'outdoor_ref': ref,
+        return {'temp': temp_groups, 'humidity': humidity_groups,
+                'outdoor': history.HP_OUTDOOR_RAW, 'outdoor_ref': ref,
                 'activity': history.HP_ACTIVITY, 'windows': []}
 
     def _hp_damping_on(self):
