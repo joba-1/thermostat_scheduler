@@ -1731,6 +1731,10 @@ class Manager:
     def room_url(room, hours=history.DEFAULT_HOURS):
         return '/room?' + urllib.parse.urlencode({'name': room, 'hours': hours})
 
+    @staticmethod
+    def sensor_url(name, hours=history.DEFAULT_HOURS):
+        return '/sensor?' + urllib.parse.urlencode({'name': name, 'hours': hours})
+
     def z2m_target(self, ieee):
         """The real z2m-frontend device-page URL, keyed by ieee. None when the base
         URL is disabled or the ieee is unknown (not yet resolved from bridge/devices).
@@ -1783,38 +1787,50 @@ class Manager:
                 'outdoor_ref': ref,
                 'activity': history.HP_ACTIVITY, 'windows': windows}
 
+    def _sensor_chart_spec(self, label):
+        """Chart spec for a standalone temperature sensor: its own temperature line
+        against the shared outdoor + heat-pump-activity context (no room windows).
+        Same shape as `_room_chart_spec`, so it reuses collect/render unchanged."""
+        temp_groups = [devices.ha_entity_candidates(
+            self.sensor_ieee.get(label), self.sensor_friendly.get(label),
+            'temperature')]
+        ref = history.HP_OUTDOOR_TEMP if self._hp_damping_on() else None
+        return {'temp': temp_groups, 'outdoor': history.HP_OUTDOOR_RAW,
+                'outdoor_ref': ref,
+                'activity': history.HP_ACTIVITY, 'windows': []}
+
     def _hp_damping_on(self):
         """True if the heat pump is currently damping the outdoor temperature
         (`damping` != off); when off the damped value mirrors the raw outdoor."""
         raw = (self.heatpump_state() or {}).get('raw') or {}
         return str(raw.get('damping', 'off')).strip().lower() != 'off'
 
-    def room_page(self, room, hours=history.DEFAULT_HOURS):
-        """Standalone HTML page with the last `hours` of history for one room.
-
-        Queries HA's InfluxDB on demand (the only place the web server touches
-        external state). `room` must be a configured thermostat; `hours` must be one
-        of history.HOURS_CHOICES — both are validated by the caller (the HTTP route).
-        """
-        esc = html.escape
-        item = self.thermostats.get(room)
-        if item is None:
-            return None
+    def _ensure_influx(self):
+        """Lazily open the HA InfluxDB client used by the history-chart pages (the
+        only place the web server touches external state)."""
         if self._influx is None:
             self._influx = history.InfluxClient(
                 url=self._history_cfg.get('influx_url', 'http://job4:8086'),
                 database=self._history_cfg.get('database', 'homeassistant'))
-        data = history.collect_room_history(self._influx, self._room_chart_spec(room),
-                                            hours)
-        svg = history.render_room_svg(room, data)
+        return self._influx
+
+    def _history_page(self, title, spec, hours, url_fn):
+        """Standalone HTML page with the last `hours` of history for one chart spec.
+
+        Shared shell for the per-room and per-sensor charts: `url_fn(h)` builds the
+        self-link for each range toggle. `hours` must be one of history.HOURS_CHOICES
+        (validated by the caller, the HTTP route)."""
+        esc = html.escape
+        data = history.collect_room_history(self._ensure_influx(), spec, hours)
+        svg = history.render_room_svg(title, data)
 
         toggles = ' '.join(
             (f'<strong>{history.hours_label(h)}</strong>' if h == hours
-             else f'<a href="{self.room_url(room, h)}">{history.hours_label(h)}</a>')
+             else f'<a href="{url_fn(h)}">{history.hours_label(h)}</a>')
             for h in history.HOURS_CHOICES)
         p = ['<!doctype html><html lang="en"><head><meta charset="utf-8">',
              '<meta name="viewport" content="width=device-width,initial-scale=1">',
-             f'<title>{esc(room)} history</title>',
+             f'<title>{esc(title)} history</title>',
              self._ICON_LINKS,
              f'<style>{self._WEB_CSS}.toggles{{display:flex;align-items:baseline;'
              'flex-wrap:wrap;font-size:13px;margin:0 0 14px}'
@@ -1822,13 +1838,29 @@ class Manager:
              '.back{font-size:13px;margin-left:auto}</style></head>'
              '<body><div class="wrap">',
              f'<header><img class="logo" src="/logo.svg" alt="">'
-             f'<h1>{esc(room)}</h1>'
+             f'<h1>{esc(title)}</h1>'
              f'<span class="when">last {history.hours_label(hours)}</span></header>',
              f'<div class="toggles"><span>range: {toggles}</span>'
              f'<a class="back" href="/">← all rooms</a></div>',
              f'<div class="card">{svg}</div>',
              '</div></body></html>']
         return ''.join(p)
+
+    def room_page(self, room, hours=history.DEFAULT_HOURS):
+        """History chart page for one room. `room` must be a configured thermostat
+        (validated by the caller); returns None otherwise."""
+        if self.thermostats.get(room) is None:
+            return None
+        return self._history_page(room, self._room_chart_spec(room), hours,
+                                  lambda h: self.room_url(room, h))
+
+    def sensor_page(self, label, hours=history.DEFAULT_HOURS):
+        """History chart page for one temperature sensor. `label` must be a
+        temperature-kind sensor (validated by the caller); returns None otherwise."""
+        if self.sensor_kind.get(label) != 'temperature':
+            return None
+        return self._history_page(label, self._sensor_chart_spec(label), hours,
+                                  lambda h: self.sensor_url(label, h))
 
     # --- status web page (standalone, class-based layout) -------------------
 
@@ -2007,8 +2039,18 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
 
         if d['sensors']:
             p.append('<div class="card"><h2>Sensors</h2>')
+            # name cell -> z2m device page; value cell -> history chart (temperature
+            # sensors only; window rows keep just the name link). Rows are
+            # [name, value, kind, bat, seen]; kind == 'temperature' is chartable.
             s_z2m = d['sensors'].get('z2m') or [None] * len(d['sensors']['rows'])
-            sensor_links = [{'sensor': url} if url else {} for url in s_z2m]
+            sensor_links = []
+            for row, url in zip(d['sensors']['rows'], s_z2m):
+                link = {}
+                if url:
+                    link['sensor'] = url
+                if link_rooms and row[2] == 'temperature':
+                    link['value'] = cls.sensor_url(row[0])
+                sensor_links.append(link)
             p.append(cls._web_table(d['sensors']['headers'], d['sensors']['rows'],
                                     d['sensors'].get('styles'),
                                     sensor_links if any(sensor_links) else None))
@@ -2143,6 +2185,22 @@ def start_web_server(mgr):
                 if hours not in history.HOURS_CHOICES:
                     hours = history.DEFAULT_HOURS
                 self._send(mgr.room_page(room, hours))
+                return
+            if parsed.path == '/sensor':
+                qs = urllib.parse.parse_qs(parsed.query)
+                name = (qs.get('name') or [''])[0]
+                # whitelist sensor + hours so no caller string reaches a query;
+                # only temperature-kind sensors have a chart (window rows don't link)
+                if mgr.sensor_kind.get(name) != 'temperature':
+                    self.send_error(404)
+                    return
+                try:
+                    hours = int((qs.get('hours') or [history.DEFAULT_HOURS])[0])
+                except ValueError:
+                    hours = history.DEFAULT_HOURS
+                if hours not in history.HOURS_CHOICES:
+                    hours = history.DEFAULT_HOURS
+                self._send(mgr.sensor_page(name, hours))
                 return
             if parsed.path not in ('/', '/index.html', '/status'):
                 self.send_error(404)

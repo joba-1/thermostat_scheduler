@@ -122,6 +122,30 @@ def test_z2m_device_links_for_trv_and_sensor():
     assert 'href="/room?' in html          # temp cell still links to history
 
 
+def test_sensor_value_links_to_history_for_temperature_only():
+    """A temperature sensor's value cell links to its /sensor history chart (mirrors
+    the thermostat temp -> /room link); window rows keep just the name link."""
+    cfg = {k: (dict(v) if isinstance(v, dict) else v) for k, v in CFG.items()}
+    cfg['mqtt'] = {'base_topic': 'zigbee2mqtt', 'broker': 'mqtt.lan'}
+    cfg['device_state_file'] = tempfile.mkdtemp() + '/devices.json'
+    mgr = tm.Manager(cfg)
+    mgr.sensor_state['Bad OG Luft'] = {'temperature': 21.0}
+    mgr.sensor_state['Bad OG'] = {'contact': True}   # window closed
+
+    d = mgr._report_data()
+    html = mgr._render_web(d, link_rooms=True)
+    # temperature sensor: value cell -> /sensor chart page
+    assert 'href="/sensor?name=Bad+OG+Luft' in html
+    # window sensor: value renders unlinked (only temp sensors get a /sensor chart)
+    assert '<td>closed</td>' in html
+    assert '/sensor?name=Bad+OG&' not in html
+    # links are gated on link_rooms, like the room links
+    assert '/sensor?' not in mgr._render_web(d, link_rooms=False)
+    # the route only serves temperature-kind sensors
+    assert mgr.sensor_page('Bad OG') is None            # window -> no chart
+    assert mgr.sensor_page('nope') is None              # unknown -> no chart
+
+
 def test_z2m_link_omitted_when_ieee_unknown_or_disabled():
     mgr = make_mgr()                        # no broker -> base http://None:8080
     mgr.z2m_base = ''                       # explicitly disabled
