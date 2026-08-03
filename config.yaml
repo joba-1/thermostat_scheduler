@@ -169,8 +169,10 @@ window_control:
 
 # --- Radiator fans (smart plugs) --- switched on while the HP actively cools.
 # Fill in the actual device names and set enabled: true when the ventilators are in.
+# DISABLED 2026-07-29 per request: no automation for the ventilators until further
+# notice. All plugs were switched OFF manually; re-enable to resume fan control.
 fan_control:
-  enabled: true
+  enabled: true    # re-enabled 2026-07-31 per request (was disabled 2026-07-29)
   act: true
   on_debounce: 30
   off_delay: 600
@@ -181,6 +183,7 @@ fan_control:
     - { type: zigbee, name: "NZ1 Esszimmer Lüfter" }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
     - { type: zigbee, name: "NZ2 Julians Lüfter" }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
     - { type: zigbee, name: "NZ3 Dusche" }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
+    - { type: zigbee, name: "Z2 Arbeitszimmer Fan Plug" }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
 
 # --- Free-cooling reminder: mail "open windows" when outside air < warmest room ---
 free_cooling:
