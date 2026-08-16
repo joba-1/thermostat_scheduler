@@ -140,6 +140,24 @@ def test_classify_state_signatures():
     assert not cooling.is_our_off(t, {'system_mode': 'off'})
 
 
+def test_off_wins_over_cooling_open_when_both_match():
+    """TECH/Tuya cooling_open carries no system_mode, so an off valve that still
+    holds `preset: comfort` matches both signatures. Off must win — otherwise the
+    status page calls a shut valve "open" and cooling_not_open never fires."""
+    t = {'schedule_mode': {'system_mode': 'heat', 'preset': 'schedule'},
+         'cooling_open': {'preset': 'comfort', 'comfort_temperature': 34},
+         'off_signature': {'system_mode': 'off', 'frost_protection': 'ON'},
+         'manual_marker': {'field': 'preset', 'equals': 'manual'}}
+    both = {'system_mode': 'off', 'frost_protection': 'ON',
+            'preset': 'comfort', 'comfort_temperature': 34}
+    assert cooling.classify_state(t, both) == 'off'
+    assert not cooling.is_open(t, both)
+    assert cooling.is_our_off(t, both)
+    # a genuinely open valve is still 'open'
+    assert cooling.classify_state(
+        t, {'preset': 'comfort', 'comfort_temperature': 34}) == 'open'
+
+
 def test_cooling_open_state_not_seen_as_manual():
     # AVATTO/SONOFF type: cooling_open uses system_mode=heat, same as manual_marker.
     tcfg = {'cooling_open': {'system_mode': 'heat', 'current_heating_setpoint': 30},

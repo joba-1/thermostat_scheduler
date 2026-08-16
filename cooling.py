@@ -61,18 +61,28 @@ def classify_state(type_cfg, reported_state):
     'manual' positively, we define the exact state-combos *we* produce and treat
     anything else as manual:
 
-      - 'open'     -> matches `cooling_open` (e.g. heat / preset comfort + setpoint 34)
       - 'off'      -> matches `off_signature` (our window-off, e.g. off + frost_protection ON)
+      - 'open'     -> matches `cooling_open` (e.g. heat / preset comfort + setpoint 34)
       - 'schedule' -> in the weekly-schedule mode
       - 'manual'   -> none of the above (a user/other controller did it) -> leave alone
       - 'unknown'  -> no reported state yet
+
+    **Off is tested first.** On types whose `cooling_open` carries no
+    `system_mode` (TECH/Tuya: `preset: comfort` + `comfort_temperature: 34`), a
+    valve that is switched off but still holds that preset matches *both*
+    signatures. A closed valve is closed whatever preset it remembers, so the
+    off signature has to win — otherwise the state page reports the room as
+    "open" and `cooling_not_open` never fires while the room bakes. (Bad OG did
+    exactly this: off with a latched fault, displayed as open, 27 -> 28.4 °C.)
+    `build_intended_payload` and `--check` already gave off precedence; this
+    aligns the classifier with them.
     """
     if not isinstance(reported_state, dict):
         return 'unknown'
-    if _matches(reported_state, type_cfg.get('cooling_open')):
-        return 'open'
     if _matches(reported_state, type_cfg.get('off_signature')):
         return 'off'
+    if _matches(reported_state, type_cfg.get('cooling_open')):
+        return 'open'
     if _is_schedule(type_cfg, reported_state):
         return 'schedule'
     return 'manual'

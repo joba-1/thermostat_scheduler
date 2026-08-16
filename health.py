@@ -12,6 +12,7 @@ Issue kinds:
   settings_mismatch reported state doesn't match the pushed schedule (persisted)
   manual_override   end user took manual control (info/warn, not a fault)
   no_reaction       valve demanding heat/cool but room temp not moving toward target
+  device_fault      the device reports a fault about itself (fault_alarm, ...)
 """
 
 from common import compare_and_collect_mismatches, build_expected_payload
@@ -36,6 +37,68 @@ def stale_temp_issue(key, subject, what, temp_seen_ts, now_ts, stale_secs):
     return make_issue(
         key, 'stale_temperature', subject,
         f"{what} unchanged for {hours:.1f}h (frozen — restart or replace the device)")
+
+
+# z2m fields through which a TRV reports a fault about itself. Values meaning
+# "no fault" are filtered by `_fault_active`; anything else is surfaced verbatim,
+# so an unrecognised code still reaches the report instead of being swallowed.
+FAULT_FIELDS = ('fault_alarm', 'valve_alarm', 'error')
+
+_FAULT_CLEAR = {'', 'none', 'null', 'off', 'false', '0', 'no', 'ok', 'normal', 'clear'}
+
+
+def _fault_active(value):
+    """True if a fault field carries something other than a 'no fault' value.
+
+    Some types report a nested payload rather than a scalar (TR-M3Z sends
+    `fault_alarm: {'error': 2}`), so a dict is active if any member is.
+    """
+    if value is None or value is False:
+        return False
+    if value is True:
+        return True
+    if isinstance(value, dict):
+        return any(_fault_active(v) for v in value.values())
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value).strip().lower() not in _FAULT_CLEAR
+
+
+def _fault_parts(field, value):
+    """Render one fault field as readable `name=value` parts, flattening the
+    nested form so a report reads `fault_alarm.error=2`, not a raw dict."""
+    if isinstance(value, dict):
+        parts = []
+        for k, v in sorted(value.items()):
+            if _fault_active(v):
+                parts += _fault_parts(f"{field}.{k}", v)
+        return parts
+    return [f"{field}={value}"]
+
+
+def device_fault_issue(key, subject, reported):
+    """Flag a hardware fault the device reports about itself.
+
+    Nothing else here catches this: a faulted TRV keeps talking on the mesh and
+    its battery/life-sign look fine, yet the valve silently refuses commands and
+    the room drifts. Bad OG sat at `fault_alarm: 2` with a fresh 100% battery,
+    ignoring every write including setpoints, while the status page showed it as
+    a healthy room. Stays open — and so stays in the report mails — for as long
+    as the device keeps reporting the fault. Returns an Issue or None.
+    """
+    if not isinstance(reported, dict):
+        return None
+    parts = []
+    for f in FAULT_FIELDS:
+        if _fault_active(reported.get(f)):
+            parts += _fault_parts(f, reported.get(f))
+    if not parts:
+        return None
+    detail = ", ".join(sorted(parts))
+    return make_issue(
+        key, 'device_fault', subject,
+        f"device reports {detail} — the valve may be refusing commands "
+        f"(check the valve pin/battery, then remount the head to re-run adaptation)")
 
 
 def battery_issue(reported, limit):
@@ -80,6 +143,12 @@ def classify_device(name, cfg_item, thermostat_types, mqtt_cfg,
     bat = battery_issue(reported, limits.get('battery_limit', 20))
     if bat:
         issues.append(make_issue(f"{name}:battery", 'battery_low', subject, bat))
+
+    # self-reported hardware fault — checked in every season (a valve faults just
+    # as easily while cooling), so it must precede the heating-only early return.
+    fault = device_fault_issue(f"{name}:fault", subject, reported)
+    if fault:
+        issues.append(fault)
 
     # manual override vs settings mismatch (heating mode only)
     if mode != 'heating':

@@ -63,12 +63,21 @@ leave a provenance tag. So rather than detect "manual" positively, we **define t
 exact state-combos we produce** (`cooling.classify_state`) and treat anything else
 as manual:
 
+Tested **in this order** (first match wins):
+
 | Classified as | Matches |
 |---|---|
-| `open` | the type's `cooling_open` (e.g. heat / preset comfort **+ setpoint 34**) |
 | `off` | the type's `off_signature` — **our** window-off (see below) |
+| `open` | the type's `cooling_open` (e.g. heat / preset comfort **+ setpoint 34**) |
 | `schedule` | the weekly-schedule mode (preset schedule / system_mode auto) |
 | `manual` | none of the above → leave it alone, surface as info |
+
+Off is tested **before** open on purpose. On TECH/Tuya types `cooling_open` is
+only `preset: comfort` + `comfort_temperature`, with no `system_mode`, so a valve
+that is switched off while still holding that preset matches both. A closed valve
+is closed whatever preset it remembers, so off has to win — with the old order
+the status page reported such a room as `open` and `cooling_not_open` never
+fired while it baked.
 
 So `is_manual_override` = "classified manual", `is_open` = "classified open".
 A stuck state like `heat/21.5` is manual (not one of ours); the defined recovery
