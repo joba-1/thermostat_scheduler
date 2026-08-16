@@ -97,8 +97,10 @@ def device_fault_issue(key, subject, reported):
     detail = ", ".join(sorted(parts))
     return make_issue(
         key, 'device_fault', subject,
-        f"device reports {detail} — the valve may be refusing commands "
-        f"(check the valve pin/battery, then remount the head to re-run adaptation)")
+        f"device reports {detail} — it may also be refusing remote writes while "
+        f"still reporting normally; check by writing a harmless setting (e.g. "
+        f"comfort_temperature) and confirming it takes. A head that ignores every "
+        f"write needs replacing — battery, remount and z2m reconfigure will not fix it")
 
 
 def battery_issue(reported, limit):
