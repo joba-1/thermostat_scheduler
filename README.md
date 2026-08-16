@@ -145,8 +145,12 @@ See [MONITOR.md](MONITOR.md) for installation and [docs/](docs/) for details.
 
 ```bash
 python3 thermostat_scheduler.py --list-manual            # which rooms are manual?
-python3 thermostat_scheduler.py --reset-manual ["Name"]  # clear (re-push schedule)
+python3 thermostat_scheduler.py --reset-manual ["Name"]  # re-onboard into the season
 ```
+
+Re-onboarding pushes the active season's state (cooling → open, heating →
+schedule, standby → off). Without a `"Name"` it re-onboards exactly the rooms in
+manual override, leaving controlled and switched-off rooms alone.
 
 ## Installation
 

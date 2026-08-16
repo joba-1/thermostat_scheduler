@@ -26,9 +26,15 @@ room is suspended (and you get a low-priority note).
 
 ```bash
 python3 thermostat_scheduler.py --list-manual           # which rooms are in manual?
-python3 thermostat_scheduler.py --reset-manual           # clear all (re-push schedule)
+python3 thermostat_scheduler.py --reset-manual           # clear every manual room
 python3 thermostat_scheduler.py --reset-manual "Bad OG"  # clear specific rooms
 ```
+
+Re-onboarding pushes the **active season's** state, not always the weekly
+schedule: cooling → valves open, heating → schedule, standby → off. With no room
+named it touches only the rooms actually in manual override — never rooms that
+are already under control — and needs the daemon running to tell the two apart.
+Rooms that are genuinely *off* (e.g. an open window) are always left off.
 
 ### Status overview
 

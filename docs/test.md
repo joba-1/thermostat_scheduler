@@ -50,3 +50,10 @@ Fixtures use the real captured `boiler_data` / `thermostat_data` field shapes.
    Confirm warm water (`dhw`) is unaffected throughout.
 3. **Manual respect**: put one room in manual; confirm cooling skips it and a
    note (not an alert) is raised.
+3a. **Season-blindness guard** (regression, 2026-08-16): in cooling season, run
+   `--check` and `--reset-manual` and confirm both print `mode: cooling`, never
+   `heating`. A no-argument `--reset-manual` must touch **only** manual rooms
+   (with none manual it must publish nothing). Then confirm the daemon
+   self-heals: write a weekly-schedule payload straight to one open valve via
+   zigbee2mqtt and check the next pass drives it back open — the cache must
+   yield to the newer device report.

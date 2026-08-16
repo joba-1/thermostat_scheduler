@@ -29,6 +29,11 @@ and on a timer (`alerts.eval_interval`, default 300 s) runs one evaluation pass.
    non-manual thermostat's `cooling_open` payload when entering cooling, or
    `cooling_restore` when entering heating. Per-device `applied_mode` avoids
    re-publishing; heating is seeded as the startup baseline without writing.
+   The cache is not trusted blindly: a device report *newer* than our last write
+   (`applied_at`) wins over it, so a valve that drifted out of the season's state
+   is driven back instead of being skipped forever. `off` reports are exempt —
+   window-open off, a user's off and standby are indistinguishable, and
+   re-driving one would force a valve open onto an open window.
 6. `Alerter.process(issues)` records new / cleared issues every pass but only
    *mails* on the batch boundary (`alerts.batch_window_minutes`, default 10): one
    combined mail for all alert issues still open and due, plus one for recoveries
@@ -106,6 +111,8 @@ now the **sole** window controller. Event-driven, not on the eval timer:
   `sensor_state` (keyed by friendly name) — separate namespaces.
 - `history[room]`: ring buffer of `(ts, running_state, temp)` for no-reaction.
 - `applied_mode[room]`: last cooling/heating action applied.
+- `applied_at[room]`: when that action was published, so only a *later* device
+  report counts as evidence the valve has since drifted.
 - `last_mode`: previous desired mode (transition detection).
 - Alert/periodic state persisted by `Alerter` to `alerts.state_file` (JSON),
   surviving restarts so issues are not re-mailed.

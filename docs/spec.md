@@ -14,7 +14,7 @@ boundaries.
 
 | Component | File | Role |
 |-----------|------|------|
-| Scheduler | `thermostat_scheduler.py` | One-shot: push weekly schedules; `--check`, `--list-manual`, `--reset-manual` |
+| Scheduler | `thermostat_scheduler.py` | One-shot: push the **season-intended** state (cooling → open, heating → schedule, standby → off); `--check`, `--list-manual`, `--reset-manual` |
 | Manager (daemon) | `thermostat_monitor.py` | Always-on: monitor health/comfort, drive cooling, alert, status report |
 | Shared helpers | `common.py` | Config load, schedule gen, payload build, comparisons, logging, credentials |
 | Heat pump | `heatpump.py` | Parse EMS-ESP MQTT → mode + telemetry; bounds check |

@@ -72,7 +72,10 @@ as manual:
 
 So `is_manual_override` = "classified manual", `is_open` = "classified open".
 A stuck state like `heat/21.5` is manual (not one of ours); the defined recovery
-is to push one of our signatures (e.g. the no-arg scheduler pushes open/schedule).
+is to push one of our signatures for the **active season** — `thermostat-reonboard
+"Room"` (i.e. `--reset-manual "Room"`). Note the *no-argument* scheduler run is
+not the tool for this: by design it leaves manual rooms alone, refreshing only
+their stored schedule and calibration.
 
 ## "Our off" vs a user's off (`off_signature`)
 
