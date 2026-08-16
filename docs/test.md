@@ -20,6 +20,10 @@ Coverage (`tests/`):
 | `test_devices.py` | device identity: ieee/name ref parsing, bridge/devices registry + rename detection, name-fallback resolution, HA entity candidates |
 | `test_fan_control.py` | radiator-fan plug switching: cooling-active signal, on-debounce, off-delay hold through gaps, zigbee+tasmota topics, act:false |
 | `test_history.py` | per-room charts: interval algebra, candidate (slug→ieee) resolution, SVG rendering |
+| `test_scheduler_season_cli.py` | CLI must never act season-blind: `detect_mode` threads `outdoor_temp` and refuses to guess; no-arg `--reset-manual` hits only manual rooms; `--check` compares per season (incl. standby) |
+| `test_state_reconcile.py` | the season cache yields to newer device reports (`off` exempt), write backoff on a refusing device, spacing via `delay_between_messages` |
+| `test_device_fault.py` | self-reported faults reach the report in every season; scalar and nested (`{'error': 2}`) shapes; cleared values not flagged |
+| `test_reonboard_verify.py` | re-onboard verifies and re-sends only the dropped key; unreported keys never retried; a refusing device is reported, not spun on |
 
 Fixtures use the real captured `boiler_data` / `thermostat_data` field shapes.
 

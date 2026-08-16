@@ -34,6 +34,12 @@ and on a timer (`alerts.eval_interval`, default 300 s) runs one evaluation pass.
    is driven back instead of being skipped forever. `off` reports are exempt —
    window-open off, a user's off and standby are indistinguishable, and
    re-driving one would force a valve open onto an open window.
+   Writes are **spaced** by `mqtt.delay_between_messages` (a season change
+   touches every room, and a burst is how weak-link TRVs miss commands) and
+   **backed off** per device (1, 2, 4, 8, 16, then every 30 min) when the valve
+   keeps reporting a state it will not leave. The backoff never gives up, so a
+   head repaired by hand recovers on its own; without it a device that refuses
+   writes is re-published to every pass, once a minute, forever.
 6. `Alerter.process(issues)` records new / cleared issues every pass but only
    *mails* on the batch boundary (`alerts.batch_window_minutes`, default 10): one
    combined mail for all alert issues still open and due, plus one for recoveries
@@ -113,6 +119,8 @@ now the **sole** window controller. Event-driven, not on the eval timer:
 - `applied_mode[room]`: last cooling/heating action applied.
 - `applied_at[room]`: when that action was published, so only a *later* device
   report counts as evidence the valve has since drifted.
+- `retry_state[(kind, room)]`: write backoff (attempts + last try) for the
+  season-apply and window-restore paths, cleared as soon as the device confirms.
 - `last_mode`: previous desired mode (transition detection).
 - Alert/periodic state persisted by `Alerter` to `alerts.state_file` (JSON),
   surviving restarts so issues are not re-mailed.

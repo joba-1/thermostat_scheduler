@@ -19,7 +19,7 @@ boundaries.
 | Shared helpers | `common.py` | Config load, schedule gen, payload build, comparisons, logging, credentials |
 | Heat pump | `heatpump.py` | Parse EMS-ESP MQTT → mode + telemetry; bounds check |
 | Cooling | `cooling.py` | Desired season; per-type open/restore payloads; manual-override detection |
-| Health | `health.py` | Classify thermostat issues (battery/life/mismatch/manual/no-reaction) |
+| Health | `health.py` | Classify thermostat issues (battery/life/mismatch/manual/no-reaction/device-fault) |
 | Sensors | `sensors.py` | Room comfort vs setpoint (window-aware); sensor battery/life |
 | Alerts | `alerts.py` | Throttled mail, daily digest, periodic status report, JSON state |
 

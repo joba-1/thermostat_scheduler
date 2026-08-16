@@ -123,6 +123,23 @@ Test the restore on a spare host at least once after major changes.
   `season.control` is true.
 - **Per-type cooling payload wrong**: verify against one device of each type
   with `--dry-run` and zigbee2mqtt before trusting auto control (see test.md).
+- **A TRV reports fine but ignores every command** (`device_fault` alert, room
+  drifting, `--check` shows it stuck): report path and write path fail
+  independently — a head can sit on the mesh with a strong link, a full battery
+  and normal state reports while discarding every `/set`. z2m logs nothing about
+  it here (`bridge/logging` publishes nothing unless MQTT log output is enabled).
+  Confirm with one *inert* write and read it back — `comfort_temperature` is
+  ideal, it does not disturb a running valve:
+  `mosquitto_pub -t 'zigbee2mqtt/<Name>/set' -m '{"comfort_temperature":33}'`.
+  If it never takes: battery swap, remount and z2m **reconfigure do not fix it**;
+  a **delete / re-join / rename** in z2m does, and clears a stuck `fault_alarm`
+  too. The ieee is unchanged by a re-join, so `config.yaml` needs no edit — but
+  the device returns unconfigured, so finish with
+  `thermostat-reonboard "<Room>"`. Re-joining tends to pick a worse mesh parent
+  (seen: LQI 80→18), so re-join near a router when you can.
+  Note the fault flag alone proves nothing: one valve reported `fault_alarm: 2`
+  and refused everything, another reported `fault_alarm: {'error': 2}` and obeyed
+  perfectly. Always test a write.
 - **Heat-pump remote feed stale (alert)**: the `heatpump.remote_feed` source
   sensor (e.g. `Wohnzimmer Luft`) stopped updating; the pump's dew-point
   protection is running on a stale value. Usually a Zigbee mesh dropout —

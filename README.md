@@ -125,7 +125,10 @@ comfort and operating bounds.
 ### What it does
 
 - **Health alerts** — battery low, lost device/sensor, thermostat not applying
-  its settings, room not following its setpoint, water leak.
+  its settings, room not following its setpoint, water leak, and a device
+  reporting a fault about itself (`fault_alarm` & co). The last one matters
+  because such a valve keeps answering with a healthy battery while silently
+  refusing every write — no other check sees it.
 - **Cooling mode** — when the heat pump is cooling (or `season.mode: cooling`),
   forces every controllable valve fully open and restores the weekly schedule
   when heating resumes; rooms in manual override are left alone.

@@ -36,6 +36,23 @@ named it touches only the rooms actually in manual override — never rooms that
 are already under control — and needs the daemon running to tell the two apart.
 Rooms that are genuinely *off* (e.g. an open window) are always left off.
 
+It then **verifies** rather than trusting "sent": the device is read back and any
+key it did not take is re-sent on its own. z2m turns one payload into a burst of
+Zigbee writes and a freshly re-joined or weak-link TRV drops some of them — a
+valve once came back with all seven schedule days written but `preset` still
+`manual`, looking configured while sitting shut. Expect one of:
+
+```
+  ✓ verified applied
+  ! <room> did not take preset — resending individually
+  ✗ still not applying: preset — the device may be refusing writes
+```
+
+The last line means the head itself is rejecting writes while still reporting
+normally. Battery, remount and a z2m *reconfigure* do **not** fix that; a
+delete / re-join / rename in z2m does, and it also clears a stuck `fault_alarm`.
+After a re-join the device comes back unconfigured, so re-onboard it by name.
+
 ### Status overview
 
 ```bash
