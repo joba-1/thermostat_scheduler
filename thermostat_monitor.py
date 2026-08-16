@@ -148,6 +148,12 @@ class Manager:
         # write — otherwise a state from before the push looks like drift.
         self.applied_at = {}
 
+        # Write backoff. A TRV that will not accept a payload (e.g. a latched
+        # fault_alarm) keeps reporting the state we are trying to change, which
+        # would otherwise make us re-publish on every pass — once a minute,
+        # forever, into a battery device. Key -> {'n': attempts, 'last': monotonic}.
+        self.retry_state = {}
+
         # window -> TRV control. window_off: rooms WE switched off because a
         # window is open (room -> iso ts), persisted so a restart keeps the latch
         # and only restores rooms we closed (never a user's manual off).
@@ -1129,11 +1135,18 @@ class Manager:
         else:
             # Restore only what WE switched off.
             if not own_off:
+                self._retry_clear(('restore', room))   # it is on again — reset backoff
                 if room in self.window_off:
                     log.info("window-control %s: window closed but state isn't our "
                              "off — leaving it (user took over)", room)
                     self.window_off.pop(room, None)
                     self._save_device_state()
+                return
+            # A valve that refuses the restore (e.g. latched fault_alarm) keeps
+            # reporting our off signature, so own_off stays true and we would
+            # publish every pass. Back off instead — it still recovers by itself
+            # once the device accepts writes again.
+            if not self._retry_due(('restore', room)):
                 return
             mode = self._desired_mode(self.heatpump_state())
             payload, _, _ = cooling.build_intended_payload(
@@ -1145,6 +1158,7 @@ class Manager:
                      room, mode, "" if act else " (act=false, not sent)")
             if act and client is not None:
                 client.publish(topic, json.dumps(payload), qos=1)
+                self._retry_note(('restore', room))
             self.window_off.pop(room, None)
             self._save_device_state()
 
@@ -2081,6 +2095,29 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
         p.append('</div></body></html>')
         return "".join(p)
 
+    # Backoff schedule for repeated writes to the same device: 1, 2, 4, 8, 16 then
+    # every 30 minutes. Never gives up (a valve fixed by hand must recover on its
+    # own), but stops the per-minute hammering of a device that refuses us.
+    _RETRY_CAP_MINUTES = 30
+
+    def _retry_due(self, key):
+        """True if we may write `key` again under the backoff schedule."""
+        st = self.retry_state.get(key)
+        if not st:
+            return True
+        wait = min(2 ** st['n'], self._RETRY_CAP_MINUTES) * 60
+        return (time.monotonic() - st['last']) >= wait
+
+    def _retry_note(self, key):
+        """Record that we just wrote `key`, widening the next backoff window."""
+        st = self.retry_state.setdefault(key, {'n': 0, 'last': 0.0})
+        st['n'] += 1
+        st['last'] = time.monotonic()
+
+    def _retry_clear(self, key):
+        """The write landed (or is no longer wanted) — reset the backoff."""
+        self.retry_state.pop(key, None)
+
     def _reported_since_apply(self, name):
         """True if the device reported after we last pushed a mode to it.
 
@@ -2097,6 +2134,7 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
 
     def _apply_cooling(self, client, mode, issues):
         want = mode if mode in ('cooling', 'standby') else 'heating'
+        published = 0
         for name, item in self.thermostats.items():
             type_cfg = self.thermostat_types.get(item.get('type'), {})
             reported = self.last_state.get(name)
@@ -2120,6 +2158,8 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
             # would force an open valve onto an open window.
             observed = {'open': 'cooling', 'schedule': 'heating'}.get(
                 cooling.classify_state(type_cfg, reported))
+            if observed == want:
+                self._retry_clear(('season', name))   # device confirmed it took
             if (observed is not None and name in self.applied_mode
                     and self.applied_mode[name] != observed
                     and self._reported_since_apply(name)):
@@ -2142,11 +2182,22 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
                 payload = cooling.clear_off_marker(dict(payload), type_cfg)
                 if want == 'heating':
                     payload.setdefault('system_mode', 'heat')  # ensure it turns back on
+            # Back off on a device that will not take the payload, so a refusing
+            # valve (latched fault, dead motor) is not written to every pass.
+            if not self._retry_due(('season', name)):
+                continue
             topic = self._trv_set_topic(name)
             try:
+                # Space the writes out (`mqtt.delay_between_messages`, as the
+                # scheduler does): a season change touches every room at once, and
+                # a burst of ten writes is how slow/weak-link TRVs miss commands.
+                if published:
+                    time.sleep(self.mqtt_cfg.get('delay_between_messages', 1))
                 client.publish(topic, json.dumps(payload), qos=1)
+                published += 1
                 self.applied_mode[name] = want
                 self.applied_at[name] = iso_now()
+                self._retry_note(('season', name))
                 log.info("cooling: set %s -> %s (%s)", name, want, payload)
             except Exception as e:
                 log.error("cooling publish failed for %s: %s", name, e)

@@ -110,6 +110,56 @@ def test_off_report_is_not_reconciled():
     assert sent(c, ESS_SET) == []
 
 
+def test_refusing_device_is_not_rewritten_every_pass():
+    """A valve that will not take the payload (latched fault) keeps reporting the
+    old state. Without backoff we would re-publish once a minute forever — into a
+    battery device. Bad OG did exactly this for ~20 minutes."""
+    mgr, c = make_mgr(), FakeClient()
+    cached_as(mgr, 'cooling', SCHEDULE_STATE, seen='2026-08-16T13:20:00')
+    mgr._apply_cooling(c, 'cooling', [])
+    assert sent(c, ESS_SET), "first attempt should be published"
+    c.published.clear()
+    # Device still refuses: same contradicting report, still newer than our write.
+    for _ in range(5):
+        mgr.last_seen['Esszimmer'] = '2026-08-16T13:30:00'
+        mgr.applied_at['Esszimmer'] = '2026-08-16T13:25:00'
+        mgr.applied_mode['Esszimmer'] = 'cooling'
+        mgr._apply_cooling(c, 'cooling', [])
+    assert sent(c, ESS_SET) == [], "backoff should suppress the immediate retries"
+
+
+def test_backoff_clears_once_the_device_confirms():
+    """After the valve finally takes it, the next drift retries immediately."""
+    mgr, c = make_mgr(), FakeClient()
+    cached_as(mgr, 'cooling', SCHEDULE_STATE, seen='2026-08-16T13:20:00')
+    mgr._apply_cooling(c, 'cooling', [])
+    mgr.last_state['Esszimmer'] = OPEN_STATE          # device confirms
+    mgr._apply_cooling(c, 'cooling', [])
+    assert ('season', 'Esszimmer') not in mgr.retry_state
+    c.published.clear()
+    cached_as(mgr, 'cooling', SCHEDULE_STATE, seen='2026-08-16T13:40:00')
+    mgr._apply_cooling(c, 'cooling', [])
+    assert sent(c, ESS_SET), "a fresh drift after success must be acted on at once"
+
+
+def test_season_writes_are_spaced_out(monkeypatch):
+    """A season change touches every room; bursting them is how weak-link TRVs
+    miss commands. Writes must honour mqtt.delay_between_messages."""
+    cfg = {k: (dict(v) if isinstance(v, dict) else v) for k, v in CFG.items()}
+    cfg['mqtt'] = {'base_topic': 'zigbee2mqtt', 'delay_between_messages': 7}
+    cfg['thermostats'] = dict(CFG['thermostats'])
+    cfg['thermostats']['Julians'] = dict(CFG['thermostats']['Esszimmer'])
+    cfg['device_state_file'] = tempfile.mkdtemp() + '/devices.json'
+    mgr, c = tm.Manager(cfg), FakeClient()
+    slept = []
+    monkeypatch.setattr(tm.time, 'sleep', lambda s: slept.append(s))
+    for r in ('Esszimmer', 'Julians'):
+        mgr.last_state[r] = SCHEDULE_STATE
+    mgr._apply_cooling(c, 'cooling', [])
+    assert len(c.published) == 2, "both rooms should be written"
+    assert slept == [7], "exactly one gap between the two writes"
+
+
 def test_publish_records_apply_time():
     """Each write stamps applied_at, so the next pass can date-compare reports."""
     mgr, c = make_mgr(), FakeClient()
