@@ -21,6 +21,8 @@ TYPES = {
                    'off_signature': {'system_mode': 'off', 'frost_protection': 'ON'}},
 }
 
+OPEN = {'preset': 'comfort', 'comfort_temperature': 34}
+
 
 def cfg(season=None):
     return {
@@ -132,6 +134,55 @@ def test_named_rooms_are_still_reclaimed_explicitly(monkeypatch):
     ts.reset_manual(cfg(), c, {'responses': {'ems-esp/boiler_data': {}}},
                     ['Caros'], timeout=0)
     assert {t for t, _ in c.published} == {'zigbee2mqtt/Caros Thermostat/set'}
+
+
+def check_output(monkeypatch, capsys, season, checked, outdoor=31.7):
+    patch_state(monkeypatch, outdoor, checked)
+    ts.check_thermostats(cfg(season), FakeClient(),
+                         {'responses': {'ems-esp/boiler_data': {}}}, timeout=0)
+    return capsys.readouterr().out
+
+
+def test_check_in_cooling_compares_against_open_not_schedule(monkeypatch, capsys):
+    """An open valve in cooling season is correct — not a schedule violation."""
+    out = check_output(monkeypatch, capsys, {'mode': 'cooling'},
+                       {'Caros': {'state': OPEN}, 'Julians': {'state': OPEN}})
+    assert 'Mode: cooling' in out
+    assert 'OK (cooling/open)' in out
+    assert 'MISMATCH' not in out
+
+
+def test_check_derives_cooling_from_outdoor_temperature(monkeypatch, capsys):
+    """The season-blind path: auto + outdoor_temp must not fall back to heating."""
+    out = check_output(monkeypatch, capsys, None,
+                       {'Caros': {'state': OPEN}, 'Julians': {'state': OPEN}})
+    assert 'Mode: cooling' in out
+    assert 'MISMATCH' not in out
+
+
+def test_check_in_standby_reports_off_valves_as_correct(monkeypatch, capsys):
+    """Off is the target in standby — don't blame a window for it."""
+    off = {'system_mode': 'off', 'frost_protection': 'ON'}
+    out = check_output(monkeypatch, capsys, {'mode': 'standby'},
+                       {'Caros': {'state': off}, 'Julians': {'state': off}}, outdoor=20)
+    assert 'OK (standby/off)' in out
+    assert 'window' not in out
+
+
+def test_check_in_standby_flags_a_valve_that_is_not_off(monkeypatch, capsys):
+    """Real standby drift: a valve sitting in its schedule must not read OK."""
+    scheduled = {'system_mode': 'heat', 'preset': 'schedule'}
+    out = check_output(monkeypatch, capsys, {'mode': 'standby'},
+                       {'Caros': {'state': scheduled}}, outdoor=20)
+    assert 'MISMATCHES (standby/off)' in out
+    assert 'OK (schedule)' not in out
+
+
+def test_check_in_heating_still_compares_against_the_schedule(monkeypatch, capsys):
+    out = check_output(monkeypatch, capsys, {'mode': 'heating'},
+                       {'Caros': {'state': OPEN}}, outdoor=5)
+    assert 'Mode: heating' in out
+    assert 'MISMATCHES (schedule)' in out
 
 
 def test_cooling_season_never_pushes_a_heating_schedule(monkeypatch):

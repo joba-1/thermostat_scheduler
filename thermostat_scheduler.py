@@ -345,14 +345,28 @@ def check_thermostats(cfg, client, userdata, timeout=None):
             continue
 
         # A switched-off device (e.g. window open) is intended, not a mismatch.
+        # In standby, off *is* the season's target state, so say so rather than
+        # blaming a window — and don't compare the exact off signature, since a
+        # plain `system_mode: off` is equally off.
         if cooling.is_off(reported):
-            print(f"{name}: OFF (e.g. window open) — left as-is{battery_note}")
+            if mode == 'standby':
+                print(f"{name}: OK (standby/off){battery_note}")
+            else:
+                print(f"{name}: OFF (e.g. window open) — left as-is{battery_note}")
             continue
 
-        # Compare against what *should* be applied for the active season.
+        # Compare against what *should* be applied for the active season. Each
+        # season has its own target; falling back to the weekly schedule for a
+        # non-heating season reports every valve as violating a schedule that is
+        # not in force (and worse, silently passes a valve that drifted *into*
+        # the schedule when it should be open or off).
         if mode == 'cooling':
             expected = cooling.build_open_payload(type_cfg)
             label = "cooling/open"
+        elif mode == 'standby':
+            # Reached only when the valve is NOT off — i.e. real standby drift.
+            expected = cooling.build_off_payload(type_cfg)
+            label = "standby/off"
         else:
             try:
                 expected, _ = build_expected_payload(name, cfg_item, thermostat_types, cfg.get('mqtt', {}))
