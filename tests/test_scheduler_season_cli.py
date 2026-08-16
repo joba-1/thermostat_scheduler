@@ -63,6 +63,8 @@ class FakeClient:
 def patch_state(monkeypatch, outdoor, checked):
     """Stub the daemon/heat-pump round trip: give detect_mode telemetry + state."""
     monkeypatch.setattr(ts, 'query_monitor', lambda *a, **k: checked)
+    # reset_manual verifies its writes afterwards; don't spend real seconds on it
+    monkeypatch.setattr(ts.time, 'sleep', lambda s: None)
     hp = {'mode': 'cooling', 'cooling': True, 'telemetry': {'outdoor': outdoor}}
     monkeypatch.setattr(ts.heatpump, 'parse',
                         lambda *a, **k: (hp if outdoor is not None else

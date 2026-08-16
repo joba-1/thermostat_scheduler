@@ -75,6 +75,47 @@ def query_monitor(client, userdata, timeout):
     return checked
 
 
+def verify_and_retry(client, userdata, name, topic, payload, timeout,
+                     settle=6, rounds=2, gap=2):
+    """Re-read the device and re-send any key of `payload` it did not take.
+
+    z2m expands one `/set` into a burst of Zigbee writes, and a freshly re-joined
+    or weak-link TRV silently drops some of them. The dropped key is often the
+    one that decides whether the valve opens: Waschküche came back from a
+    re-join with all seven schedule days written but `preset` still 'manual', so
+    it read as fully configured while the valve stayed shut at setpoint 5.
+
+    Retries only keys the device **echoes back with a different value**. A key it
+    never reports (write-only settings differ per type) cannot be verified, so
+    retrying it would loop forever on a device that is in fact fine. Each retry
+    goes out on its own, spaced by `gap`, since a lone write is exactly what
+    succeeds where the burst failed.
+
+    Returns the list of keys still wrong after `rounds` attempts (empty = good).
+    """
+    if client is None or not payload:
+        return []
+    pending = list(payload)
+    for _ in range(rounds):
+        time.sleep(settle)
+        state = (query_monitor(client, userdata, timeout).get(name) or {}).get('state')
+        if not isinstance(state, dict):
+            return []                      # no daemon / no report: cannot verify
+        # Only keys the device reports back and disagrees on are actionable.
+        pending = [k for k in pending
+                   if k in state and str(state[k]) != str(payload[k])]
+        if not pending:
+            return []
+        print(f"  ! {name} did not take {', '.join(sorted(pending))} — resending individually")
+        for k in pending:
+            try:
+                client.publish(topic, json.dumps({k: payload[k]}), qos=1)
+            except Exception as e:
+                print(f"    publish error for {k}: {e}")
+            time.sleep(gap)
+    return pending
+
+
 def list_manual(cfg, client, userdata, timeout=None):
     """Print thermostats currently reporting an end-user manual override."""
     if timeout is None:
@@ -278,6 +319,15 @@ def reset_manual(cfg, client, userdata, targets, timeout=None):
             except Exception:
                 pass
             print(f"  {'✓ sent' if getattr(info, 'is_published', lambda: False)() else '✗ not confirmed'}")
+            # Sending is not applying: verify against the device and re-send what
+            # the burst lost, so a re-onboard cannot report success on a valve
+            # that never left manual.
+            still = verify_and_retry(client, userdata, name, topic, payload, timeout)
+            if still:
+                print(f"  ✗ still not applying: {', '.join(sorted(still))} — the device "
+                      f"may be refusing writes (test one setting by hand)")
+            else:
+                print("  ✓ verified applied")
         except Exception as e:
             print(f"  publish error: {e}")
         time.sleep(mqtt_cfg.get('delay_between_messages', 1))
