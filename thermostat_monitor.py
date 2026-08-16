@@ -143,6 +143,10 @@ class Manager:
 
         # cooling control bookkeeping: thermostat name -> last applied mode
         self.applied_mode = {}
+        # when we last published that mode (room -> iso ts), so we only let a
+        # device report override the cache if the report is *newer* than our
+        # write — otherwise a state from before the push looks like drift.
+        self.applied_at = {}
 
         # window -> TRV control. window_off: rooms WE switched off because a
         # window is open (room -> iso ts), persisted so a restart keeps the latch
@@ -2077,6 +2081,20 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
         p.append('</div></body></html>')
         return "".join(p)
 
+    def _reported_since_apply(self, name):
+        """True if the device reported after we last pushed a mode to it.
+
+        Only such a report is *new data* about where the valve really is; an
+        older one just predates our (possibly still in-flight) write, and acting
+        on it would make us re-publish against ourselves every pass. A room we
+        never wrote to has nothing to contradict, so its report always counts.
+        """
+        applied = self.applied_at.get(name)
+        if not applied:
+            return True
+        seen = self.last_seen.get(name)
+        return bool(seen) and seen > applied
+
     def _apply_cooling(self, client, mode, issues):
         want = mode if mode in ('cooling', 'standby') else 'heating'
         for name, item in self.thermostats.items():
@@ -2091,6 +2109,23 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
             if name not in self.applied_mode and want == 'heating':
                 self.applied_mode[name] = 'heating'
                 continue
+            # Reconcile the cache against reality before trusting it. `applied_mode`
+            # records what we last *sent*; the device is the authority on what it
+            # actually is. If a fresh report contradicts the cache (someone wrote to
+            # the TRV behind our back, or it fell back to its own schedule), trust
+            # the report and correct the cache, so the skip below can't pin us to a
+            # state the valve left long ago. Only unambiguous signatures count:
+            # 'off' is deliberately not reconciled, because a window-open off, a
+            # user's off and standby are indistinguishable, and re-driving one
+            # would force an open valve onto an open window.
+            observed = {'open': 'cooling', 'schedule': 'heating'}.get(
+                cooling.classify_state(type_cfg, reported))
+            if (observed is not None and name in self.applied_mode
+                    and self.applied_mode[name] != observed
+                    and self._reported_since_apply(name)):
+                log.info("cooling: %s drifted %s -> %s (device report wins); "
+                         "re-evaluating", name, self.applied_mode[name], observed)
+                self.applied_mode[name] = observed
             if self.applied_mode.get(name) == want:
                 continue
             payload = (cooling.build_open_payload(type_cfg) if want == 'cooling'
@@ -2111,6 +2146,7 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
             try:
                 client.publish(topic, json.dumps(payload), qos=1)
                 self.applied_mode[name] = want
+                self.applied_at[name] = iso_now()
                 log.info("cooling: set %s -> %s (%s)", name, want, payload)
             except Exception as e:
                 log.error("cooling publish failed for %s: %s", name, e)

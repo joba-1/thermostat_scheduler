@@ -153,7 +153,18 @@ def detect_mode(cfg, client, userdata, timeout):
         thermo = responses.get(hp_cfg.get('thermostat_topic'))
         if boiler is not None or thermo is not None:
             hp_state = heatpump.parse(boiler, thermo, hp_cfg)
-    mode = cooling.desired_mode(season_cfg, hp_state)
+    # Thread the outdoor temperature through, same as the daemon does: with
+    # season.source == 'outdoor_temp' a missing reading silently falls back to
+    # 'heating', which would push winter schedules onto open valves mid-summer.
+    outdoor = (hp_state.get('telemetry') or {}).get('outdoor') if hp_state else None
+    mode = cooling.desired_mode(season_cfg, hp_state, outdoor)
+    if mode == 'heating' and season_cfg.get('mode', 'auto') == 'auto' \
+            and season_cfg.get('source') == 'outdoor_temp' and outdoor is None:
+        raise RuntimeError(
+            "no outdoor temperature available (heat pump telemetry missing), so the "
+            "season cannot be determined and would default to heating. Refusing to "
+            "act season-blind — check the heat pump/MQTT, or set season.mode "
+            "explicitly in config.yaml.")
     return mode, hp_state, checked
 
 
@@ -204,6 +215,9 @@ def configure_intended(cfg, client, userdata, dry_run=False, timeout=None):
 def reset_manual(cfg, client, userdata, targets, timeout=None):
     """Re-onboard named thermostats from manual override into active-season control.
 
+    `targets` is a list of room names, or None for "every room currently in
+    manual override" (resolved from live daemon state below).
+
     Like `configure_intended` but with `reclaim_manual=True`: a device currently
     in manual override is pushed to the season-intended state (cooling -> open,
     heating -> schedule) instead of being left alone. A device that is genuinely
@@ -221,6 +235,23 @@ def reset_manual(cfg, client, userdata, targets, timeout=None):
     print(f"\nRe-onboarding (mode: {mode}"
           + (f", heat pump: {hp_state['mode']}" if hp_state else "")
           + (")  [no daemon — can't detect off per device]" if not checked else ")"))
+
+    if targets is None:
+        # Whole-house default: exactly the manual-override rooms, nothing else.
+        # Without live state we cannot tell manual from controlled, so rather
+        # than guess (and rewrite the house) we do nothing.
+        if not checked:
+            print("  no daemon running — cannot tell which rooms are in manual "
+                  "override; name the rooms explicitly to re-onboard them")
+            return
+        targets = [n for n, item in thermostats.items()
+                   if cooling.is_manual_override(
+                       thermostat_types.get(item.get('type'), {}),
+                       (checked.get(n) or {}).get('state'))]
+        if not targets:
+            print("  no thermostats in manual override — nothing to do")
+            return
+        print(f"  manual-override rooms: {', '.join(targets)}")
 
     for name in targets:
         if name not in thermostats:
@@ -426,7 +457,8 @@ def main():
     group.add_argument('--reset-manual', nargs='*', metavar='NAME',
                        help='Re-onboard NAMEs from manual override into active-season '
                             'control (cooling->open, heating->schedule; off/window '
-                            'rooms left off). All thermostats if no NAME given.')
+                            'rooms left off). All manual-override thermostats if no '
+                            'NAME given.')
     group.add_argument('--status', action='store_true',
                        help='Print a full status report from the running manager')
     group.add_argument('--status-mail', action='store_true',
@@ -484,7 +516,10 @@ def main():
         elif args.list_manual:
             list_manual(cfg, client, userdata, timeout=mqtt_cfg.get('check_timeout', 5))
         elif args.reset_manual is not None:
-            targets = args.reset_manual or list(thermostats.keys())
+            # No NAMEs -> only the rooms actually in manual override (resolved in
+            # reset_manual, which has the live state). Never the whole house: a
+            # blanket reclaim rewrites rooms that were already under control.
+            targets = args.reset_manual or None
             reset_manual(cfg, client, userdata, targets,
                          timeout=mqtt_cfg.get('check_timeout', 5))
         else:
