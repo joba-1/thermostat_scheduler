@@ -105,3 +105,11 @@ def test_plain_off_with_idle_tag_is_not_a_user_change():
 def test_idle_tag_still_catches_a_valve_switched_back_on():
     assert verdict(tagged({'preset': 'comfort', 'comfort_temperature': 34},
                           'idle')) == 'user_changed'
+
+
+def test_users_plain_off_is_still_respected():
+    """classify_state now calls any off 'off', so it no longer reads as manual.
+    A user switching a valve off during cooling must still be left alone — the
+    tag is what catches it: we said cooling, the valve is off."""
+    assert verdict(tagged({'system_mode': 'off'}, 'cooling')) == 'user_changed'
+    assert 'user_override' in _kinds(tagged({'system_mode': 'off'}, 'cooling'))

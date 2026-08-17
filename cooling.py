@@ -81,6 +81,13 @@ def classify_state(type_cfg, reported_state):
         return 'unknown'
     if _matches(reported_state, type_cfg.get('off_signature')):
         return 'off'
+    # Any `system_mode: off` is off, not just our signature combo. Matching only
+    # the signature left a closed valve reading as 'open' whenever the marker was
+    # missing (Julians: off, frost_protection OFF, still holding preset comfort +
+    # 34 -> classified 'open' while shut). Ownership of an off is answered by the
+    # mode tag now, so this no longer has to be inferred from the signature.
+    if is_off(reported_state):
+        return 'off'
     if _matches(reported_state, type_cfg.get('cooling_open')):
         return 'open'
     if _is_schedule(type_cfg, reported_state):

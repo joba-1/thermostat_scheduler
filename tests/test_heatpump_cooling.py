@@ -134,7 +134,10 @@ def test_classify_state_signatures():
     assert cooling.classify_state(t, {'system_mode': 'off', 'frost_protection': 'ON'}) == 'off'
     assert cooling.classify_state(t, {'system_mode': 'auto'}) == 'schedule'
     assert cooling.classify_state(t, {'system_mode': 'heat', 'current_heating_setpoint': 21.5}) == 'manual'
-    assert cooling.classify_state(t, {'system_mode': 'off'}) == 'manual'   # user plain off
+    # A plain off is 'off', not 'manual': a closed valve is closed whatever it
+    # otherwise reports. Ownership of an off (ours vs the user's) is answered by
+    # the mode tag, not by guessing from the signature — see test_tag_verdict.
+    assert cooling.classify_state(t, {'system_mode': 'off'}) == 'off'
     assert cooling.classify_state(t, None) == 'unknown'
     assert cooling.is_our_off(t, {'system_mode': 'off', 'frost_protection': 'ON'})
     assert not cooling.is_our_off(t, {'system_mode': 'off'})

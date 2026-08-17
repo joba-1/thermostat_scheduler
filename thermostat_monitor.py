@@ -1212,12 +1212,25 @@ class Manager:
                                  self.manual_thermostats)
 
     def manual_overrides(self):
-        """List rooms whose thermostat currently reports a manual override."""
+        """List rooms a *user* has taken over — not merely rooms whose reported
+        state matches none of our signatures.
+
+        The mode tag decides. Without it this listed every valve we had switched
+        off ourselves: a standby off reports a bare `system_mode: off`, matches
+        no `off_signature` (TRVZB has none), and so read as 'manual' — the status
+        page told the operator to re-onboard five rooms that were doing exactly
+        what they were told.
+        """
         out = []
         for name, item in self.thermostats.items():
             type_cfg = self.thermostat_types.get(item.get('type'), {})
-            if cooling.is_manual_override(type_cfg, self.last_state.get(name)):
+            reported = self.last_state.get(name)
+            prefix = type_cfg.get('schedule_prefix', 'schedule')
+            verdict = cooling.tag_verdict(type_cfg, reported, prefix)['verdict']
+            if verdict == 'user_changed':
                 out.append(name)
+            elif verdict == 'untagged' and cooling.is_manual_override(type_cfg, reported):
+                out.append(name)      # no tag to judge by: fall back to the old rule
         return out
 
     @staticmethod
@@ -1407,15 +1420,21 @@ class Manager:
             temp = temp_state.get('temperature') if isinstance(temp_state, dict) else None
             # Show *our* state vocabulary, not the device's raw mode fields.
             classified = cooling.classify_state(type_cfg, st)
+            # MANUAL means "a user took this over", which only the mode tag can
+            # tell: an off we set ourselves matches no signature and would
+            # otherwise be shown as MANUAL (four rooms at once, every standby).
+            taken_over = name in override_rooms
             if name in self.window_off:
                 state_cell = "off (window)"   # we hold it off (latch wins over classify)
+            elif taken_over:
+                state_cell = self._OUR_STATE['manual']
             else:
                 state_cell = self._OUR_STATE.get(classified, "—")
             style = {}
             # A manual-override room is one we deliberately leave alone — colour the
             # state cell so it stands out, and list it (with re-onboard instructions)
             # in the manual section. The window latch wins, so skip it then.
-            if classified == 'manual' and name not in self.window_off:
+            if taken_over and name not in self.window_off:
                 style['state'] = self._CSS_MANUAL
             tol = item.get('tolerance', self.cfg.get('default_tolerance', 1.5))
             if isinstance(temp, (int, float)) and isinstance(sp, (int, float)):
