@@ -278,20 +278,33 @@ thermostat_types:
     schedule_mode:
       system_mode: auto
       temperature_accuracy: -0.6
+      valve_opening_degree: 100    # re-assert the clamp: a stuck 0 never heats
     schedule_prefix: weekly_schedule
     cooling_open:
       system_mode: heat
       occupied_heating_setpoint: 34
+      valve_opening_degree: 100
     cooling_restore:
       system_mode: auto
+      valve_opening_degree: 100
     manual_marker:
       field: system_mode
       equals: heat
     builtin_window_off:
       open_window: "OFF"
-    # No off_signature: SONOFF flips system_mode->heat when occupied_heating_setpoint
-    # is written, so a setpoint sentinel can't mark "our off". Window-off uses a
-    # plain system_mode:off and is tracked by the software latch instead.
+    # Our off marker is the valve clamp, not a setpoint sentinel: writing
+    # occupied_heating_setpoint flips system_mode back to heat, but
+    # valve_opening_degree survives (measured: setting it to 0 while the valve was
+    # demanding left system_mode heat and drove running_state to idle). It is a
+    # clamp, not an actuator — 0 forces the valve shut, 100 does *not* open it —
+    # and it is not reachable from the device buttons, so only we produce it.
+    # This finally gives TRVZB a self-describing "our off" instead of relying on
+    # the software latch alone.
+    off_signature:
+      system_mode: "off"
+      valve_opening_degree: 0
+    off_clear:
+      valve_opening_degree: 100
   # ME168_1 / ME167 (AVATTO) have no built-in window detection -> nothing to disable.
 
 

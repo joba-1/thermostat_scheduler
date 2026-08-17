@@ -193,3 +193,21 @@ def test_debounce_uses_per_room_override():
     mgr.thermostats['Esszimmer']['window'] = {'debounce': 2}
     assert mgr._window_debounce('Esszimmer', opening=True) == 2
     assert mgr._window_debounce('Waschküche', opening=True) == 5
+
+
+def test_standby_restore_keeps_the_off_marker():
+    """In standby the intended state IS off-with-marker. Clearing it here wiped
+    the signature _apply_cooling had just written — house-wide, every pass, so
+    no room was identifiable as 'our off' and window ownership fell back to the
+    latch alone. Seen live: apply wrote frost_protection ON at 00:06:50, window
+    restore cleared it 20s later."""
+    mgr, c = make_mgr(), FakeClient()
+    mgr.season_cfg = {'mode': 'standby'}
+    mgr.window_off['Esszimmer'] = '2026-08-17T23:00:00'
+    mgr.last_state['Esszimmer'] = dict(OUR_OFF)
+    _closed(mgr, 'Esszimmer Terrasse')
+    mgr._apply_window_control('Esszimmer', c)
+    msgs = sent(c, ESS_SET)
+    if msgs:
+        assert msgs[0].get('frost_protection') != 'OFF', \
+            "standby must not clear the off marker it just set"

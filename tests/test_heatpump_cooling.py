@@ -284,3 +284,49 @@ def test_open_and_restore_payloads():
     assert cooling.build_open_payload(tcfg) == {'preset': 'comfort', 'comfort_temperature': 30}
     assert cooling.build_restore_payload(tcfg) == {'preset': 'schedule'}
     assert cooling.build_open_payload({}) is None
+
+
+TRVZB = {'schedule_mode': {'system_mode': 'auto', 'valve_opening_degree': 100},
+         'schedule_prefix': 'weekly_schedule',
+         'cooling_open': {'system_mode': 'heat', 'occupied_heating_setpoint': 34,
+                          'valve_opening_degree': 100},
+         'cooling_restore': {'system_mode': 'auto', 'valve_opening_degree': 100},
+         'manual_marker': {'field': 'system_mode', 'equals': 'heat'},
+         'off_signature': {'system_mode': 'off', 'valve_opening_degree': 0},
+         'off_clear': {'valve_opening_degree': 100}}
+
+
+def test_trvzb_off_signature_uses_the_valve_clamp():
+    """TRVZB had no off_signature: a setpoint sentinel cannot work because
+    writing occupied_heating_setpoint flips system_mode back to heat. The valve
+    clamp survives, is not reachable from the device buttons, and 0 physically
+    shuts the valve (measured: run went to idle while still demanding)."""
+    assert cooling.build_off_payload(TRVZB) == {'system_mode': 'off',
+                                                'valve_opening_degree': 0}
+    ours = {'system_mode': 'off', 'valve_opening_degree': 0}
+    assert cooling.classify_state(TRVZB, ours) == 'off'
+    assert cooling.is_our_off(TRVZB, ours)
+
+
+def test_trvzb_users_plain_off_is_not_ours():
+    """A user switching the valve off from the buttons leaves the clamp at 100."""
+    theirs = {'system_mode': 'off', 'valve_opening_degree': 100}
+    assert cooling.classify_state(TRVZB, theirs) == 'off'
+    assert not cooling.is_our_off(TRVZB, theirs)
+
+
+def test_trvzb_restore_reopens_the_clamp():
+    """A clamp left at 0 would silently stop the radiator ever heating, so every
+    non-off state re-asserts 100."""
+    payload = cooling.clear_off_marker(dict(cooling.build_open_payload(TRVZB)), TRVZB)
+    assert payload['valve_opening_degree'] == 100
+    assert payload['occupied_heating_setpoint'] == 34
+    assert TRVZB['schedule_mode']['valve_opening_degree'] == 100
+    assert cooling.build_restore_payload(TRVZB)['valve_opening_degree'] == 100
+
+
+def test_valve_clamp_is_not_an_actuator():
+    """Documenting the measurement that shaped this: 100 does NOT open a valve
+    (heat + setpoint 5 + clamp 100 -> idle), so it cannot replace the 34 C
+    setpoint for cooling. cooling_open therefore still carries the setpoint."""
+    assert cooling.build_open_payload(TRVZB)['occupied_heating_setpoint'] == 34

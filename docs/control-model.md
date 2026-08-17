@@ -95,19 +95,30 @@ turned off — not a radiator the user switched off by hand. Since a plain
 | Type | `off_signature` | `off_clear` (undo on restore) |
 |---|---|---|
 | VNTH-T2_v2, TR-M3Z, ME168/ME167 | `system_mode: off` + `frost_protection: ON` | `frost_protection: OFF` |
-| TRVZB | *none* — latch-based (see below) | — |
+| TRVZB | `system_mode: off` + `valve_opening_degree: 0` | `valve_opening_degree: 100` |
 
 `is_our_off` matches this signature. On window close we restore if the device
 still shows our off **or** we still have it latched and it is off; a user's plain
 off (`frost_protection` not ON) is left alone. The signature is **self-describing
 on the device**, so it survives a restart / lost latch.
 
-**TRVZB has no usable off-signature**: writing `occupied_heating_setpoint` flips
-`system_mode` back to `heat` (the setpoint write implies heat mode), so a setpoint
-sentinel won't hold, and there's no frost_protection boolean. So TRVZB window-off
-is a plain `system_mode: off` and "ours" is tracked **only by the `window_off`
-latch** (persisted). The status report shows `off (window)` for any latched room
-regardless of how its plain-off state would otherwise classify.
+**TRVZB uses the valve clamp as its signature.** A setpoint sentinel cannot work
+(writing `occupied_heating_setpoint` flips `system_mode` back to `heat`) and there
+is no `frost_protection` boolean — but `valve_opening_degree` survives, and it is
+not reachable from the device buttons, so only we produce a `0` there. It is a
+**clamp, not an actuator**, measured on Caros:
+
+| written | result |
+|---|---|
+| `heat`, setpoint 5, clamp 100 | `running_state: idle` — 100 does **not** open |
+| setpoint 34 | `running_state: heat` — demand comes from the setpoint |
+| clamp 0 while demanding | `running_state: idle` — 0 **forces shut** |
+
+So it cannot replace the 34 °C setpoint for cooling (`cooling_open` still carries
+it), but it makes a self-describing off. Because a clamp left at 0 would silently
+stop the radiator ever heating again, **every** non-off state re-asserts
+`valve_opening_degree: 100` (`schedule_mode`, `cooling_open`, `cooling_restore`,
+`off_clear`). The `window_off` latch still records *why* a room is off.
 
 Window control also **reconciles every eval pass** (not just on contact events),
 so a room left in a stale state after a restart, or one whose contact rarely

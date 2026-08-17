@@ -1155,7 +1155,12 @@ class Manager:
                 room, item, self.thermostat_types, self.mqtt_cfg, mode, None)
             if mode == 'cooling':
                 payload.setdefault('system_mode', 'heat')  # ensure the valve turns on
-            cooling.clear_off_marker(payload, type_cfg)     # undo the off marker
+            # Only undo the off marker when the season actually wants the valve
+            # on. In standby the intended state *is* off-with-marker, so clearing
+            # it here wiped the signature `_apply_cooling` had just written —
+            # house-wide, every pass, leaving no room identifiable as "our off".
+            if mode != 'standby':
+                cooling.clear_off_marker(payload, type_cfg)
             log.info("window-control %s: window CLOSED -> restore (%s)%s",
                      room, mode, "" if act else " (act=false, not sent)")
             if act and client is not None:
@@ -2225,7 +2230,20 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
                 log.info("cooling: %s drifted %s -> %s (device report wins); "
                          "re-evaluating", name, self.applied_mode[name], observed)
                 self.applied_mode[name] = observed
-            if self.applied_mode.get(name) == want:
+            settled = self.applied_mode.get(name) == want
+            # Our off carries a signature (frost_protection, or the TRVZB valve
+            # clamp) that a lost write can silently drop — leaving a valve that
+            # is off but no longer identifiable as *ours*, so window-restore and
+            # ownership fall back to the latch. `off` is not reconciled above (a
+            # window-open off must never be re-driven), so re-assert it here
+            # until the signature is actually on the device. Backoff still caps
+            # this, and it only ever re-sends the off we already applied.
+            if (settled and want == 'standby' and isinstance(reported, dict)
+                    and cooling.build_off_payload(type_cfg).get('system_mode')
+                    and not cooling.is_our_off(type_cfg, reported)
+                    and self._reported_since_apply(name)):
+                settled = False
+            if settled:
                 continue
             payload = (cooling.build_open_payload(type_cfg) if want == 'cooling'
                        else cooling.build_off_payload(type_cfg) if want == 'standby'

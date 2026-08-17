@@ -166,3 +166,28 @@ def test_publish_records_apply_time():
     mgr.last_state['Esszimmer'] = SCHEDULE_STATE
     mgr._apply_cooling(c, 'cooling', [])
     assert mgr.applied_at.get('Esszimmer'), "publish should stamp applied_at"
+
+
+def test_standby_reasserts_a_dropped_off_signature():
+    """The off landed but its signature did not — a lost write leaves a valve
+    that is off yet no longer identifiable as ours. Measured on a TRVZB: the
+    valve clamp write was dropped and took only on a retry."""
+    mgr, c = make_mgr(), FakeClient()
+    mgr.applied_mode['Esszimmer'] = 'standby'
+    mgr.applied_at['Esszimmer'] = '2026-08-17T23:57:00'
+    mgr.last_seen['Esszimmer'] = '2026-08-17T23:58:00'      # newer than our write
+    mgr.last_state['Esszimmer'] = {'system_mode': 'off'}    # signature missing
+    mgr._apply_cooling(c, 'standby', [])
+    msgs = sent(c, ESS_SET)
+    assert msgs, "an off without our signature must be re-asserted"
+    assert msgs[-1]['frost_protection'] == 'ON'
+
+
+def test_standby_is_idempotent_once_the_signature_is_present():
+    mgr, c = make_mgr(), FakeClient()
+    mgr.applied_mode['Esszimmer'] = 'standby'
+    mgr.applied_at['Esszimmer'] = '2026-08-17T23:57:00'
+    mgr.last_seen['Esszimmer'] = '2026-08-17T23:58:00'
+    mgr.last_state['Esszimmer'] = {'system_mode': 'off', 'frost_protection': 'ON'}
+    mgr._apply_cooling(c, 'standby', [])
+    assert sent(c, ESS_SET) == [], "complete signature -> nothing to do"
