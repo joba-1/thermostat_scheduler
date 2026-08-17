@@ -139,3 +139,40 @@ unstuck it.)
 
 VNTH/TR-M3Z don't have this problem: their manual marker is `preset == manual`,
 which is distinct from the cooling-open `preset == comfort`.
+
+## Mode tag (schedule carrier)
+
+We need to know which mode *we* last put a valve into, told apart from a state a
+user produced. No control field can carry that — those are exactly what a user
+changes, and on several types our "cooling" signature is indistinguishable from
+a manual setting. No spare setting exists on every type either (TRVZB has
+neither `frost_protection` nor `scale_protection`).
+
+All four types do accept **minute-precision schedule times** and echo them back
+byte-exact (verified on ME168_1, TR-M3Z, TRVZB, VNTH-T2_v2), and the schedule is
+not visible or editable at the device — so the tag rides there.
+
+- **Carrier**: the **2nd entry** of the Saturday *and* Sunday schedules,
+  addressed by position, never by clock time — `generate_schedule_string`
+  derives interior points from each room's day/night hours, so Waschküche lands
+  on `03:00` while Julians lands on `03:30`. Entry 2 repeats entry 1's
+  temperature (both night-segment points), so moving it inside its hour changes
+  nothing thermally and keeps the schedule sorted.
+- **Encoding**: minutes `32..47` — 2 bits mode (`heating`/`cooling`/`idle`/
+  reserved) + 2 bits generation. The offset is essential: the generator rounds
+  interior points to `:00`/`:30`, so a 0-based encoding reads *natural*
+  schedules as valid tags (live, every untagged room decoded as `heating/gen0`).
+  Minutes below 32 therefore mean "not written by us".
+- **Generation** increments on every write, which separates "our write was lost"
+  (tag one behind) from "the user moved the valve" (tag current, actuation
+  disagrees). Saturday and Sunday carry the same value; a disagreement means the
+  schedule was rewritten by something that is not us.
+- **Off is tagged `idle`** — a closed valve is idle whatever the season wants.
+  The tag rides in the schedule, so it forces nothing on, and the window latch
+  still records *why* it is off. Without this nothing is ever tagged in standby,
+  when every valve is off by design. A **manual** room keeps its previous tag:
+  leaving it alone must not claim we put it in this season.
+- Schedule comparisons run through `modetag.normalize`, or the tag would surface
+  forever as a `settings_mismatch`.
+
+Read it back with `decode-modetag` (add `--raw` for the carrier strings).

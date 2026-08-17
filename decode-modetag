@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+"""Decode the schedule-carried mode tag for every configured thermostat.
+
+Reads live device state from the running manager and prints, per room, which
+mode *we* last put the valve into, the generation counter, and whether the two
+carrier days agree. See `modetag` for the encoding.
+
+    decode-modetag                 # all rooms
+    decode-modetag Julians "Bad OG"
+    decode-modetag --raw           # also show the carrier schedule strings
+"""
+import json
+import sys
+import threading
+
+import paho.mqtt.client as mqtt
+
+import modetag
+from common import load_config, mqtt_credentials
+
+
+def fetch(cfg, timeout=8):
+    m = cfg.get('mqtt', {})
+    got, ev = {}, threading.Event()
+
+    def on_connect(c, u, f, rc, p=None):
+        c.subscribe('thermostat_monitor/+')
+        c.publish('thermostat_monitor', 'get')
+
+    def on_message(c, u, msg):
+        got[msg.topic.split('/')[-1]] = json.loads(msg.payload.decode())
+        if len(got) >= len(cfg.get('thermostats', {})):
+            ev.set()
+
+    c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    c.on_connect, c.on_message = on_connect, on_message
+    user, pw = mqtt_credentials(m)
+    if user:
+        c.username_pw_set(user, pw)
+    c.connect(m.get('broker'), m.get('port'), 60)
+    c.loop_start()
+    ev.wait(timeout)
+    c.loop_stop()
+    c.disconnect()
+    return got
+
+
+def main():
+    args = [a for a in sys.argv[1:] if not a.startswith('-')]
+    raw = '--raw' in sys.argv
+    cfg = load_config('config.yaml')
+    thermostats = cfg.get('thermostats', {})
+    types = cfg.get('thermostat_types', {})
+    state = fetch(cfg)
+
+    rooms = args or list(thermostats)
+    print(f"{'room':14} {'mode tag':10} {'gen':4} {'agree':6} min  note")
+    for room in rooms:
+        item = thermostats.get(room)
+        if item is None:
+            print(f"{room:14} unknown room")
+            continue
+        prefix = types.get(item.get('type'), {}).get('schedule_prefix', 'schedule')
+        st = (state.get(room) or {}).get('state')
+        tag = modetag.read_state(st, prefix)
+        if not tag:
+            print(f"{room:14} {'-':10} {'-':4} {'-':6} -    no schedule reported")
+            continue
+        mode = tag['mode'] or 'UNTAGGED'
+        note = ''
+        if tag['mode'] is None:
+            note = 'minutes outside tag range — schedule not written by us'
+        elif not tag['agree']:
+            note = f"carrier days disagree: {tag['days']}"
+        print(f"{room:14} {mode:10} {str(tag['generation']):4} "
+              f"{str(tag['agree']):6} {tag['minutes']:<4} {note}")
+        if raw:
+            for day in modetag.CARRIER_DAYS:
+                print(f"    {day:9} {(st or {}).get(f'{prefix}_{day}')!r}")
+
+
+if __name__ == '__main__':
+    main()

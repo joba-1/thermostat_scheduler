@@ -15,6 +15,8 @@ from decimal import Decimal
 
 import yaml
 
+import modetag
+
 log = logging.getLogger("thermostat")
 
 
@@ -256,6 +258,14 @@ def compare_and_collect_mismatches(expected, reported_state):
         except Exception:
             pass
 
+        # Schedules carry the mode tag in the carrier entry's minutes, which is
+        # deliberately not part of the configured schedule — compare without it,
+        # or every tagged room reports a permanent settings_mismatch.
+        if isinstance(ev, str) and isinstance(rv, str) and modetag.is_schedule(ev):
+            if modetag.normalize(ev).split() != modetag.normalize(rv).split():
+                mismatches[k] = (ev, rv)
+            continue
+
         # string comparison (normalize whitespace)
         if isinstance(ev, str) and isinstance(rv, str):
             # Prefer schedule-aware comparison that ignores insignificant
@@ -297,8 +307,15 @@ def device_topic_name(name):
     return f"{name} Thermostat"
 
 
-def build_expected_payload(name, thermostat_config, thermostat_types, mqtt_config):
-    """Build the schedule payload + set-topic expected for a thermostat."""
+def build_expected_payload(name, thermostat_config, thermostat_types, mqtt_config,
+                           tag=None, reported=None):
+    """Build the schedule payload + set-topic expected for a thermostat.
+
+    `tag` is an optional `(mode, generation)` stamped into the carrier days (see
+    `modetag`). Without it the tag already on the device is **preserved** from
+    `reported`, so an ordinary schedule push never silently erases the mode tag
+    — every writer of schedules in this project goes through here.
+    """
     thermostat_type = thermostat_config["type"]
     type_config = thermostat_types.get(thermostat_type)
     if not type_config:
@@ -316,6 +333,17 @@ def build_expected_payload(name, thermostat_config, thermostat_types, mqtt_confi
     prefix = type_config.get('schedule_prefix', 'schedule')
     for weekday in weekdays:
         payload[f"{prefix}_{weekday}"] = schedule_string
+
+    if tag is not None:
+        modetag.tag_payload(payload, prefix, tag[0], tag[1] if len(tag) > 1 else 0)
+    else:
+        # Carry the device's existing tag across an untagged push.
+        current = modetag.read_state(reported, prefix) if reported else None
+        if current and current.get('minutes') is not None:
+            for day in modetag.CARRIER_DAYS:
+                key = f"{prefix}_{day}"
+                if key in payload:
+                    payload[key] = modetag.apply(payload[key], current['minutes'])
 
     topic = f"{mqtt_config.get('base_topic')}/{device_topic_name(name)}/set"
 

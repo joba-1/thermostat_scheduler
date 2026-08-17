@@ -119,14 +119,42 @@ def build_intended_payload(name, cfg_item, thermostat_types, mqtt_cfg, mode,
     the season-intended payload and says so in the note.
     """
     from common import build_expected_payload
-    base, topic = build_expected_payload(name, cfg_item, thermostat_types, mqtt_cfg)
+    import modetag
+    # Stamp the season we are putting the valve into, so a later read can tell
+    # our state from one a user produced. `standby` is the config word for what
+    # the tag calls `idle`. A mode we have no tag for (or an unknown season)
+    # leaves the device's existing tag untouched.
+    tag_mode = {'heating': 'heating', 'cooling': 'cooling', 'standby': 'idle'}.get(mode)
+    prefix = (thermostat_types.get(cfg_item.get('type'), {})
+              .get('schedule_prefix', 'schedule'))
+    gen = 0
+    if isinstance(reported, dict):
+        cur = modetag.read_state(reported, prefix)
+        if cur and cur.get('generation') is not None:
+            gen = (cur['generation'] + 1) % modetag.GENERATIONS
+    # Built untagged: this carries the device's *existing* tag over. Only the
+    # branches that actually drive the valve re-stamp it below — leaving an off
+    # or manual room alone must not claim we put it in this season.
+    base, topic = build_expected_payload(
+        name, cfg_item, thermostat_types, mqtt_cfg, reported=reported)
+
+    def stamped(payload):
+        if tag_mode:
+            modetag.tag_payload(payload, prefix, tag_mode, gen)
+        return payload
     type_cfg = thermostat_types.get(cfg_item.get('type'), {})
     config_only = {k: v for k, v in base.items() if k not in control_fields}
 
     # Off (any off — ours or the user's) is left off; checked before manual so an
     # off device reads as "off" rather than the broader "manual" classification.
     if isinstance(reported, dict) and is_off(reported):
-        return config_only, topic, "off (e.g. window open) — schedule/calibration only"
+        # A closed valve is idle, whatever the season wants — tag it truthfully.
+        # Only the schedule carries the tag, so this forces nothing on, and the
+        # window latch still records *why* it is off. Without this, nothing is
+        # ever tagged during standby (when every valve is off by design).
+        off_tagged = dict(config_only)
+        modetag.tag_payload(off_tagged, prefix, 'idle', gen)
+        return off_tagged, topic, "off (e.g. window open) — schedule/calibration only"
     if (not reclaim_manual and isinstance(reported, dict)
             and is_manual_override(type_cfg, reported)):
         return config_only, topic, "manual override — schedule/calibration only"
@@ -134,12 +162,12 @@ def build_intended_payload(name, cfg_item, thermostat_types, mqtt_cfg, mode,
     if mode == 'cooling':
         payload = dict(config_only)
         payload.update(build_open_payload(type_cfg) or {})
-        return payload, topic, "cooling: open" + suffix
+        return stamped(payload), topic, "cooling: open" + suffix
     if mode == 'standby':
         payload = dict(config_only)
         payload.update(build_off_payload(type_cfg))
-        return payload, topic, "standby: off (warm water only)" + suffix
-    return base, topic, "heating: schedule" + suffix
+        return stamped(payload), topic, "standby: off (warm water only)" + suffix
+    return stamped(dict(base)), topic, "heating: schedule" + suffix
 
 
 def desired_mode(season_cfg, heatpump_state, outdoor_temp=None, last_mode=None):
