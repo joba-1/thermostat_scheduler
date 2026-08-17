@@ -13,6 +13,9 @@ Issue kinds:
   manual_override   end user took manual control (info/warn, not a fault)
   no_reaction       valve demanding heat/cool but room temp not moving toward target
   device_fault      the device reports a fault about itself (fault_alarm, ...)
+  user_override     the mode tag says one thing, the valve is doing another —
+                    someone changed it at the device (respected, not corrected)
+  tag_mismatch      the schedule carrier days disagree (schedule rewritten)
 """
 
 from common import compare_and_collect_mismatches, build_expected_payload
@@ -151,6 +154,26 @@ def classify_device(name, cfg_item, thermostat_types, mqtt_cfg,
     fault = device_fault_issue(f"{name}:fault", subject, reported)
     if fault:
         issues.append(fault)
+
+    # The schedule-carried mode tag says which mode *we* last drove this room
+    # into. If the valve is doing something else, someone changed it at the
+    # device — respect it (we leave it alone) but say so, because detecting this
+    # by exclusion was exactly what used to confuse a user's change with one of
+    # our own lost writes. Season-independent, so it precedes the early return.
+    verdict = cooling.tag_verdict(
+        type_cfg, reported, type_cfg.get('schedule_prefix', 'schedule'))
+    if verdict['verdict'] == 'user_changed':
+        issues.append(make_issue(
+            f"{name}:override", 'user_override', subject,
+            f"we set {verdict['tag_mode']} (valve should be '{verdict['expected']}'), "
+            f"but it reports '{verdict['actual']}' — changed at the device, left as is",
+            severity='info'))
+    elif verdict['verdict'] == 'disagree':
+        issues.append(make_issue(
+            f"{name}:tagsplit", 'tag_mismatch', subject,
+            "the two schedule carrier days disagree — the weekly schedule was "
+            "rewritten by something that is not us",
+            severity='info'))
 
     # manual override vs settings mismatch (heating mode only)
     if mode != 'heating':

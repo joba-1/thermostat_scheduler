@@ -30,9 +30,11 @@ from collections import deque, defaultdict
 import paho.mqtt.client as mqtt
 
 from common import (setup_logging, log, load_config, time_to_minutes,
-                    device_topic_name, mqtt_credentials, dew_point)
+                    device_topic_name, mqtt_credentials, dew_point,
+                    build_expected_payload)
 import heatpump
 import cooling
+import modetag
 import health
 import history
 import devices
@@ -2118,6 +2120,36 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
         """The write landed (or is no longer wanted) — reset the backoff."""
         self.retry_state.pop(key, None)
 
+    def _stamp_tag(self, payload, name, item, type_cfg, want, reported):
+        """Add the tagged carrier schedule days to an outgoing mode payload.
+
+        The season payloads (`cooling_open` / off / restore) carry no schedule,
+        so without this a season change driven by the daemon leaves the tag
+        stale — it would still name whichever mode the scheduler last wrote.
+        Only the two carrier days are touched; see `modetag`.
+        """
+        tag_mode = {'cooling': 'cooling', 'standby': 'idle',
+                    'heating': 'heating'}.get(want)
+        if not tag_mode:
+            return payload
+        prefix = type_cfg.get('schedule_prefix', 'schedule')
+        gen = 0
+        cur = modetag.read_state(reported, prefix) if isinstance(reported, dict) else None
+        if cur and cur.get('generation') is not None:
+            gen = (cur['generation'] + 1) % modetag.GENERATIONS
+        try:
+            base, _topic = build_expected_payload(
+                name, item, self.thermostat_types, self.mqtt_cfg)
+        except Exception as e:
+            log.debug("tag stamp skipped for %s: %s", name, e)
+            return payload
+        minutes = modetag.encode(tag_mode, gen)
+        for day in modetag.CARRIER_DAYS:
+            key = f"{prefix}_{day}"
+            if key in base:
+                payload[key] = modetag.apply(base[key], minutes)
+        return payload
+
     def _reported_since_apply(self, name):
         """True if the device reported after we last pushed a mode to it.
 
@@ -2138,11 +2170,19 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
         for name, item in self.thermostats.items():
             type_cfg = self.thermostat_types.get(item.get('type'), {})
             reported = self.last_state.get(name)
-            # Respect user manual control, but don't mistake a state we applied
-            # ourselves (system_mode=heat/off on some types) for manual.
-            if (self.applied_mode.get(name) not in ('cooling', 'standby')
+            # Respect user manual control — but the mode tag now says whether a
+            # state is ours. A valve we closed for standby reports a plain
+            # `system_mode: off`, which classifies as 'manual' (it matches no
+            # signature, and TRVZB has none), so without the tag half the house
+            # stayed shut when cooling resumed: we refused to reopen our own off.
+            prefix = type_cfg.get('schedule_prefix', 'schedule')
+            verdict = cooling.tag_verdict(type_cfg, reported, prefix)['verdict']
+            if verdict == 'user_changed':
+                continue  # genuinely the user's doing; already an info issue
+            if (verdict == 'untagged'
+                    and self.applied_mode.get(name) not in ('cooling', 'standby')
                     and cooling.is_manual_override(type_cfg, reported)):
-                continue  # user wins; already surfaced as info issue
+                continue  # unknown provenance -> keep the old conservative rule
             # seed heating baseline at startup without writing
             if name not in self.applied_mode and want == 'heating':
                 self.applied_mode[name] = 'heating'
@@ -2178,14 +2218,19 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
             # OFF, system_mode back on) — cooling_restore alone only sets the
             # schedule/cooling fields and would leave the valve stuck off.
             if want != 'standby' and (self.applied_mode.get(name) == 'standby'
+                                      or cooling.is_off(reported)
                                       or cooling.is_our_off(type_cfg, reported)):
                 payload = cooling.clear_off_marker(dict(payload), type_cfg)
-                if want == 'heating':
-                    payload.setdefault('system_mode', 'heat')  # ensure it turns back on
+                # A closed valve has to be switched on explicitly: on TECH/Tuya
+                # types `cooling_open` is only preset+setpoint and carries no
+                # system_mode, so it cannot lift a valve out of off — the room
+                # would sit shut through the whole cooling season.
+                payload.setdefault('system_mode', 'heat')
             # Back off on a device that will not take the payload, so a refusing
             # valve (latched fault, dead motor) is not written to every pass.
             if not self._retry_due(('season', name)):
                 continue
+            self._stamp_tag(payload, name, item, type_cfg, want, reported)
             topic = self._trv_set_topic(name)
             try:
                 # Space the writes out (`mqtt.delay_between_messages`, as the

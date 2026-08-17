@@ -263,3 +263,51 @@ def is_manual_override(type_cfg, reported_state):
     A device that has reported nothing yet (`unknown`) is not treated as manual.
     """
     return classify_state(type_cfg, reported_state) == 'manual'
+
+
+# What each tagged mode implies the valve should actually be doing.
+TAG_EXPECTED = {'heating': 'schedule', 'cooling': 'open', 'idle': 'off'}
+
+
+def tag_verdict(type_cfg, reported, prefix='schedule'):
+    """Compare the mode tag against what the valve is actually doing.
+
+    The tag says which mode *we* last drove the room into; `classify_state` says
+    what the valve reports now. Together they separate cases the old
+    detect-by-exclusion model could not tell apart — a user turning the knob and
+    one of our own writes going missing produced the same `manual` verdict.
+
+    Returns a dict with:
+      verdict       'untagged'     nothing of ours in the schedule (re-joined
+                                   device, or a schedule we did not write)
+                    'ok'           the valve is doing what the tag says
+                    'user_changed' tag is ours, actuation is something else
+                    'disagree'     Saturday and Sunday disagree — the schedule
+                                   was rewritten by something that is not us
+      tag_mode, generation, actual, expected
+    """
+    import modetag
+    actual = classify_state(type_cfg, reported)
+    tag = modetag.read_state(reported, prefix)
+    out = {'verdict': 'untagged', 'tag_mode': None, 'generation': None,
+           'actual': actual, 'expected': None}
+    if not tag or tag.get('mode') is None:
+        return out
+    out['tag_mode'] = tag['mode']
+    out['generation'] = tag['generation']
+    out['expected'] = TAG_EXPECTED.get(tag['mode'])
+    if not tag.get('agree'):
+        out['verdict'] = 'disagree'
+        return out
+    if out['expected'] is None or actual == 'unknown':
+        out['verdict'] = 'ok'
+        return out
+    # `idle` means the valve is closed — *how* it is closed is irrelevant here.
+    # A plain `system_mode: off` classifies as 'manual' (it matches no signature
+    # of ours, and TRVZB has no off_signature at all), which would otherwise
+    # accuse the user of every valve we ourselves switched off for standby.
+    if out['tag_mode'] == 'idle':
+        out['verdict'] = 'ok' if is_off(reported) else 'user_changed'
+        return out
+    out['verdict'] = 'ok' if actual == out['expected'] else 'user_changed'
+    return out

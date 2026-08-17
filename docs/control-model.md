@@ -176,3 +176,27 @@ not visible or editable at the device — so the tag rides there.
   forever as a `settings_mismatch`.
 
 Read it back with `decode-modetag` (add `--raw` for the carrier strings).
+
+### Consuming the tag
+
+`cooling.tag_verdict` compares the tag against what the valve actually reports:
+
+| verdict | meaning | what we do |
+|---|---|---|
+| `ok` | actuation matches the tagged mode | drive it normally |
+| `user_changed` | tag is ours and current, valve is doing something else | leave alone, report `user_override` (info) |
+| `disagree` | the two carrier days differ | leave alone, report `tag_mismatch` |
+| `untagged` | nothing of ours (re-joined device, foreign schedule) | fall back to the old detect-by-exclusion rule |
+
+Two subtleties that cost live rooms before they were handled:
+
+- **`idle` accepts any off.** A valve we closed for standby reports a bare
+  `system_mode: off`, which matches no `off_signature` (TRVZB has none at all)
+  and therefore classifies as `manual`. Comparing classifications alone accused
+  the user of every valve *we* switched off — five rooms at once.
+- **Ownership decides whether we reopen.** Because that same plain-off reads as
+  `manual`, `_apply_cooling` used to skip those rooms, so half the house stayed
+  shut when cooling resumed: we were refusing to reopen our own off. The tag
+  settles it — `user_changed` is respected, anything else we own and drive.
+  Leaving idle also has to send `system_mode: heat` explicitly, since TECH/Tuya
+  `cooling_open` is only preset+setpoint and cannot lift a valve out of off.
