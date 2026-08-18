@@ -1352,9 +1352,12 @@ class Manager:
             # cooling), so show ours as the season and the pump's only when it
             # disagrees, to avoid the header looking wrong.
             pump = hp['mode']
-            season_seg = mode if pump == mode else f"{mode} (pump: {pump})"
-            head = (f"{season_seg} season — {activity} ({act})"
-                    if activity else f"{season_seg} season ({act})")
+            # Spell out whose mode is whose: "standby (pump: cooling)" was read as
+            # "cooling is on" while every valve was correctly off.
+            season_seg = (f"{mode} season"
+                          + ("" if pump == mode else f" (pump reports {pump})"))
+            head = (f"{season_seg} — {activity} ({act})"
+                    if activity else f"{season_seg} ({act})")
             hp_line = f"{head}: " + ", ".join(parts)   # text/mail (parts has outdoor)
             hp_head = head
 

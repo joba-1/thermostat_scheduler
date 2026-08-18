@@ -475,7 +475,10 @@ def test_hp_line_shows_our_season_when_it_differs_from_pump():
           'telemetry': {'vorlauf': 18.0, 'ruecklauf': 18.2},
           'raw': {'hpactivity': 'off'}}
     d = mgr._report_data(mode='standby', hp=hp, issues=[])
-    assert d['hp_line'].startswith('standby (pump: cooling) season — off (idle):')
+    # "standby (pump: cooling) season" was read as "cooling is on" while every
+    # valve was correctly off — say whose mode each one is, season first.
+    assert d['hp_line'].startswith(
+        'standby season (pump reports cooling) — off (idle):')
 
 
 def test_hp_line_without_activity_field():
