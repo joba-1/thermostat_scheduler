@@ -174,10 +174,11 @@ def test_window_ignore_warns_and_does_not_switch_off():
     assert c.pub == []                                 # never switched off
     assert 'Bad OG' not in mgr.window_off
     d = mgr._report_data()
-    assert d['warn_line'] and 'IGNORED' in d['warn_line'] and 'Bad OG' in d['warn_line']
+    # Short banner: the count, not the room list (the names are in the table).
+    assert d['warn_line'] == '⚠ conditioning despite 1 open window'
     assert '⚠' in mgr.status_report()                  # text report carries it
     mgr._last_report = d
-    assert 'IGNORED' in mgr.web_page()                  # web banner
+    assert 'conditioning despite' in mgr.web_page()     # web banner
 
 
 def test_seen_style_highlights_stale_and_warming_page_polls_fast():

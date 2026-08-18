@@ -1410,9 +1410,12 @@ class Manager:
         warn_line = None
         if self.window_cfg.get('enabled') and self.window_cfg.get('ignore'):
             open_now = sorted(r for r in self.thermostats if self._room_window_open(r))
-            warn_line = ("⚠ Window state IGNORED — conditioning regardless of open "
-                         "windows" + (f" (open now: {', '.join(open_now)})"
-                                      if open_now else ""))
+            # Keep it to the count: the room names are already in the table, and
+            # the banner is read at a glance.
+            n = len(open_now)
+            warn_line = ("⚠ conditioning despite "
+                         + (f"{n} open window{'s' if n != 1 else ''}"
+                            if n else "the window setting"))
 
         thermo_bat_limit = self.alerts_cfg.get('battery_limit', 20)
         records, setpoints = [], []
