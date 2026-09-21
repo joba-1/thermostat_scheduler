@@ -25,10 +25,16 @@ If someone turns a thermostat to manual at the device, comfort control for that
 room is suspended (and you get a low-priority note).
 
 ```bash
-python3 thermostat_scheduler.py --list-manual           # which rooms are in manual?
-python3 thermostat_scheduler.py --reset-manual           # clear every manual room
-python3 thermostat_scheduler.py --reset-manual "Bad OG"  # clear specific rooms
+thermostat-reonboard --list              # which rooms are in manual override?
+thermostat-reonboard                     # clear every manual room
+thermostat-reonboard "Bad OG"            # clear specific rooms (quote names with spaces)
 ```
+
+That is the command installed into the PATH; it wraps
+`thermostat_scheduler.py --list-manual` / `--reset-manual` and runs it as the
+service user with the right venv and config, so you never have to name an
+account, an interpreter or a path. (The `python3 thermostat_scheduler.py …`
+spellings from inside the install directory do the same.)
 
 Re-onboarding pushes the **active season's** state, not always the weekly
 schedule: cooling → valves open, heating → schedule, standby → off. With no room
@@ -67,7 +73,10 @@ running: `python3 thermostat_monitor.py --report [--mail]`.
 
 The overview shows the desired mode, heat-pump telemetry (with units), every
 thermostat (state, setpoint, room temp, battery, last seen), every sensor, any
-manual valves, and the open issues. The daemon attaches this same overview to
+manual valves, and the open issues. The `bat` column carries the percentage a
+device reports; where a device reports no percentage at all — the AVATTO ME168
+sends only the binary `battery_low` flag — it shows the verdict instead: `ok`,
+`low` (highlighted like a low percentage), or `?` when it reports neither. The daemon attaches this same overview to
 every alert and to the daily digest, so each mail is self-contained — there's no
 separate periodic report mail. Issues are collected over a short window
 (`batch_window_minutes`, default 10) and sent as one combined mail, so a burst of

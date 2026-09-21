@@ -147,9 +147,16 @@ See [MONITOR.md](MONITOR.md) for installation and [docs/](docs/) for details.
 ### Manual overrides
 
 ```bash
-python3 thermostat_scheduler.py --list-manual            # which rooms are manual?
-python3 thermostat_scheduler.py --reset-manual ["Name"]  # re-onboard into the season
+thermostat-reonboard --list                # which rooms are in manual override?
+thermostat-reonboard                       # re-onboard every manual room
+thermostat-reonboard "Bad OG" Julians      # re-onboard these rooms
 ```
+
+`thermostat-reonboard` is a thin wrapper (`install.sh` installs it into
+`/usr/local/bin`) around `thermostat_scheduler.py --list-manual` /
+`--reset-manual`: it runs the scheduler as the service user with its venv and
+config, so you never have to remember account, interpreter or paths. The two
+spellings do the same thing.
 
 Re-onboarding pushes the active season's state (cooling → open, heating →
 schedule, standby → off). Without a `"Name"` it re-onboards exactly the rooms in
