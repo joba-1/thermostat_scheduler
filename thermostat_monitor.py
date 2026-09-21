@@ -1466,14 +1466,15 @@ class Manager:
             if seen_css:
                 style['seen'] = seen_css
             records.append((name, state_cell, sp, temp,
-                            st.get('battery'), self._age(seen_iso), style))
+                            self._bat_cell(st, thermo_bat_limit),
+                            self._age(seen_iso), style))
 
         # Set points live in the overview, not as a table column: uniform (cooling's
         # single open target) -> one summary line; per-room (heating's day/night
         # schedule points) -> a collapsible fold (range summary + per-room detail).
         thermo_headers = ["room", "state", "temp", "bat", "seen"]
-        thermo_rows = [[n, sc, self._fmt(t, "°C"), self._fmt(b, "%"), age]
-                       for (n, sc, sp, t, b, age, _) in records]
+        thermo_rows = [[n, sc, self._fmt(t, "°C"), bat, age]
+                       for (n, sc, sp, t, bat, age, _) in records]
         thermo_styles = [r[6] for r in records]
         # name cell -> z2m device page (keyed by the TRV ieee); None when unknown
         thermo_z2m = [self.z2m_url(self.thermo_ieee.get(r[0])) for r in records]
@@ -1518,7 +1519,7 @@ class Manager:
                 if seen_css:
                     style['seen'] = seen_css
                 sensor_rows.append([name, val, kind,
-                                    self._fmt(st.get('battery'), "%"),
+                                    self._bat_cell(st, sensor_bat_limit),
                                     self._age(self.sensor_seen.get(name))])
                 sensor_styles.append(style)
                 sensor_z2m.append(self.z2m_url(self.sensor_ieee.get(name)))
@@ -1578,6 +1579,25 @@ class Manager:
             return True
         lvl = state.get('battery')
         return isinstance(lvl, (int, float)) and lvl < limit
+
+    @staticmethod
+    def _bat_cell(state, limit):
+        """Battery cell: the level when the device reports one, else a verdict
+        from the binary `battery_low` flag — 'ok' / 'low' — or '?' when it
+        reports neither. TRVs like the AVATTO ME168 only ever send
+        `battery_low` (true/false/undefined), and a bare dash there would hide
+        a real 'low' behind the same glyph as 'no data at all'."""
+        if not isinstance(state, dict):
+            return '?'
+        lvl = state.get('battery')
+        if isinstance(lvl, (int, float)) and not isinstance(lvl, bool):
+            return Manager._fmt(lvl, "%")
+        low = state.get('battery_low')
+        if low is True:
+            return 'low'
+        if low is False:
+            return 'ok'
+        return '?'
 
     @staticmethod
     def _render_text(d):

@@ -340,6 +340,34 @@ def test_status_report_contains_overview():
     assert '8%' in report and '—' in report
 
 
+def test_battery_cell_falls_back_to_the_binary_flag():
+    """Devices that only send `battery_low` (AVATTO ME168) get an ok/low
+    verdict instead of the dash that means 'no data at all'."""
+    mgr = make_mgr()
+    assert mgr._bat_cell({'battery_low': False}, 20) == 'ok'
+    assert mgr._bat_cell({'battery_low': True}, 20) == 'low'
+    assert mgr._bat_cell({'preset': 'schedule'}, 20) == '?'
+    assert mgr._bat_cell({}, 20) == '?'
+    assert mgr._bat_cell(None, 20) == '?'
+    # a percentage wins over the flag, and still formats as before
+    assert mgr._bat_cell({'battery': 47}, 20) == '47%'
+    assert mgr._bat_cell({'battery': 8, 'battery_low': True}, 20) == '8%'
+
+
+def test_report_rows_show_the_battery_verdict():
+    mgr = make_mgr()
+    mgr.last_state['Bad OG'] = {'preset': 'schedule', 'battery_low': True}
+    rows = mgr._report_data()['thermo']['rows']
+    assert [r[3] for r in rows] == ['low']
+    mgr.last_state['Bad OG'] = {'preset': 'schedule', 'battery_low': False}
+    rows = mgr._report_data()['thermo']['rows']
+    assert [r[3] for r in rows] == ['ok']
+    # ... and the sensor table takes the same route
+    mgr.sensor_state['Bad OG Luft'] = {'temperature': 20.0, 'battery_low': True}
+    rows = mgr._report_data()['sensors']['rows']
+    assert [r[3] for r in rows if r[0] == 'Bad OG Luft'] == ['low']
+
+
 def test_state_uses_our_vocabulary_and_uniform_setpoint_in_header():
     cfg = {k: (dict(v) if isinstance(v, dict) else v) for k, v in CFG.items()}
     cfg['season'] = {'mode': 'cooling', 'cool_target': 21}
