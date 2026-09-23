@@ -198,7 +198,8 @@ fan_control:
   room_margin: 1.0
   room_hysteresis: 0.5
   on_debounce: 30
-  off_delay: 0                 # s to keep fans ON after circulation stops (0: off at once)
+  off_delay: 120               # s to keep fans ON after circulation stops (radiators
+                               # still hold some heat/cold for a while)
   fans:
     # heating: false on Schlafzimmer + Wohnzimmer (2026-09-23): a fan there is not
     # wanted in the heating season for now.

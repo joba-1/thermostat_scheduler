@@ -157,7 +157,8 @@ compressor's pauses — measured ~1400 l/h through a 35-minute cooling pause —
 the buffer's cold or heat still reaches the radiators and the fans keep going; it
 stops during a hot-water charge, and so do the fans. `heatingpump` is *not* this
 pump: it is the primary pump PC0 (heat pump ↔ buffer), which stops with the
-compressor. No fixed run-on is needed (`off_delay`, default 0).
+compressor. After PC1 stops the fans run on for `off_delay` seconds (default 0,
+here 120): the radiators still hold some heat or cold for a while.
 
 - Plugs are **zigbee2mqtt** (`{type: zigbee, name: ...}` → `zigbee2mqtt/<name>/set`)
   or **Tasmota** (`{type: tasmota, topic: ..., power: POWER}` → `cmnd/<topic>/<power>`).
