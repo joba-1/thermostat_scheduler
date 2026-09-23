@@ -151,9 +151,13 @@ old Home Assistant "lüften/heizen" automations — control now lives here.
 Radiators are weak emitters, especially for cooling, so the manager switches **fan
 plugs** that blow air across them (`fan_control`). A fan only helps while heated or
 cooled water actually flows through the radiator, so the fans run **only while the
-circulation pump runs** (`heatingpump` on) and the pump is not charging hot water
-(the 3-way valve then sends the water to the tank). Between pump runs the circuit
-pump stops, and so do the fans (`off_delay`, default 0).
+heating-circuit pump PC1 pumps** (`pc1flow` above `min_flow`, default 50 l/h) and
+no hot-water charge is running. PC1 (buffer → radiators) keeps running through the
+compressor's pauses — measured ~1400 l/h through a 35-minute cooling pause — so
+the buffer's cold or heat still reaches the radiators and the fans keep going; it
+stops during a hot-water charge, and so do the fans. `heatingpump` is *not* this
+pump: it is the primary pump PC0 (heat pump ↔ buffer), which stops with the
+compressor. No fixed run-on is needed (`off_delay`, default 0).
 
 - Plugs are **zigbee2mqtt** (`{type: zigbee, name: ...}` → `zigbee2mqtt/<name>/set`)
   or **Tasmota** (`{type: tasmota, topic: ..., power: POWER}` → `cmnd/<topic>/<power>`).

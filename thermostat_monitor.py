@@ -41,7 +41,7 @@ import devices
 import sensors as sensors_mod
 from alerts import Alerter, make_issue
 
-__version__ = "3.3.0"
+__version__ = "3.3.1"
 
 DAY_MINUTES = 24 * 60
 
@@ -979,27 +979,36 @@ class Manager:
                 timer.start()
 
     def _circulation(self, hp):
-        """'heating' / 'cooling' while the pump actively circulates water through
-        the radiators, else None — the only time a fan on a radiator helps.
+        """'heating' / 'cooling' while water circulates through the radiators,
+        else None — the only time a fan on a radiator helps.
 
-        The circuit pump (`heatingpump`) runs only during and around pump runs
-        and stops between them, so there is no fanning the buffer's leftovers
-        through the idle gaps. It also runs during a hot-water charge, but then
-        the 3-way valve sends the water to the tank, not the radiators, so a
-        charge (dhw `3wayvalve` / `charging`, or `hpactivity` 'hot water') is not
-        circulation. The direction is the season (the pump's own heating/cooling
-        state before the first evaluation). A pump without `heatingpump` falls
-        back to the compressor activity `hpactivity`."""
+        The signal is the heating-circuit pump PC1 (buffer -> radiators): its
+        flow `pc1flow` > 0. PC1 keeps running through the compressor's pauses
+        (measured: ~1400 l/h for a 35 min cooling pause, ~1000 l/h heating), so
+        the buffer's cold/heat still reaches the radiators then; it stops (-1)
+        during a hot-water charge. Not `heatingpump`: that is the primary pump
+        PC0 (heat pump <-> buffer), which stops with the compressor. A pump that
+        reports no `pc1flow` falls back to PC0 minus hot-water charges, then to
+        the compressor activity `hpactivity`. The direction is the season (the
+        pump's own heating/cooling state before the first evaluation)."""
         raw = (hp or {}).get('raw') or {}
         if not raw:
             return None
         on = lambda v: str(v).strip().lower() in ('on', '1', 'true')
-        if 'heatingpump' not in raw:
+        dhw = raw.get('dhw') if isinstance(raw.get('dhw'), dict) else {}
+        charging = (on(dhw.get('3wayvalve')) or on(dhw.get('charging'))
+                    or raw.get('hpactivity') == 'hot water')
+        if 'pc1flow' in raw:
+            try:
+                running = float(raw['pc1flow']) > self.fan_cfg.get('min_flow', 50)
+            except (TypeError, ValueError):
+                running = False
+        elif 'heatingpump' in raw:
+            running = on(raw.get('heatingpump'))
+        else:
             act = raw.get('hpactivity')
             return act if act in ('heating', 'cooling') else None
-        dhw = raw.get('dhw') if isinstance(raw.get('dhw'), dict) else {}
-        if (not on(raw.get('heatingpump')) or on(dhw.get('3wayvalve'))
-                or on(dhw.get('charging')) or raw.get('hpactivity') == 'hot water'):
+        if not running or charging:
             return None
         direction = self.last_mode or hp.get('state')
         return direction if direction in ('heating', 'cooling') else None
@@ -1078,8 +1087,8 @@ class Manager:
         return direction == 'cooling'
 
     def _apply_fan_control(self, client, hp=None, now=None):
-        """Drive the radiator-fan plugs: ON only while the pump actively
-        circulates heated or cooled water through the radiators (see
+        """Drive the radiator-fan plugs: ON only while water circulates
+        through the radiators (PC1 flow, see
         _circulation; after `on_debounce`, held `off_delay` after it stops —
         default 0), and per fan only while its room is still more than
         `room_margin` from its target (see _fan_room_gate). Idempotent —

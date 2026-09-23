@@ -187,8 +187,9 @@ window_control:
 fan_control:
   enabled: true    # re-enabled 2026-07-31 per request (was disabled 2026-07-29)
   act: true
-  # Fans run only while the pump circulates water through the radiators (circuit
-  # pump `heatingpump` on, not a hot-water charge), heating or cooling.
+  # Fans run only while water circulates through the radiators: heating-circuit
+  # pump PC1 flow (`pc1flow`) above min_flow l/h and no hot-water charge. PC1 keeps
+  # running through the compressor's pauses, feeding the buffer's heat/cold.
   heating: true                # also support heating (per fan: `heating: false` opts out)
   # Per fan with a `room`: fans only support — within the last room_margin °C to
   # the room's target (below the scheduled setpoint when heating, above the cool

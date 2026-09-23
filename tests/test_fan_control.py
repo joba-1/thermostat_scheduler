@@ -45,26 +45,39 @@ def test_circulation_legacy_signal_is_compressor_activity():
     assert mgr._circulation(None) is None
 
 
-def pump(heatingpump='on', activity='cooling', three_way='off', charging='off',
-         state='cooling'):
-    return {'state': state,
-            'raw': {'heatingpump': heatingpump, 'hpactivity': activity,
-                    'dhw': {'3wayvalve': three_way, 'charging': charging}}}
+def pump(pc1flow=1400, heatingpump='on', activity='cooling', three_way='off',
+         charging='off', state='cooling'):
+    raw = {'heatingpump': heatingpump, 'hpactivity': activity,
+           'dhw': {'3wayvalve': three_way, 'charging': charging}}
+    if pc1flow is not None:
+        raw['pc1flow'] = pc1flow
+    return {'state': state, 'raw': raw}
 
 
-def test_circulation_follows_the_circuit_pump_not_a_hot_water_charge():
+def test_circulation_follows_pc1_through_compressor_pauses():
+    """PC1 (buffer -> radiators) keeps pumping while the compressor and PC0
+    (`heatingpump`) pause, so the buffer's cold still reaches the radiators."""
     mgr = make_mgr()
     mgr.last_mode = 'cooling'
     assert mgr._circulation(pump()) == 'cooling'
-    # pre-/post-run: compressor idle but the circuit pump runs -> circulating
-    assert mgr._circulation(pump(activity='off')) == 'cooling'
-    # between runs the circuit pump stops -> nothing to fan
-    assert mgr._circulation(pump(heatingpump='off', activity='off')) is None
-    # hot-water charge: pump runs, but the water goes to the tank
+    assert mgr._circulation(pump(heatingpump='off', activity='off')) == 'cooling'
+    # PC1 stopped (-1 = no flow) -> nothing to fan
+    assert mgr._circulation(pump(pc1flow=-1, activity='off')) is None
+    assert mgr._circulation(pump(pc1flow=0)) is None
+    # hot-water charge: never radiator circulation
     assert mgr._circulation(pump(three_way='on', activity='hot water')) is None
-    assert mgr._circulation(pump(charging='on')) is None
     mgr.last_mode = 'heating'
     assert mgr._circulation(pump(activity='heating')) == 'heating'
+    mgr.last_mode = 'standby'
+    assert mgr._circulation(pump()) is None
+
+
+def test_circulation_without_pc1flow_falls_back_to_pc0():
+    mgr = make_mgr()
+    mgr.last_mode = 'cooling'
+    assert mgr._circulation(pump(pc1flow=None)) == 'cooling'
+    assert mgr._circulation(pump(pc1flow=None, heatingpump='off')) is None
+    assert mgr._circulation(pump(pc1flow=None, charging='on')) is None
 
 
 def test_fans_on_after_debounce_then_off_after_delay():

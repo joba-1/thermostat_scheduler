@@ -18,7 +18,7 @@ Coverage (`tests/`):
 | `test_alerts.py` | dedup + cooldown, info never mails, cleared removal, restart persistence, daily digest, periodic `due()` |
 | `test_manager_report.py` | manual-overrides listing, sensor/thermostat namespace isolation, status report, mode-change notify |
 | `test_devices.py` | device identity: ieee/name ref parsing, bridge/devices registry + rename detection, name-fallback resolution, HA entity candidates |
-| `test_fan_control.py` | radiator-fan plug switching: circulation signal (circuit pump on, not a hot-water charge; legacy `hpactivity`), on-debounce, off-delay, zigbee+tasmota topics, act:false; per-room gate for heating and cooling (off within 1 K of target, hysteresis, open window, unknown temp follows circulation), heating opt-out |
+| `test_fan_control.py` | radiator-fan plug switching: circulation signal (PC1 flow incl. compressor pauses, not a hot-water charge; fallbacks PC0 / `hpactivity`), on-debounce, off-delay, zigbee+tasmota topics, act:false; per-room gate for heating and cooling (off within 1 K of target, hysteresis, open window, unknown temp follows circulation), heating opt-out |
 | `test_pump_season.py` | season from the pump: `hpmode` bounds it, `hpoperatingstate` taken as-is, idle holds / long idle → standby, `hpcooling` ignored; idle clock; manual-valve reminder at once (optionally after a stable season); CLI adopts the daemon's `_season` |
 | `test_history.py` | per-room charts: interval algebra, candidate (slug→ieee) resolution, SVG rendering |
 | `test_scheduler_season_cli.py` | CLI must never act season-blind: `detect_mode` threads `outdoor_temp` and refuses to guess; no-arg `--reset-manual` hits only manual rooms; `--check` compares per season (incl. standby) |
