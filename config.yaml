@@ -71,11 +71,13 @@ heatpump:
     outdoor: outdoortemp
     power: hpcurrpower
     pressure: syspress
-  cooling_when:               # OR'd; house is "cooling" if any matches
+  cooling_when:  # fallback only: used when the pump reports no hc1.hpoperatingstate
   - field: hpcooling          # ems-esp/thermostat_data hc1.hpcooling: cooling enabled
     equals: "on"              # stable across compressor cycles (unlike hpactivity)
     # Avoid keying off hpactivity (toggles each compressor cycle) or hp4way
     # (reads "cooling & defrost" from a resting valve even in winter).
+    # hpcooling is only the cooling *release*: it lags hpmode by cooloffdelay
+    # (72 h), so it is no season signal — the season uses hpmode/hpoperatingstate.
   bounds:                     # operator sanity ranges -> digest warning if outside
     heating:
       vorlauf: [20, 60]
@@ -114,11 +116,14 @@ heatpump:
 # --- Season / cooling control ---
 season:
   mode: auto                  # auto | heating | cooling | standby
-  source: outdoor_temp        # when mode==auto: heatpump | outdoor_temp | config
-                              #   heatpump      -> binary heat/cool from the pump's
-                              #                    live cooling signal (no standby)
-                              #   outdoor_temp  -> 3-season heat/standby/cool from the
-                              #                    outdoor temperature (see below)
+  source: heatpump            # when auto: heatpump | outdoor_temp | config
+                              #   heatpump     -> follow the pump: hc1.hpmode (main
+                              #                   switch) bounds the season, hc1.
+                              #                   hpoperatingstate heating/cooling is
+                              #                   taken as-is; while it idles ('off')
+                              #                   the previous season holds
+                              #   outdoor_temp -> 3-season heat/standby/cool from the
+                              #                   outdoor temperature (see below)
   control: true               # true = actively drive TRVs to the season state;
                               # false = report-only (flag drifted valves, don't push)
   cool_target: 21             # reference room temp used by the comfort check in cooling
@@ -130,6 +135,14 @@ season:
   standby_below: 15           # °C outdoor: below this -> heating
   standby_above: 24           # °C outdoor: above this -> cooling
   standby_hysteresis: 1       # °C band to avoid flapping at either threshold
+  # source==heatpump: the pump idle (neither heating nor cooling) this long ->
+  # standby; shorter gaps (summer-mode afternoons, the ~1 h heating<->cooling
+  # changeover) keep the previous season so the valves aren't re-driven.
+  standby_after_hours: 24
+  # Mail the manual_thermostats reminder once a new season has held this long.
+  # 0 = at once: a hand-set valve left open for cooling must not heat its room for
+  # hours. (In hpmode "heating & cooling" the pump can flip twice a day -> 2 mails.)
+  manual_reminder_after_hours: 0
 
 
 # Grace before a room temperature deviation becomes a loud alert: while the
@@ -174,16 +187,27 @@ window_control:
 fan_control:
   enabled: true    # re-enabled 2026-07-31 per request (was disabled 2026-07-29)
   act: true
+  # Fans run only while the pump circulates water through the radiators (circuit
+  # pump `heatingpump` on, not a hot-water charge), heating or cooling.
+  heating: true                # also support heating (per fan: `heating: false` opts out)
+  # Per fan with a `room`: fans only support — within the last room_margin °C to
+  # the room's target (below the scheduled setpoint when heating, above the cool
+  # target when cooling) the fan goes off; back on room_hysteresis further out.
+  # Also off while a window of the room is open.
+  room_margin: 1.0
+  room_hysteresis: 0.5
   on_debounce: 30
-  off_delay: 600
+  off_delay: 0                 # s to keep fans ON after circulation stops (0: off at once)
   fans:
-    - { type: tasmota, topic: "nous3", power: POWER }  # Nous A1T plug -> cmnd/nous3/POWER - Schlafzimmer
-    - { type: tasmota, topic: "nous4", power: POWER }  # Nous A1T plug -> cmnd/nous4/POWER - Bad OG
-    - { type: zigbee, name: "Wohnzimmer Fan Plug" }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
-    - { type: zigbee, name: "NZ1 Esszimmer Lüfter" }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
-    - { type: zigbee, name: "NZ2 Julians Lüfter" }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
-    - { type: zigbee, name: "NZ3 Dusche" }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
-    - { type: zigbee, name: "Z2 Arbeitszimmer Fan Plug" }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
+    # heating: false on Schlafzimmer + Wohnzimmer (2026-09-23): a fan there is not
+    # wanted in the heating season for now.
+    - { type: tasmota, topic: "nous3", power: POWER, room: "Schlafzimmer", heating: false }  # Nous A1T plug -> cmnd/nous3/POWER - Schlafzimmer
+    - { type: tasmota, topic: "nous4", power: POWER, room: "Bad OG" }  # Nous A1T plug -> cmnd/nous4/POWER - Bad OG
+    - { type: zigbee, name: "Wohnzimmer Fan Plug", room: "Wohnzimmer", heating: false }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
+    - { type: zigbee, name: "NZ1 Esszimmer Lüfter", room: "Esszimmer" }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
+    - { type: zigbee, name: "NZ2 Julians Lüfter", room: "Julians" }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
+    - { type: zigbee, name: "NZ3 Dusche", room: "Dusche" }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
+    - { type: zigbee, name: "Z2 Arbeitszimmer Fan Plug", room: "Arbeitszimmer" }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
 
 # --- Free-cooling reminder: mail "open windows" when outside air < warmest room ---
 free_cooling:
@@ -195,7 +219,7 @@ free_cooling:
 # Dumb / manual radiator valves that cannot be controlled remotely. The manager
 # can't actuate these, so on every heating<->cooling change it mails a reminder
 # to OPEN them fully (cooling) or set them back to normal (heating).
-manual_thermostats: []        # e.g. ["Keller", "Gäste WC"]
+manual_thermostats: ["WC UG", "Küche", "Flur EG", "Treppenhaus"]   # hand-set radiator valves
 
 
 default_tolerance: 1.5        # °C the room may deviate from setpoint before warning

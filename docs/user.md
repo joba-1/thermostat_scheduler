@@ -146,19 +146,30 @@ old Home Assistant "lüften/heizen" automations — control now lives here.
 - Kill switch: `window_control.act: false` keeps detecting/logging/status without
   touching any valve; `enabled: false` turns the feature off.
 
-## Radiator fans (cooling boost)
+## Radiator fans (heating and cooling support)
 
-Radiators are weak cooling emitters, so the manager can switch **fan plugs** on while
-the heat pump is actively cooling, to force air across the radiators and pull more
-heat into the loop (`fan_control`). It triggers on `hpactivity == cooling` and holds
-the fans on for `off_delay` seconds after cooling stops, so they keep working the
-buffer's residual cold through the compressor's off-gaps.
+Radiators are weak emitters, especially for cooling, so the manager switches **fan
+plugs** that blow air across them (`fan_control`). A fan only helps while heated or
+cooled water actually flows through the radiator, so the fans run **only while the
+circulation pump runs** (`heatingpump` on) and the pump is not charging hot water
+(the 3-way valve then sends the water to the tank). Between pump runs the circuit
+pump stops, and so do the fans (`off_delay`, default 0).
 
 - Plugs are **zigbee2mqtt** (`{type: zigbee, name: ...}` → `zigbee2mqtt/<name>/set`)
   or **Tasmota** (`{type: tasmota, topic: ..., power: POWER}` → `cmnd/<topic>/<power>`).
-- `on_debounce` (default 30 s) avoids reacting to a momentary cooling blip;
-  `off_delay` (default 600 s) is the post-cooling hold.
-- The status report shows a **Fans** line (ON/OFF + whether cooling is active).
+- `on_debounce` (default 30 s) avoids reacting to a momentary blip; `off_delay`
+  (default 0) can hold the fans on after circulation stops.
+- **Heating too** (`heating: true`, the default); a single fan opts out with
+  `heating: false`, e.g. a loud standing fan in a room that heats fine alone.
+- **Per room:** give a fan a `room:` and it only supports: it switches off once the
+  room is within `room_margin` (default 1 °C) of its target — below the scheduled
+  setpoint when heating, above the cool target (`season.cool_target` or the room's
+  own `cool_target`) when cooling — and back on `room_hysteresis` (0.5 °C) further
+  out. It is also off while a window of the room is open. No room, or no
+  temperature for it, and the fan simply follows the circulation.
+- The status report shows a **Fans** line (how many are on, whether water
+  circulates and which way, and which rooms' fans are off because the room is
+  close to its target).
 - Kill switch: `fan_control.act: false` logs "would publish …" without switching;
   `enabled: false` turns it off.
 
@@ -166,9 +177,14 @@ Rooms without a contact sensor (e.g. Julians, Wohnzimmer) are not window-control
 
 ## Cooling
 
-When `season.mode: auto` and the heat pump reports cooling (`coolingon: on`),
-the manager forces every controllable thermostat fully open (valves let cold
-water through) and restores the weekly schedule when heating resumes. Rooms in
+When `season.mode: auto` with `season.source: heatpump`, the season is what the
+pump does: its main switch `hpmode` decides what is possible (`heating` = never
+cooling, `off` = standby), and `hpoperatingstate` whether it heats or cools right
+now. While the pump idles (summer mode, or the ~1 h changeover between heating and
+cooling) the previous season holds; after `season.standby_after_hours` (24) of
+idling the house goes to standby. In cooling the manager forces every
+controllable thermostat fully open (valves let cold water through) and restores
+the weekly schedule when heating resumes. Rooms in
 manual override are left alone. Set `season.mode: cooling`/`heating`/`standby`
 to force a mode regardless of the automatic decision.
 
@@ -193,8 +209,12 @@ Two ways to use it:
   house is already in standby, so an outdoor temperature hovering right at a
   boundary doesn't flip the season back and forth.
 
-On entering standby the manager mails a reminder to CLOSE any **manual
-(non-controllable) valves**; a controllable valve that somehow isn't off is
+On every season change the manager at once mails a reminder for the **manual
+(non-controllable) valves** listed in `manual_thermostats` — OPEN for cooling,
+CLOSE for standby, back to normal for heating — since a valve left open for
+cooling would otherwise heat its room. (`season.manual_reminder_after_hours`
+can delay it until the new season has held that long; the ~1 h idle gaps at a
+pump changeover never trigger it, as the season holds through them.) a controllable valve that somehow isn't off is
 flagged `standby_not_off` in the daily report.
 
 > The heat pump itself has no "off" mode — it always allows heating, cooling, or

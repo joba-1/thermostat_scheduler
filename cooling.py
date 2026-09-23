@@ -177,14 +177,26 @@ def build_intended_payload(name, cfg_item, thermostat_types, mqtt_cfg, mode,
     return stamped(dict(base)), topic, "heating: schedule" + suffix
 
 
-def desired_mode(season_cfg, heatpump_state, outdoor_temp=None, last_mode=None):
+def desired_mode(season_cfg, heatpump_state, outdoor_temp=None, last_mode=None,
+                 pump_idle_secs=None):
     """Return 'heating', 'standby', or 'cooling'.
 
     season.mode = heating|cooling|standby forces that mode. season.mode = auto
     derives it from season.source:
 
-    - 'heatpump': the live EMS-ESP cooling signal (binary — no standby; the
-      heat pump itself has no "neither" state, see `heatpump.hpmode`).
+    - 'heatpump': follow what the pump actually does (`heatpump_state` from
+      `heatpump.parse`). hc1 `hpmode` is the main switch and bounds the result —
+      with `hpmode: heating` we never enter cooling, however warm it is; `off`
+      (DHW only) is standby. Within that, hc1 `hpoperatingstate` heating/cooling
+      is taken as-is. While the circuit is idle ('off': summer mode, the ~1 h
+      changeover gap) the previous season is held (`last_mode`, if the switch
+      still permits it), so the valves are not re-driven at every gap; only once
+      it has been idle for `season.standby_after_hours` (`pump_idle_secs`,
+      tracked by the caller) does it become standby. Without history (first
+      pass, the CLI) an idle pump resolves to its only permitted season, or —
+      with both permitted — by the pump's own `coolstart` against the outdoor
+      temperature. A pump that reports neither field falls back to the legacy
+      binary `cooling` flag.
     - 'outdoor_temp': shoulder-season standby derived from `outdoor_temp`
       against `season.standby_below` / `season.standby_above`, so heating and
       cooling stay for genuinely cold/hot weather and the pump only otherwise
@@ -202,8 +214,11 @@ def desired_mode(season_cfg, heatpump_state, outdoor_temp=None, last_mode=None):
     if mode in ('heating', 'cooling', 'standby'):
         return mode
     source = season_cfg.get('source', 'heatpump')
+    if source == 'heatpump' and heatpump_state is None and last_mode:
+        return last_mode        # telemetry gap: hold, don't fall back to heating
     if source == 'heatpump' and heatpump_state is not None:
-        return 'cooling' if heatpump_state.get('cooling') else 'heating'
+        return _pump_season(season_cfg, heatpump_state, outdoor_temp, last_mode,
+                            pump_idle_secs)
     if source == 'outdoor_temp' and outdoor_temp is not None:
         below = season_cfg.get('standby_below')
         above = season_cfg.get('standby_above')
@@ -216,6 +231,37 @@ def desired_mode(season_cfg, heatpump_state, outdoor_temp=None, last_mode=None):
         if above is not None and outdoor_temp > above + h:
             return 'cooling'
         return 'standby'
+    return 'heating'
+
+
+def _pump_season(season_cfg, hp, outdoor_temp, last_mode, pump_idle_secs):
+    """desired_mode for source 'heatpump' — see there."""
+    allowed = hp.get('allowed')
+    state = hp.get('state')
+    if allowed is None and state is None:           # pump reports neither field
+        return 'cooling' if hp.get('cooling') else 'heating'
+    if allowed is not None and not allowed:         # hpmode off: DHW only
+        return 'standby'
+    allowed = allowed or ('heating', 'cooling')
+    if state in allowed:
+        return state
+    # Idle (or a state the switch doesn't permit, e.g. cooling winding down
+    # right after the switch was set to heating).
+    after = season_cfg.get('standby_after_hours', 24)
+    if (after is not None and pump_idle_secs is not None
+            and pump_idle_secs >= after * 3600):
+        return 'standby'
+    if last_mode == 'standby' or last_mode in allowed:
+        return last_mode
+    if len(allowed) == 1:
+        return allowed[0]
+    coolstart = (hp.get('raw') or {}).get('coolstart')
+    try:
+        if outdoor_temp is not None and coolstart is not None \
+                and float(outdoor_temp) > float(coolstart):
+            return 'cooling'
+    except (TypeError, ValueError):
+        pass
     return 'heating'
 
 

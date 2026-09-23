@@ -41,7 +41,7 @@ import devices
 import sensors as sensors_mod
 from alerts import Alerter, make_issue
 
-__version__ = "3.2.0"
+__version__ = "3.3.0"
 
 DAY_MINUTES = 24 * 60
 
@@ -67,7 +67,7 @@ def current_setpoint(cfg_item, now_lt, mode, season_cfg):
     there is nothing to hold it to and no comfort deviation to report.
     """
     if mode == 'cooling':
-        return (season_cfg or {}).get('cool_target')
+        return cfg_item.get('cool_target', (season_cfg or {}).get('cool_target'))
     if mode == 'standby':
         return None
     cur = now_lt.tm_hour * 60 + now_lt.tm_min
@@ -97,6 +97,14 @@ class Manager:
         self._remote_feed_last = None         # (temp, hum) last good value published
         self.manual_thermostats = cfg.get('manual_thermostats', []) or []
         self.last_mode = None        # for heating<->cooling transition detection
+        # Since when the heat pump's circuit has been idle (neither heating nor
+        # cooling in a season its switch permits); drives season.standby_after_hours.
+        self._pump_idle_since = None
+        # Manual-valve reminder: the season we last reminded about and since when
+        # the current season holds (season.manual_reminder_after_hours can delay
+        # the mail; default is at once).
+        self._reminded_mode = None
+        self._mode_since = None
         self.base = self.mqtt_cfg.get('base_topic')
         self.monitor_topic = 'thermostat_monitor'
 
@@ -165,9 +173,14 @@ class Manager:
         # to boost radiator heat transfer. See _apply_fan_control.
         self.fan_cfg = cfg.get('fan_control', {}) or {}
         self.fans = self.fan_cfg.get('fans') or []
-        self._fans_on = None        # last applied fan state (None until first apply)
-        self._cool_active = None    # last seen "actively cooling" bool
-        self._cool_edge_ts = 0.0    # when _cool_active last changed
+        self._fans_on = None        # house-level fan signal (None until first apply)
+        # Per fan (keyed by _fan_key): last applied plug state, and the room gate
+        # (False once the fan's room has cooled to near its target).
+        self._fan_on = {}
+        self._fan_gate = {}
+        self._circ_dir = None       # direction of the current/last circulation
+        self._circ = None           # radiators' circulation: 'heating'|'cooling'|None
+        self._circ_edge_ts = 0.0    # when _circ last changed
 
         # Free night-cooling reminder: mail "open windows" when the outside air is
         # cooler than the warmest room (the HP idles below coolstart, but ventilation
@@ -496,6 +509,11 @@ class Manager:
             }
             client.publish(f"{self.monitor_topic}/{name}",
                            json.dumps(resp, indent=2, ensure_ascii=False), qos=1)
+        # The daemon's season, so a CLI run acts on the same one: only the daemon
+        # has the history (held season across pump idle gaps, idle time).
+        if self.last_mode:
+            client.publish(f"{self.monitor_topic}/_season",
+                           json.dumps({'mode': self.last_mode}), qos=1)
 
     # ---- heat-pump remote sensor feed --------------------------------
     def _remote_feed_candidates(self):
@@ -623,9 +641,44 @@ class Manager:
 
     def _desired_mode(self, hp):
         """The active season (heating/cooling/standby) for this pass, deriving the
-        outdoor temperature from `hp` and threading `last_mode` for hysteresis."""
+        outdoor temperature from `hp` and threading `last_mode` (hysteresis /
+        hold while the pump idles) and the pump's idle time."""
         outdoor = (hp.get('telemetry') or {}).get('outdoor') if hp else None
-        return cooling.desired_mode(self.season_cfg, hp, outdoor, self.last_mode)
+        idle = (time.time() - self._pump_idle_since
+                if self._pump_idle_since is not None else None)
+        return cooling.desired_mode(self.season_cfg, hp, outdoor, self.last_mode,
+                                    pump_idle_secs=idle)
+
+    def _track_pump_idle(self, hp, now_ts):
+        """Start/clear the pump-idle clock: idle = the circuit is neither heating
+        nor cooling in a season its switch (`hpmode`) permits. No telemetry keeps
+        the clock as it is."""
+        if not hp or (hp.get('state') is None and hp.get('allowed') is None):
+            return
+        allowed = hp.get('allowed')
+        if allowed is None:
+            allowed = ('heating', 'cooling')
+        if hp.get('state') in allowed:
+            self._pump_idle_since = None
+        elif self._pump_idle_since is None:
+            self._pump_idle_since = now_ts
+
+    def _track_mode(self, mode, now_ts):
+        """Record the season for this pass; mail the manual-valve reminder once a
+        new season has held for season.manual_reminder_after_hours (default 0:
+        at the change itself)."""
+        if self.last_mode is None:                  # baseline; no mail on first pass
+            self.last_mode = self._reminded_mode = mode
+            self._mode_since = now_ts
+            return
+        if mode != self.last_mode:
+            log.info("mode change %s -> %s", self.last_mode, mode)
+            self.last_mode = mode
+            self._mode_since = now_ts
+        hold = self.season_cfg.get('manual_reminder_after_hours', 0) * 3600
+        if mode != self._reminded_mode and now_ts - self._mode_since >= hold:
+            self._notify_mode_change(self._reminded_mode, mode)
+            self._reminded_mode = mode
 
     def _limits(self):
         # Extraordinary-reading thresholds: shared across all temp/humidity sources,
@@ -762,15 +815,12 @@ class Manager:
         now_ts = time.time()
         now_lt = time.localtime(now_ts)
         hp = self.heatpump_state()
+        self._track_pump_idle(hp, now_ts)
         mode = self._desired_mode(hp)
         issues = self.collect_issues(mode, now_ts, now_lt, hp)
 
-        # heating<->cooling transition: remind operator about manual valves
-        if self.last_mode is None:
-            self.last_mode = mode           # baseline; no mail on first pass
-        elif mode != self.last_mode:
-            self._notify_mode_change(self.last_mode, mode)
-            self.last_mode = mode
+        # season change: remind operator about manual valves once it holds
+        self._track_mode(mode, now_ts)
 
         # cooling control
         if client is not None and self.season_cfg.get('control', True):
@@ -787,8 +837,8 @@ class Manager:
                 except Exception as e:
                     log.exception("window-control reconcile error for %s: %s", room, e)
 
-        # radiator fans: also here so the off_delay still expires if boiler
-        # messages pause (it's normally driven by each boiler_data update).
+        # radiator fans: also here so room gates follow room temperatures even
+        # when boiler messages pause (it's normally driven by each boiler_data update).
         self._apply_fan_control(client, hp)
 
         # free-cooling "open windows" reminder
@@ -928,12 +978,31 @@ class Manager:
                 self._win_timers[room] = timer
                 timer.start()
 
-    @staticmethod
-    def _cooling_active(hp):
-        """True when the heat pump is actively producing cold (compressor cooling) —
-        i.e. the radiators have cold water worth fanning. Uses `hpactivity` (the live
-        compressor activity), the same authoritative signal the charts use."""
-        return bool(hp) and (hp.get('raw') or {}).get('hpactivity') == 'cooling'
+    def _circulation(self, hp):
+        """'heating' / 'cooling' while the pump actively circulates water through
+        the radiators, else None — the only time a fan on a radiator helps.
+
+        The circuit pump (`heatingpump`) runs only during and around pump runs
+        and stops between them, so there is no fanning the buffer's leftovers
+        through the idle gaps. It also runs during a hot-water charge, but then
+        the 3-way valve sends the water to the tank, not the radiators, so a
+        charge (dhw `3wayvalve` / `charging`, or `hpactivity` 'hot water') is not
+        circulation. The direction is the season (the pump's own heating/cooling
+        state before the first evaluation). A pump without `heatingpump` falls
+        back to the compressor activity `hpactivity`."""
+        raw = (hp or {}).get('raw') or {}
+        if not raw:
+            return None
+        on = lambda v: str(v).strip().lower() in ('on', '1', 'true')
+        if 'heatingpump' not in raw:
+            act = raw.get('hpactivity')
+            return act if act in ('heating', 'cooling') else None
+        dhw = raw.get('dhw') if isinstance(raw.get('dhw'), dict) else {}
+        if (not on(raw.get('heatingpump')) or on(dhw.get('3wayvalve'))
+                or on(dhw.get('charging')) or raw.get('hpactivity') == 'hot water'):
+            return None
+        direction = self.last_mode or hp.get('state')
+        return direction if direction in ('heating', 'cooling') else None
 
     def _set_fan(self, client, fan, on, dry=False):
         """Switch one fan plug. Supports zigbee2mqtt and Tasmota plugs."""
@@ -958,38 +1027,101 @@ class Manager:
             return
         client.publish(topic, payload, qos=1)
 
+    @staticmethod
+    def _fan_key(fan):
+        return fan.get('name') or fan.get('topic')
+
+    def _fan_room_gate(self, fan, direction, now_lt):
+        """Per-room gate for one fan. The fans only support: within the last
+        `room_margin` °C to the room's target (below it when heating, above it
+        when cooling) the radiator manages alone, so the gate closes there and
+        reopens `room_hysteresis` further out. Heating uses the room's scheduled
+        setpoint, cooling the cool target. Also closed while a window of the
+        room is open. Stays open for a fan without a `room`, or while the room's
+        temperature or target is unknown — the fan then follows the circulation."""
+        key = self._fan_key(fan)
+        room = fan.get('room')
+        item = self.thermostats.get(room) if room else None
+        if item is None:
+            return True
+        if self._room_window_open(room):
+            self._fan_gate[key] = False
+            return False
+        target = current_setpoint(item, now_lt, direction, self.season_cfg)
+        st = self._room_temp_state(room)
+        temp = st.get('temperature') if isinstance(st, dict) else None
+        if target is None or temp is None:
+            return True
+        try:
+            temp, target = float(temp), float(target)
+        except (TypeError, ValueError):
+            return True
+        margin = self.fan_cfg.get('room_margin', 1.0)
+        hyst = self.fan_cfg.get('room_hysteresis', 0.5)
+        was_open = self._fan_gate.get(key, True)
+        # how far the room still is from its target, in the useful direction
+        need = (target - temp) if direction == 'heating' else (temp - target)
+        gate = need > margin + (0 if was_open else hyst)
+        if gate != was_open:
+            log.info("fan-control: %s room %s %.1f °C vs target %.1f (%s) -> %s",
+                     key, room, temp, target, direction,
+                     "needed" if gate else "close enough")
+        self._fan_gate[key] = gate
+        return gate
+
+    def _fan_serves(self, fan, direction):
+        """Whether this fan runs in this direction: always for cooling; for
+        heating when `fan_control.heating` (default on) and the fan doesn't opt
+        out with `heating: false`."""
+        if direction == 'heating':
+            return bool(self.fan_cfg.get('heating', True) and fan.get('heating', True))
+        return direction == 'cooling'
+
     def _apply_fan_control(self, client, hp=None, now=None):
-        """Drive the radiator-fan plugs from the cooling signal: ON while the heat
-        pump actively cools (after `on_debounce`), held ON for `off_delay` after it
-        stops so the fans keep working the buffer's residual cold through the
-        compressor's off-gaps. Idempotent — only publishes on a state change."""
+        """Drive the radiator-fan plugs: ON only while the pump actively
+        circulates heated or cooled water through the radiators (see
+        _circulation; after `on_debounce`, held `off_delay` after it stops —
+        default 0), and per fan only while its room is still more than
+        `room_margin` from its target (see _fan_room_gate). Idempotent —
+        publishes a plug only when its state changes."""
         if client is None or not (self.fan_cfg.get('enabled') and self.fans):
             return
         now = now if now is not None else time.time()
         if hp is None:
             hp = self.heatpump_state()
-        active = self._cooling_active(hp)
-        if active != self._cool_active:
-            self._cool_active = active
-            self._cool_edge_ts = now
-        if active:
-            want = (now - self._cool_edge_ts) >= self.fan_cfg.get('on_debounce', 30)
+        circ = self._circulation(hp)
+        if circ != self._circ:
+            if circ is not None and self._circ is not None:
+                self._fan_gate.clear()          # direction flipped: re-evaluate fresh
+            self._circ_dir = circ or self._circ
+            self._circ = circ
+            self._circ_edge_ts = now
+        direction = self._circ_dir
+        if circ is not None:
+            want = (now - self._circ_edge_ts) >= self.fan_cfg.get('on_debounce', 30)
             want = want or bool(self._fans_on)        # already on -> stay on
         else:
             want = bool(self._fans_on) and \
-                (now - self._cool_edge_ts) < self.fan_cfg.get('off_delay', 600)
-        if want == bool(self._fans_on):     # None treated as off; no spurious publish
-            self._fans_on = want
-            return
+                (now - self._circ_edge_ts) < self.fan_cfg.get('off_delay', 0)
+        if want != bool(self._fans_on):
+            log.info("fan-control: circulation=%s -> fans %s", circ, "ON" if want else "OFF")
+        self._fans_on = want
         act = self.fan_cfg.get('act', True)
+        now_lt = time.localtime(now)
         for fan in self.fans:
+            key = self._fan_key(fan)
+            on = (want and self._fan_serves(fan, direction)
+                  and self._fan_room_gate(fan, direction, now_lt))
+            if on == bool(self._fan_on.get(key)):   # None treated as off
+                self._fan_on[key] = on
+                continue
             try:
-                self._set_fan(client, fan, want, dry=not act)
+                self._set_fan(client, fan, on, dry=not act)
             except Exception as e:
                 log.error("fan-control publish failed for %s: %s", fan, e)
-        self._fans_on = want
-        log.info("fan-control: cooling=%s -> fans %s%s", active,
-                 "ON" if want else "OFF", "" if act else " (act:false)")
+            self._fan_on[key] = on
+            log.info("fan-control: %s %s%s", key, "ON" if on else "OFF",
+                     "" if act else " (act:false)")
 
     def _free_cooling_state(self, mode, hp):
         """A free-cooling (ventilation) opportunity: it's cooling season, rooms are
@@ -1203,7 +1335,6 @@ class Manager:
 
     def _notify_mode_change(self, old, new):
         """Mail a reminder to physically adjust uncontrollable manual valves."""
-        log.info("mode change %s -> %s", old, new)
         if not self.manual_thermostats:
             return  # nothing actionable to remind about
         action = ("OPEN fully (for cooling)" if new == 'cooling'
@@ -1394,8 +1525,14 @@ class Manager:
 
         fan_line = None
         if self.fan_cfg.get('enabled') and self.fans:
-            fan_line = (f"{'ON' if self._fans_on else 'OFF'} ({len(self.fans)} fan(s)) "
-                        f"— cooling {'active' if self._cool_active else 'idle'}")
+            n_on = sum(1 for f in self.fans if self._fan_on.get(self._fan_key(f)))
+            at_target = [f.get('room') for f in self.fans
+                         if self._fans_on and f.get('room')
+                         and not self._fan_gate.get(self._fan_key(f), True)]
+            fan_line = (f"{n_on}/{len(self.fans)} ON "
+                        f"— {'circulating (' + self._circ + ')' if self._circ else 'no circulation'}"
+                        + (f"; off, room close to target: {', '.join(at_target)}"
+                           if at_target else ""))
 
         free_line = None
         fci = self._free_cooling_info

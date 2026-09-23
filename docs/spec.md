@@ -66,18 +66,29 @@ is not involved, by design (fewer moving parts, no HA dependency).
   remains stored on the device, so heating resumes with a `preset: schedule` /
   `system_mode: auto` restore — no reprogramming. Per-type payloads live in
   config (`cooling_open` / `cooling_restore`), mirroring `schedule_mode`.
-- **`hpcooling: on` drives cooling**, chosen because it is stable across
-  compressor cycles. `hpactivity` (live compressor state) toggles each cycle —
-  used for the status report, not valve control — and `coolingon` was observed
-  to stay `off` even while actively cooling; `hp4way` reads "cooling & defrost"
-  from a resting valve even in winter. All configurable via `heatpump.cooling_when`.
+- **The season follows the pump (`season.source: heatpump`).** hc1 `hpmode`
+  (the pump's main switch: `off | heating | cooling | heating & cooling | auto`)
+  bounds it: with `heating` the house never goes into cooling, with `off` it is
+  standby. hc1 `hpoperatingstate` (`heating | cooling | off`) says what the
+  circuit does now and is taken as-is. It is season-level: unlike `hpactivity`
+  (live compressor state, toggles each cycle and during hot-water charges —
+  used for the fans and the report) it does not follow compressor cycles. In
+  `heating & cooling` it flipped heating → off → cooling twice a day in
+  September 2026, with ~1 h `off` at each changeover, so an idle circuit
+  **holds** the previous season and only `season.standby_after_hours` of idling
+  means standby. `hpcooling` was the signal before and is wrong: it is only the
+  cooling *release* and lags `hpmode` by `cooloffdelay` (72 h), so it read `on`
+  for days after cooling was switched off. The CLI adopts the daemon's season
+  (published on `thermostat_monitor/_season`), since only the daemon has the
+  history; without a daemon an idle pump resolves by its own `coolstart`.
+  `heatpump.cooling_when` remains as the fallback for a pump without
+  `hpoperatingstate`.
 - **Three seasons: heating / cooling / standby.** Heating and cooling are the
   binary the heat pump itself distinguishes. **Standby** (shoulder weather —
-  neither wanted, valves off, warm water only) has no equivalent on the pump
-  (`hpmode` is a `heating | cooling | heating & cooling` enum with no "off"),
-  so it is derived by *this* software from the **outdoor temperature** against
-  `season.standby_below` / `standby_above` (with `standby_hysteresis` to prevent
-  flapping) when `season.source: outdoor_temp`. Domestic hot water is produced
+  neither wanted, valves off, warm water only) is `hpmode: off` or a long idle
+  spell with `source: heatpump`, or is derived from the **outdoor temperature**
+  against `season.standby_below` / `standby_above` (with `standby_hysteresis`
+  to prevent flapping) when `season.source: outdoor_temp`. Domestic hot water is produced
   independently of the heating circuit (`dhw.*`, not `hc1`), so standby never
   affects it. Standby reuses each type's existing window-off `off_signature`
   rather than a new per-type payload.

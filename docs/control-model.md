@@ -8,7 +8,7 @@ cooling, not off with a window open, stuck in an odd mode).
 
 | Setting / signal | Where | What it means |
 |---|---|---|
-| **Season** (`season.mode`, `season.source`) | config + heat pump / outdoor temp | `heating`, `cooling`, or `standby`. `auto` derives it: `source: heatpump` → binary heat/cool from the EMS-ESP `coolingon` signal; `source: outdoor_temp` → 3-season heat/standby/cool from the outdoor temperature (below). The season decides the *intended active state*. |
+| **Season** (`season.mode`, `season.source`) | config + heat pump / outdoor temp | `heating`, `cooling`, or `standby`. `auto` derives it: `source: heatpump` → follow the pump: `hpmode` bounds it (`heating` = never cooling, `off` = standby), `hpoperatingstate` heating/cooling is taken as-is, an idle pump holds the previous season (standby after `standby_after_hours`); `source: outdoor_temp` → 3-season heat/standby/cool from the outdoor temperature (below). The season decides the *intended active state*. |
 | **Standby thresholds** (`season.standby_below`, `season.standby_above`, `season.standby_hysteresis`) | config | With `source: outdoor_temp`: heat below `standby_below`, cool above `standby_above`, **standby** (valves off, warm water only) in between. `standby_hysteresis` widens the standby band by that many °C on both sides *while already in standby*, so a reading hovering at a threshold doesn't flap the season. |
 | **Schedule** (`day/night_hour`, `day/night_temperature`) | per room | The weekly heating program pushed to the device as `schedule_*` strings + the type's `schedule_mode`. Used in **heating**. |
 | **cooling_open / cooling_restore** (`thermostat_types`) | per type | How to force a TRV fully open for cooling, and how to restore it. Used in **cooling**. |

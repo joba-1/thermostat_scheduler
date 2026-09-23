@@ -74,11 +74,13 @@ heatpump:
     outdoor: outdoortemp
     power: hpcurrpower
     pressure: syspress
-  cooling_when:                # OR'd conditions; house is "cooling" if any matches
+  cooling_when:  # fallback only: used when the pump reports no hc1.hpoperatingstate
     - field: hpcooling         # hc1.hpcooling: cooling enabled, stable across cycles
       equals: "on"
     # Avoid hpactivity (toggles per compressor cycle) and hp4way (reads
     # "cooling & defrost" even from a resting valve in winter).
+    # hpcooling is only the cooling *release*: it lags hpmode by cooloffdelay
+    # (72 h), so it is no season signal — the season uses hpmode/hpoperatingstate.
   bounds:                      # warn (digest) if telemetry leaves these ranges
     heating:
       vorlauf: [20, 60]
@@ -110,9 +112,14 @@ heatpump:
 
 season:
   mode: auto                   # auto | heating | cooling | standby
-  source: outdoor_temp         # when auto: heatpump | outdoor_temp | config
-                               #   heatpump     -> binary heat/cool from the pump
-                               #   outdoor_temp -> 3-season heat/standby/cool below
+  source: heatpump             # when auto: heatpump | outdoor_temp | config
+                               #   heatpump     -> follow the pump: hc1.hpmode (main
+                               #                   switch) bounds the season, hc1.
+                               #                   hpoperatingstate heating/cooling is
+                               #                   taken as-is; while it idles ('off')
+                               #                   the previous season holds
+                               #   outdoor_temp -> 3-season heat/standby/cool from the
+                               #                   outdoor temperature (see below)
   control: true                # true: manager drives thermostats to the season state;
                                # false: report-only (flag drifted valves, don't write —
                                # e.g. if another controller owns them)
@@ -124,6 +131,14 @@ season:
   standby_below: 15            # °C outdoor: below this -> heating
   standby_above: 24            # °C outdoor: above this -> cooling
   standby_hysteresis: 1        # °C anti-flap band at each threshold
+  # source==heatpump: the pump idle (neither heating nor cooling) this long ->
+  # standby; shorter gaps (summer-mode afternoons, the ~1 h heating<->cooling
+  # changeover) keep the previous season so the valves aren't re-driven.
+  standby_after_hours: 24
+  # Mail the manual_thermostats reminder once a new season has held this long.
+  # 0 = at once: a hand-set valve left open for cooling must not heat its room for
+  # hours. (In hpmode "heating & cooling" the pump can flip twice a day -> 2 mails.)
+  manual_reminder_after_hours: 0
 
 # Grace before a room-temperature deviation becomes a loud alert. While the
 # room is still moving toward target (or the target changed less than this many
@@ -155,16 +170,24 @@ window_control:
 
 
 # --- Radiator fans (smart plugs) ---
-# Switch fan plugs ON while the heat pump is actively cooling (hpactivity==cooling)
-# to boost radiator heat transfer; an off_delay keeps them running through the
-# compressor's off-gaps (a buffer tank still feeds cold to the radiators then).
+# Switch fan plugs ON while the pump circulates heated/cooled water through the
+# radiators, to boost their heat transfer; per room only until it is close to target.
 fan_control:
   enabled: false
   act: true                    # false = log "would publish ..." only, don't switch
-  on_debounce: 30              # s cooling must be active before switching fans on
-  off_delay: 600               # s to keep fans ON after cooling stops (use residual cold)
+  # Fans run only while the pump circulates water through the radiators (circuit
+  # pump `heatingpump` on, not a hot-water charge), heating or cooling.
+  heating: true                # also support heating (per fan: `heating: false` opts out)
+  # Per fan with a `room`: fans only support — within the last room_margin °C to
+  # the room's target (below the scheduled setpoint when heating, above the cool
+  # target when cooling) the fan goes off; back on room_hysteresis further out.
+  # Also off while a window of the room is open.
+  room_margin: 1.0
+  room_hysteresis: 0.5
+  on_debounce: 30              # s circulation must run before switching fans on
+  off_delay: 0                 # s to keep fans ON after circulation stops (0: off at once)
   fans:                        # zigbee (zigbee2mqtt) and/or tasmota plugs
-    - { type: zigbee, name: "Schlafzimmer Ventilator" }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
+    - { type: zigbee, name: "Schlafzimmer Ventilator", room: "Schlafzimmer" }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
     - { type: tasmota, topic: "ventilator_wz", power: POWER }  # -> cmnd/<topic>/<power> ON|OFF
 
 

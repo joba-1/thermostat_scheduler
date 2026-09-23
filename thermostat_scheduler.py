@@ -71,7 +71,10 @@ def query_monitor(client, userdata, timeout):
     for topic, payload in responses.items():
         if not topic.startswith(monitor_base + '/'):
             continue
-        checked[topic.split('/', 1)[1]] = payload
+        name = topic.split('/', 1)[1]
+        if name.startswith('_'):          # _season, _report: not a device
+            continue
+        checked[name] = payload
     return checked
 
 
@@ -198,11 +201,24 @@ def detect_mode(cfg, client, userdata, timeout):
     # season.source == 'outdoor_temp' a missing reading silently falls back to
     # 'heating', which would push winter schedules onto open valves mid-summer.
     outdoor = (hp_state.get('telemetry') or {}).get('outdoor') if hp_state else None
-    mode = cooling.desired_mode(season_cfg, hp_state, outdoor)
-    if mode == 'heating' and season_cfg.get('mode', 'auto') == 'auto' \
-            and season_cfg.get('source') == 'outdoor_temp' and outdoor is None:
+    # With source == 'heatpump' the daemon's season wins: it holds the season
+    # across the pump's idle gaps and knows how long it has idled, which a
+    # one-shot CLI read cannot. Without a daemon we derive it statelessly.
+    daemon = responses.get('thermostat_monitor/_season')
+    daemon_mode = daemon.get('mode') if isinstance(daemon, dict) else None
+    if (season_cfg.get('mode', 'auto') == 'auto'
+            and season_cfg.get('source', 'heatpump') == 'heatpump'
+            and daemon_mode in ('heating', 'cooling', 'standby')):
+        mode = daemon_mode
+    else:
+        mode = cooling.desired_mode(season_cfg, hp_state, outdoor)
+    blind = ((season_cfg.get('source') == 'outdoor_temp' and outdoor is None)
+             or (season_cfg.get('source', 'heatpump') == 'heatpump'
+                 and hp_state is None and daemon_mode is None))
+    if mode == 'heating' and season_cfg.get('mode', 'auto') == 'auto' and blind:
         raise RuntimeError(
-            "no outdoor temperature available (heat pump telemetry missing), so the "
+            "no heat-pump telemetry (outdoor temperature / operating state) and no "
+            "daemon season available, so the "
             "season cannot be determined and would default to heating. Refusing to "
             "act season-blind — check the heat pump/MQTT, or set season.mode "
             "explicitly in config.yaml.")

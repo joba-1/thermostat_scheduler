@@ -36,11 +36,35 @@ def hp(activity):
     return {'raw': {'hpactivity': activity}, 'active': activity == 'cooling'}
 
 
-def test_cooling_active_signal():
-    assert tm.Manager._cooling_active(hp('cooling')) is True
-    assert tm.Manager._cooling_active(hp('off')) is False
-    assert tm.Manager._cooling_active(hp('hot water')) is False
-    assert tm.Manager._cooling_active(None) is False
+def test_circulation_legacy_signal_is_compressor_activity():
+    mgr = make_mgr()
+    assert mgr._circulation(hp('cooling')) == 'cooling'
+    assert mgr._circulation(hp('heating')) == 'heating'
+    assert mgr._circulation(hp('off')) is None
+    assert mgr._circulation(hp('hot water')) is None
+    assert mgr._circulation(None) is None
+
+
+def pump(heatingpump='on', activity='cooling', three_way='off', charging='off',
+         state='cooling'):
+    return {'state': state,
+            'raw': {'heatingpump': heatingpump, 'hpactivity': activity,
+                    'dhw': {'3wayvalve': three_way, 'charging': charging}}}
+
+
+def test_circulation_follows_the_circuit_pump_not_a_hot_water_charge():
+    mgr = make_mgr()
+    mgr.last_mode = 'cooling'
+    assert mgr._circulation(pump()) == 'cooling'
+    # pre-/post-run: compressor idle but the circuit pump runs -> circulating
+    assert mgr._circulation(pump(activity='off')) == 'cooling'
+    # between runs the circuit pump stops -> nothing to fan
+    assert mgr._circulation(pump(heatingpump='off', activity='off')) is None
+    # hot-water charge: pump runs, but the water goes to the tank
+    assert mgr._circulation(pump(three_way='on', activity='hot water')) is None
+    assert mgr._circulation(pump(charging='on')) is None
+    mgr.last_mode = 'heating'
+    assert mgr._circulation(pump(activity='heating')) == 'heating'
 
 
 def test_fans_on_after_debounce_then_off_after_delay():
@@ -91,3 +115,116 @@ def test_disabled_does_nothing():
     c = FakeClient()
     mgr._apply_fan_control(c, hp('cooling'), now=2000)
     assert c.pub == [] and mgr._fans_on is None
+
+
+def make_room_mgr(**fan_cfg):
+    cfg = {k: (dict(v) if isinstance(v, dict) else v) for k, v in CFG.items()}
+    cfg['fan_control'] = dict(cfg['fan_control'], off_delay=0,
+                              fans=[{'type': 'zigbee', 'name': 'SZ Ventilator',
+                                     'room': 'Schlafzimmer'},
+                                    {'type': 'tasmota', 'topic': 'vent_wz',
+                                     'room': 'Wohnzimmer'}], **fan_cfg)
+    cfg['season'] = {'cool_target': 21}
+    # all-day "day" schedule so the heating setpoint doesn't depend on the clock
+    cfg['thermostats'] = {'Schlafzimmer': {'day_hour': '00:00', 'day_temperature': 20,
+                                           'night_hour': '00:00', 'night_temperature': 20},
+                          'Wohnzimmer': {'day_hour': '00:00', 'day_temperature': 22,
+                                         'night_hour': '00:00', 'night_temperature': 22}}
+    cfg['device_state_file'] = tempfile.mkdtemp() + '/devices.json'
+    return tm.Manager(cfg)
+
+
+def temps(mgr, sz, wz=None):
+    mgr.last_state['Schlafzimmer'] = {'local_temperature': sz}
+    if wz is not None:
+        mgr.last_state['Wohnzimmer'] = {'local_temperature': wz}
+
+
+SZ_ON = ('zigbee2mqtt/SZ Ventilator/set', '{"state": "ON"}')
+SZ_OFF = ('zigbee2mqtt/SZ Ventilator/set', '{"state": "OFF"}')
+
+
+def test_cooling_fan_stops_for_the_last_degree_above_target():
+    mgr = make_room_mgr()
+    c = FakeClient()
+    temps(mgr, 23.0, 21.8)                        # WZ within 1 K of 21 -> not needed
+    mgr._apply_fan_control(c, hp('cooling'), now=1000)
+    mgr._apply_fan_control(c, hp('cooling'), now=1031)
+    assert SZ_ON in c.pub
+    assert not any(t == 'cmnd/vent_wz/POWER' for t, _ in c.pub)
+
+    c.pub.clear()
+    temps(mgr, 22.0)                              # = target + 1 -> off, alone
+    mgr._apply_fan_control(c, hp('cooling'), now=1100)
+    assert c.pub == [SZ_OFF]
+    assert mgr._fans_on is True
+
+    c.pub.clear()
+    temps(mgr, 22.4)                              # hysteresis: not yet
+    mgr._apply_fan_control(c, hp('cooling'), now=1200)
+    assert c.pub == []
+    temps(mgr, 22.6)
+    mgr._apply_fan_control(c, hp('cooling'), now=1300)
+    assert c.pub == [SZ_ON]
+
+
+def test_heating_fan_runs_only_until_one_degree_below_setpoint():
+    mgr = make_room_mgr()
+    c = FakeClient()
+    temps(mgr, 18.5, 21.5)                        # SZ 1.5 K below 20; WZ 0.5 K below 22
+    mgr._apply_fan_control(c, hp('heating'), now=1000)
+    mgr._apply_fan_control(c, hp('heating'), now=1031)
+    assert SZ_ON in c.pub
+    assert not any(t == 'cmnd/vent_wz/POWER' for t, _ in c.pub)
+    c.pub.clear()
+    temps(mgr, 19.0)                              # = setpoint - 1 -> off
+    mgr._apply_fan_control(c, hp('heating'), now=1100)
+    assert c.pub == [SZ_OFF]
+
+
+def test_heating_can_be_disabled_globally_or_per_fan():
+    mgr = make_room_mgr(heating=False)
+    c = FakeClient()
+    temps(mgr, 15.0, 15.0)
+    mgr._apply_fan_control(c, hp('heating'), now=1000)
+    mgr._apply_fan_control(c, hp('heating'), now=1031)
+    assert c.pub == []
+    mgr = make_room_mgr()
+    mgr.fans[0]['heating'] = False
+    c = FakeClient()
+    temps(mgr, 15.0, 15.0)
+    mgr._apply_fan_control(c, hp('heating'), now=1000)
+    mgr._apply_fan_control(c, hp('heating'), now=1031)
+    assert c.pub == [('cmnd/vent_wz/POWER', 'ON')]
+
+
+def test_fans_stop_as_soon_as_circulation_stops():
+    mgr = make_room_mgr()
+    c = FakeClient()
+    temps(mgr, 25.0, 25.0)
+    mgr._apply_fan_control(c, hp('cooling'), now=1000)
+    mgr._apply_fan_control(c, hp('cooling'), now=1031)
+    c.pub.clear()
+    mgr._apply_fan_control(c, hp('off'), now=1040)
+    assert SZ_OFF in c.pub and ('cmnd/vent_wz/POWER', 'OFF') in c.pub
+
+
+def test_open_window_stops_the_rooms_fan():
+    mgr = make_room_mgr()
+    mgr.room_windows['Schlafzimmer'] = ['SZ Fenster']
+    mgr.sensor_state['SZ Fenster'] = {'contact': False}
+    c = FakeClient()
+    temps(mgr, 25.0, 25.0)
+    mgr._apply_fan_control(c, hp('cooling'), now=1000)
+    mgr._apply_fan_control(c, hp('cooling'), now=1031)
+    assert SZ_ON not in c.pub
+    assert ('cmnd/vent_wz/POWER', 'ON') in c.pub
+
+
+def test_fan_with_unknown_room_temperature_follows_circulation():
+    mgr = make_room_mgr()
+    c = FakeClient()
+    mgr._apply_fan_control(c, hp('cooling'), now=1000)
+    mgr._apply_fan_control(c, hp('cooling'), now=1031)
+    assert ('cmnd/vent_wz/POWER', 'ON') in c.pub
+    assert SZ_ON in c.pub

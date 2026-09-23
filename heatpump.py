@@ -97,13 +97,62 @@ def is_active(merged):
     return True
 
 
+# hc1 `hpmode` (the pump's main switch, "Wärmepumpe Betriebsart") -> the seasons
+# it permits. `hpcooling` is no substitute: it is only the cooling *release* and
+# lags the switch by `cooloffdelay` (72 h here), so it still reads "on" for days
+# after cooling was switched off.
+_HPMODE_ALLOWS = {
+    'off': (),
+    'heating': ('heating',),
+    'cooling': ('cooling',),
+    'heating & cooling': ('heating', 'cooling'),
+    'auto': ('heating', 'cooling'),
+}
+
+
+def allowed_seasons(merged):
+    """The seasons hc1 `hpmode` permits, as a tuple (empty = `off`, DHW only),
+    or None when the field is missing or has an unknown value."""
+    val = merged.get('hpmode')
+    if val is None:
+        return None
+    return _HPMODE_ALLOWS.get(str(val).strip().lower())
+
+
+def operating_state(merged):
+    """What the heating circuit does right now: 'heating', 'cooling' or 'off'
+    (hc1 `hpoperatingstate`), else None. Unlike `hpactivity` this does not
+    follow each compressor cycle or a hot-water charge; it is the circuit's
+    season-level state. It goes 'off' in summer mode (above `summertemp`) and
+    for ~1 h at each heating<->cooling changeover."""
+    val = merged.get('hpoperatingstate')
+    if val is None:
+        return None
+    val = str(val).strip().lower()
+    return val if val in ('heating', 'cooling', 'off') else None
+
+
 def parse(boiler, thermostat, hp_cfg):
-    """Return {'mode', 'cooling', 'active', 'telemetry', 'raw'} from EMS-ESP payloads."""
+    """Return {'mode', 'cooling', 'active', 'allowed', 'state', 'telemetry', 'raw'}
+    from EMS-ESP payloads.
+
+    `state` / `allowed` are the pump's own season signals (see operating_state /
+    allowed_seasons). `mode` / `cooling` describe what the pump does now; they
+    come from `state` when the pump reports it and from the configured
+    `cooling_when` conditions only on installs that don't."""
     merged = _flatten(boiler, thermostat)
-    cooling = is_cooling(merged, hp_cfg.get('cooling_when'))
+    state = operating_state(merged)
+    if state is not None:
+        cooling = state == 'cooling'
+        mode = state
+    else:
+        cooling = is_cooling(merged, hp_cfg.get('cooling_when'))
+        mode = 'cooling' if cooling else 'heating'
     return {
-        'mode': 'cooling' if cooling else 'heating',
+        'mode': mode,
         'cooling': cooling,
+        'allowed': allowed_seasons(merged),
+        'state': state,
         'active': is_active(merged),
         'telemetry': telemetry(merged, hp_cfg.get('fields')),
         'raw': merged,
