@@ -227,6 +227,36 @@ def normalize_str(s):
     return ' '.join(str(s).split())
 
 
+def _collapse_repeats(tokens):
+    """Drop a slot that repeats the one before it (same time, same temp).
+
+    The SONOFF TRV-ZBT always reports 12 slots per day and pads a shorter
+    schedule by repeating the last entry ("... 23:00/19.5 23:00/19.5 ..."),
+    measured 2026-09-24. A repeated slot changes nothing; without collapsing,
+    every 6-slot schedule we write would read back as a permanent mismatch.
+    Our own schedules never repeat a slot (their times always differ)."""
+    out = []
+    for tok in tokens:
+        if not out or tok != out[-1]:
+            out.append(tok)
+    return out
+
+
+def schedules_equal(expected, reported):
+    """True if two schedule strings describe the same schedule: the mode tag
+    in the carrier entry is ignored (modetag.normalize), trailing padding is
+    collapsed, and temperatures compare numerically ("19" == "19.0")."""
+    def canon(s):
+        toks = []
+        for tok in modetag.normalize(s).split():
+            if '/' in tok:
+                t, v = tok.split('/', 1)
+                tok = f"{t}/{_normalize_temp_token_for_compare(v)}"
+            toks.append(tok)
+        return _collapse_repeats(toks)
+    return canon(expected) == canon(reported)
+
+
 def compare_and_collect_mismatches(expected, reported_state):
     """Return a dict of mismatched keys -> (expected, reported).
 
@@ -262,7 +292,7 @@ def compare_and_collect_mismatches(expected, reported_state):
         # deliberately not part of the configured schedule — compare without it,
         # or every tagged room reports a permanent settings_mismatch.
         if isinstance(ev, str) and isinstance(rv, str) and modetag.is_schedule(ev):
-            if modetag.normalize(ev).split() != modetag.normalize(rv).split():
+            if not schedules_equal(ev, rv):
                 mismatches[k] = (ev, rv)
             continue
 

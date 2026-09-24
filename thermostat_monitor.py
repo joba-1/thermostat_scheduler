@@ -41,7 +41,7 @@ import devices
 import sensors as sensors_mod
 from alerts import Alerter, make_issue
 
-__version__ = "3.3.1"
+__version__ = "3.3.2"
 
 DAY_MINUTES = 24 * 60
 

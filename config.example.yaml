@@ -233,6 +233,40 @@ thermostat_types:
     builtin_window_off: {open_window: "OFF"}
     # No off_signature: SONOFF flips system_mode->heat on a setpoint write, so
     # window-off uses plain system_mode:off tracked by the software latch.
+  # SONOFF TRV Gen2 (TRV-ZBT, Telink TLSR8258, needs zigbee2mqtt >= 2.12.1 and a
+  # current coordinator firmware -- it would not even try to join Z-Stack
+  # 20221226). Like TRVZB, but: setpoint range 5-30 (not 4-35), the valve limit
+  # is heating_valve_position (not valve_opening_degree), and three weekly
+  # schedules -- group 1 is both edited and active (pinned below). It reports
+  # 12 slots per day, padding ours by repeating the last one; the comparison
+  # collapses that (common.schedules_equal). Measured 2026-09-24 on Schlafzimmer.
+  TRV-ZBT:
+    schedule_mode:
+      system_mode: auto
+      temperature_accuracy: -0.6
+      heating_valve_position: 100    # re-assert the clamp: a stuck 0 never heats
+      schedule_group_to_edit: "1"
+      schedule_active_group: "1"
+    schedule_prefix: weekly_schedule
+    cooling_open:
+      system_mode: heat
+      occupied_heating_setpoint: 30  # the maximum; fully open all the same
+      heating_valve_position: 100
+    cooling_restore:
+      system_mode: auto
+      heating_valve_position: 100
+    manual_marker:
+      field: system_mode
+      equals: heat
+    builtin_window_off:
+      open_window: "OFF"
+    # Same "our off" as TRVZB: the valve clamp at 0 (verified: off + 0 is
+    # applied and reported back; auto + 100 restores it).
+    off_signature:
+      system_mode: "off"
+      heating_valve_position: 0
+    off_clear:
+      heating_valve_position: 100
   # AVATTO ME168/ME167 have no built-in window detection -> no builtin_window_off.
 
 # Devices are identified by their zigbee ieee address (stable across renames) and
