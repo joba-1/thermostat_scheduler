@@ -178,7 +178,11 @@ fan_control:
   # Fans run only while water circulates through the radiators: heating-circuit
   # pump PC1 flow (`pc1flow`) above min_flow l/h and no hot-water charge. PC1 keeps
   # running through the compressor's pauses, feeding the buffer's heat/cold.
-  heating: true                # also support heating (per fan: `heating: false` opts out)
+  # Roles per fan (2026-09-24): `cooling` is on unless a fan says `cooling: false`;
+  # `heating` is off unless a fan says `heating: true` -- only where a radiator
+  # cannot keep its room warm alone. These two keys are house-wide master switches.
+  heating: true
+  cooling: true
   # Per fan with a `room`: fans only support — within the last room_margin °C to
   # the room's target (below the scheduled setpoint when heating, above the cool
   # target when cooling) the fan goes off; back on room_hysteresis further out.

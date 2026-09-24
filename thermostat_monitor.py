@@ -41,7 +41,7 @@ import devices
 import sensors as sensors_mod
 from alerts import Alerter, make_issue
 
-__version__ = "3.3.2"
+__version__ = "3.3.3"
 
 DAY_MINUTES = 24 * 60
 
@@ -1079,12 +1079,21 @@ class Manager:
         return gate
 
     def _fan_serves(self, fan, direction):
-        """Whether this fan runs in this direction: always for cooling; for
-        heating when `fan_control.heating` (default on) and the fan doesn't opt
-        out with `heating: false`."""
+        """Whether this fan runs in this direction. Each fan has two roles:
+
+        - `cooling` (default on): radiators are weak cold emitters, so every fan
+          helps in summer.
+        - `heating` (default off): only where a radiator cannot keep its room
+          warm on its own (2026-09-24: Waschküche, later perhaps Caros and a new
+          one in WC UG). Fans elsewhere are not wanted outside hot summer days.
+
+        `fan_control.heating` / `fan_control.cooling` are master switches for the
+        whole house (default on)."""
         if direction == 'heating':
-            return bool(self.fan_cfg.get('heating', True) and fan.get('heating', True))
-        return direction == 'cooling'
+            return bool(self.fan_cfg.get('heating', True) and fan.get('heating', False))
+        if direction == 'cooling':
+            return bool(self.fan_cfg.get('cooling', True) and fan.get('cooling', True))
+        return False
 
     def _apply_fan_control(self, client, hp=None, now=None):
         """Drive the radiator-fan plugs: ON only while water circulates

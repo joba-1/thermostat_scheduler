@@ -183,6 +183,8 @@ def test_cooling_fan_stops_for_the_last_degree_above_target():
 
 def test_heating_fan_runs_only_until_one_degree_below_setpoint():
     mgr = make_room_mgr()
+    for f in mgr.fans:
+        f['heating'] = True
     c = FakeClient()
     temps(mgr, 18.5, 21.5)                        # SZ 1.5 K below 20; WZ 0.5 K below 22
     mgr._apply_fan_control(c, hp('heating'), now=1000)
@@ -195,21 +197,40 @@ def test_heating_fan_runs_only_until_one_degree_below_setpoint():
     assert c.pub == [SZ_OFF]
 
 
-def test_heating_can_be_disabled_globally_or_per_fan():
-    mgr = make_room_mgr(heating=False)
+def test_fan_roles_heating_is_opt_in_cooling_is_opt_out():
+    """Since 2026-09-24 a fan heats only where it is asked to (`heating: true`);
+    every fan cools unless it says `cooling: false`. Master switches
+    fan_control.heating / fan_control.cooling can turn a role off house-wide."""
+    mgr = make_room_mgr()                       # neither fan says heating: true
     c = FakeClient()
     temps(mgr, 15.0, 15.0)
     mgr._apply_fan_control(c, hp('heating'), now=1000)
     mgr._apply_fan_control(c, hp('heating'), now=1031)
     assert c.pub == []
+
     mgr = make_room_mgr()
-    mgr.fans[0]['heating'] = False
+    mgr.fans[1]['heating'] = True               # the Wohnzimmer fan heats
     c = FakeClient()
     temps(mgr, 15.0, 15.0)
     mgr._apply_fan_control(c, hp('heating'), now=1000)
     mgr._apply_fan_control(c, hp('heating'), now=1031)
     assert c.pub == [('cmnd/vent_wz/POWER', 'ON')]
 
+    mgr = make_room_mgr(heating=False)          # master switch off
+    mgr.fans[1]['heating'] = True
+    c = FakeClient()
+    temps(mgr, 15.0, 15.0)
+    mgr._apply_fan_control(c, hp('heating'), now=1000)
+    mgr._apply_fan_control(c, hp('heating'), now=1031)
+    assert c.pub == []
+
+    mgr = make_room_mgr()
+    mgr.fans[0]['cooling'] = False              # a heating-only fan
+    c = FakeClient()
+    temps(mgr, 25.0, 25.0)
+    mgr._apply_fan_control(c, hp('cooling'), now=1000)
+    mgr._apply_fan_control(c, hp('cooling'), now=1031)
+    assert c.pub == [('cmnd/vent_wz/POWER', 'ON')]
 
 def test_fans_stop_as_soon_as_circulation_stops():
     mgr = make_room_mgr()

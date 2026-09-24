@@ -164,8 +164,12 @@ here 120): the radiators still hold some heat or cold for a while.
   or **Tasmota** (`{type: tasmota, topic: ..., power: POWER}` → `cmnd/<topic>/<power>`).
 - `on_debounce` (default 30 s) avoids reacting to a momentary blip; `off_delay`
   (default 0) can hold the fans on after circulation stops.
-- **Heating too** (`heating: true`, the default); a single fan opts out with
-  `heating: false`, e.g. a loud standing fan in a room that heats fine alone.
+- **Two roles per fan** (since 2026-09-24): every fan **cools** unless it says
+  `cooling: false`; a fan **heats** only if it says `heating: true` -- only where a
+  radiator cannot keep its room warm on its own (planned: Waschküche, WC UG,
+  perhaps Caros). `fan_control.heating` / `fan_control.cooling` switch a role off
+  for the whole house. A plug that is packed away for the winter is harmless:
+  nothing is sent to a cooling-only fan outside cooling.
 - **Per room:** give a fan a `room:` and it only supports: it switches off once the
   room is within `room_margin` (default 1 °C) of its target — below the scheduled
   setpoint when heating, above the cool target (`season.cool_target` or the room's

@@ -190,7 +190,11 @@ fan_control:
   # Fans run only while water circulates through the radiators: heating-circuit
   # pump PC1 flow (`pc1flow`) above min_flow l/h and no hot-water charge. PC1 keeps
   # running through the compressor's pauses, feeding the buffer's heat/cold.
-  heating: true                # also support heating (per fan: `heating: false` opts out)
+  # Roles per fan (2026-09-24): `cooling` is on unless a fan says `cooling: false`;
+  # `heating` is off unless a fan says `heating: true` -- only where a radiator
+  # cannot keep its room warm alone. These two keys are house-wide master switches.
+  heating: true
+  cooling: true
   # Per fan with a `room`: fans only support — within the last room_margin °C to
   # the room's target (below the scheduled setpoint when heating, above the cool
   # target when cooling) the fan goes off; back on room_hysteresis further out.
@@ -201,15 +205,20 @@ fan_control:
   off_delay: 120               # s to keep fans ON after circulation stops (radiators
                                # still hold some heat/cold for a while)
   fans:
-    # heating: false on Schlafzimmer + Wohnzimmer (2026-09-23): a fan there is not
-    # wanted in the heating season for now.
-    - { type: tasmota, topic: "nous3", power: POWER, room: "Schlafzimmer", heating: false }  # Nous A1T plug -> cmnd/nous3/POWER - Schlafzimmer
+    # Cooling fans (summer; some plugs are packed away outside hot days -- a missing
+    # plug is harmless, nothing is sent to it outside cooling):
+    - { type: tasmota, topic: "nous3", power: POWER, room: "Schlafzimmer" }  # Nous A1T plug -> cmnd/nous3/POWER - Schlafzimmer
     - { type: tasmota, topic: "nous4", power: POWER, room: "Bad OG" }  # Nous A1T plug -> cmnd/nous4/POWER - Bad OG
-    - { type: zigbee, name: "Wohnzimmer Fan Plug", room: "Wohnzimmer", heating: false }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
+    - { type: zigbee, name: "Wohnzimmer Fan Plug", room: "Wohnzimmer" }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
     - { type: zigbee, name: "NZ1 Esszimmer Lüfter", room: "Esszimmer" }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
     - { type: zigbee, name: "NZ2 Julians Lüfter", room: "Julians" }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
     - { type: zigbee, name: "NZ3 Dusche", room: "Dusche" }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
     - { type: zigbee, name: "Z2 Arbeitszimmer Fan Plug", room: "Arbeitszimmer" }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
+    # Heating fans (planned 2026-09-24; add once the plugs exist):
+    #   Waschkueche -- Waschkueche + Flur are one long room through the house with one radiator
+    #   WC UG       -- UG struggles to stay warm (hand valve, no thermostat: no room gate)
+    #   Caros       -- maybe later
+    # - { type: zigbee, name: "<plug>", room: "Waschküche", heating: true, cooling: false }
 
 # --- Free-cooling reminder: mail "open windows" when outside air < warmest room ---
 free_cooling:
