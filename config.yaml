@@ -476,7 +476,7 @@ thermostats:
     day_temperature: 22.5
     night_hour: "23:00"
     night_temperature: 20.5
-    type: VNTH-T2_v2
-    ieee: '0xa4c1386e2bd2e3b9'
+    type: TRVZB                    # since 2026-09-24; was VNTH-T2_v2 0xa4c1386e2bd2e3b9 (now "Wohnzimmer Thermostat alt")
+    ieee: '0xc09b9efffeaf4972'     # the TRVZB that was Schlafzimmer until 2026-09-24
     sensors:
       temperature: {ieee: '0xa4c13835190efbf5', name: "Wohnzimmer Luft"} # also fed to the heat pump as remote thermostat (remote_feed)
