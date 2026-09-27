@@ -423,8 +423,8 @@ thermostats:
     day_temperature: 21.0
     night_hour: "23:00"
     night_temperature: 19.5
-    type: VNTH-T2_v2
-    ieee: '0xa4c138987bc90a8e'
+    type: TRV-ZBT
+    ieee: '0xa4c138a799798166'
     sensors:
       windows: [{ieee: '0xa4c138bb04822b91', name: "Esszimmer Terrasse"}]
   Julians:
