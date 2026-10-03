@@ -412,8 +412,8 @@ thermostats:
     day_temperature: 16.0
     night_hour: "23:00"
     night_temperature: 16.0
-    type: ME168_1
-    ieee: '0xa4c1384abe34c836'
+    type: TRV-ZBT
+    ieee: '0xa4c1381b32d014c9'
     sensors:
       windows: [{ieee: '0xa4c1385f5f43d266', name: "Dusche Fenster"}]
     window:
