@@ -119,12 +119,17 @@ def battery_issue(reported, limit):
 
 
 def classify_device(name, cfg_item, thermostat_types, mqtt_cfg,
-                    reported, last_seen_ts, now_ts, limits, mode='heating'):
+                    reported, last_seen_ts, now_ts, limits, mode='heating',
+                    window_off=False):
     """Classify one thermostat. `limits` carries battery_limit + unseen_interval.
 
     Manual-override and settings-mismatch checks only run in heating mode: in
     cooling mode the device is intentionally driven off its weekly schedule, so
     those comparisons are meaningless. Battery and life-sign always run.
+
+    `window_off`: the room's valve is off because *we* closed it for an open
+    window. That off is expected, so it is neither a user's change at the device
+    nor a settings mismatch.
     """
     issues = []
     subject = f"{name} thermostat"
@@ -162,7 +167,7 @@ def classify_device(name, cfg_item, thermostat_types, mqtt_cfg,
     # our own lost writes. Season-independent, so it precedes the early return.
     verdict = cooling.tag_verdict(
         type_cfg, reported, type_cfg.get('schedule_prefix', 'schedule'))
-    if verdict['verdict'] == 'user_changed':
+    if verdict['verdict'] == 'user_changed' and not window_off:
         issues.append(make_issue(
             f"{name}:override", 'user_override', subject,
             f"we set {verdict['tag_mode']} (valve should be '{verdict['expected']}'), "
@@ -175,8 +180,9 @@ def classify_device(name, cfg_item, thermostat_types, mqtt_cfg,
             "rewritten by something that is not us",
             severity='info'))
 
-    # manual override vs settings mismatch (heating mode only)
-    if mode != 'heating':
+    # manual override vs settings mismatch (heating mode only); our own
+    # window-off is expected to differ from the configured settings
+    if mode != 'heating' or window_off:
         return issues
     if cooling.is_manual_override(type_cfg, reported):
         issues.append(make_issue(f"{name}:manual", 'manual_override', subject,

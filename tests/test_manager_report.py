@@ -670,3 +670,14 @@ def test_collect_issues_flags_frozen_trv_temperature():
     mgr.trv_temp_seen['Bad OG'] = _iso(now - 600)
     issues = mgr.collect_issues('heating', now, time.localtime(now), None)
     assert not [i for i in issues if i.kind == 'stale_temperature']
+
+
+def test_window_off_room_is_not_listed_as_manual():
+    from test_tag_verdict import tagged
+    mgr = make_mgr()
+    mgr.last_state['Bad OG'] = tagged({'system_mode': 'off'}, 'heating')
+    # tag says heating, valve is off -> looks like a user's doing ...
+    assert mgr.manual_overrides() == ['Bad OG']
+    # ... unless that off is the one we latched for an open window
+    mgr.window_off['Bad OG'] = '2026-10-04T09:15:39'
+    assert mgr.manual_overrides() == []

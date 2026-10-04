@@ -41,7 +41,7 @@ import devices
 import sensors as sensors_mod
 from alerts import Alerter, make_issue
 
-__version__ = "3.3.4"
+__version__ = "3.3.5"
 
 DAY_MINUTES = 24 * 60
 
@@ -716,7 +716,8 @@ class Manager:
             seen_ts = self._effective_seen(self.last_seen.get(name))
             issues += health.classify_device(
                 name, item, self.thermostat_types, self.mqtt_cfg,
-                reported, seen_ts, now_ts, limits, mode=mode)
+                reported, seen_ts, now_ts, limits, mode=mode,
+                window_off=self._off_by_window(name))
 
             # frozen temperature: the TRV's own local_temperature normally drifts
             # several times a day; a value stuck for hours means an unreliable
@@ -1372,6 +1373,10 @@ class Manager:
         self.alerter.notify_rich(f"[thermostat] mode changed to {new}", intro,
                                  self.manual_thermostats)
 
+    def _off_by_window(self, room):
+        """True if `room`'s valve is off because we latched it for an open window."""
+        return room in self.window_off and cooling.is_off(self.last_state.get(room))
+
     def manual_overrides(self):
         """List rooms a *user* has taken over — not merely rooms whose reported
         state matches none of our signatures.
@@ -1389,7 +1394,8 @@ class Manager:
             prefix = type_cfg.get('schedule_prefix', 'schedule')
             verdict = cooling.tag_verdict(type_cfg, reported, prefix)['verdict']
             if verdict == 'user_changed':
-                out.append(name)
+                if not self._off_by_window(name):
+                    out.append(name)
             elif verdict == 'untagged' and cooling.is_manual_override(type_cfg, reported):
                 out.append(name)      # no tag to judge by: fall back to the old rule
         return out

@@ -113,3 +113,16 @@ def test_users_plain_off_is_still_respected():
     tag is what catches it: we said cooling, the valve is off."""
     assert verdict(tagged({'system_mode': 'off'}, 'cooling')) == 'user_changed'
     assert 'user_override' in _kinds(tagged({'system_mode': 'off'}, 'cooling'))
+
+
+def test_our_window_off_is_not_a_user_change_or_mismatch():
+    """A valve we closed for an open window reports off while the tag still says
+    heating. That is ours: no 'changed at the device', no settings mismatch."""
+    off = tagged({'system_mode': 'off'}, 'heating')
+    def kinds(window_off):
+        return [i.kind for i in health.classify_device(
+            'Waschküche', ITEM, TYPES, {'base_topic': 'zigbee2mqtt'},
+            off, 1000.0, 1000.0, LIMITS, mode='heating', window_off=window_off)]
+    assert 'user_override' in kinds(False)          # a user's off is still flagged
+    assert 'user_override' not in kinds(True)
+    assert 'settings_mismatch' not in kinds(True)
