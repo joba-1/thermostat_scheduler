@@ -104,6 +104,10 @@ now the **sole** window controller. Event-driven, not on the eval timer:
     season-aware intended payload via `cooling.build_intended_payload(..., reported=None)`
     (cooling adds `system_mode: heat` so an off valve actually turns on), then clear
     the latch. A user's manual off is never auto-restored.
+- `window_control.ignore_cooling` / `ignore_heating` (legacy `ignore` = default for
+  both; standby follows heating) make `_ignore_windows(mode)` true: every window
+  counts as closed, so no TRV is switched off and any off we set is restored;
+  the status banner warns while the current season ignores windows.
 - `window_control.act: false` does everything except publish (detect + log + status).
 - `on_connect` publishes each type's `builtin_window_off` once
   (`window_detection: OFF` / `open_window: OFF`) so the TRV's own detection doesn't

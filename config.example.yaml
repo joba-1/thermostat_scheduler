@@ -162,8 +162,9 @@ sensors:
 window_control:
   enabled: true
   act: true                    # false = detect + log + show in status, don't publish
-  ignore: false                # true = cool/heat regardless of open windows (never
-                               # switch a TRV off); a warning is shown in status/web/mail
+  ignore_cooling: false        # true = cool regardless of open windows (never switch a
+  ignore_heating: false        # TRV off); likewise for heating. A warning is shown in
+                               # status/web/mail. Legacy `ignore:` sets both if unset.
   open_debounce: 5             # s a window must stay open before switching off
   close_debounce: 5            # s closed before restoring
   disable_builtin: true        # on connect, turn off each TRV's own window detection

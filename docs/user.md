@@ -143,6 +143,10 @@ old Home Assistant "lüften/heizen" automations — control now lives here.
 - Every decision is logged (`journalctl -u thermostat_monitor`), and the status
   report lists rooms currently **Off (window open)** and shows `off (window)` in
   the thermostat's state column.
+- Open windows can be ignored per season: `window_control.ignore_cooling` /
+  `ignore_heating` (default off; the legacy `ignore` sets both when they are
+  unset). The room is then conditioned despite the window and the status banner
+  warns. Currently on for cooling only.
 - Kill switch: `window_control.act: false` keeps detecting/logging/status without
   touching any valve; `enabled: false` turns the feature off.
 

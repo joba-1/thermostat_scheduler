@@ -158,7 +158,8 @@ def test_z2m_link_omitted_when_ieee_unknown_or_disabled():
 
 def test_window_ignore_warns_and_does_not_switch_off():
     cfg = {k: (dict(v) if isinstance(v, dict) else v) for k, v in CFG.items()}
-    cfg['window_control'] = {'enabled': True, 'act': True, 'ignore': True}
+    cfg['window_control'] = {'enabled': True, 'act': True, 'ignore_cooling': True}
+    cfg['season'] = {'mode': 'cooling', 'cool_target': 21}
     cfg['web'] = {'enabled': True}
     cfg['device_state_file'] = tempfile.mkdtemp() + '/devices.json'
     mgr = tm.Manager(cfg)
@@ -179,6 +180,20 @@ def test_window_ignore_warns_and_does_not_switch_off():
     assert '⚠' in mgr.status_report()                  # text report carries it
     mgr._last_report = d
     assert 'conditioning despite' in mgr.web_page()     # web banner
+
+
+def test_window_ignore_is_per_season():
+    mgr = make_mgr()
+    mgr.window_cfg = {'enabled': True, 'ignore_cooling': True, 'ignore_heating': False}
+    assert mgr._ignore_windows('cooling') is True
+    assert mgr._ignore_windows('heating') is False
+    assert mgr._ignore_windows('standby') is False       # standby follows heating
+    mgr.window_cfg = {'enabled': True, 'ignore': True}   # legacy key -> both
+    assert mgr._ignore_windows('cooling') and mgr._ignore_windows('heating')
+    mgr.window_cfg = {'enabled': True, 'ignore': True, 'ignore_heating': False}
+    assert mgr._ignore_windows('cooling') and not mgr._ignore_windows('heating')
+    mgr.window_cfg = {'enabled': True}
+    assert not mgr._ignore_windows('cooling')
 
 
 def test_seen_style_highlights_stale_and_warming_page_polls_fast():

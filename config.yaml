@@ -174,7 +174,10 @@ sensors:
 window_control:
   enabled: true
   act: true                   # false = detect + log + show in status, but don't publish
-  ignore: true                # cool/heat regardless of open windows (warning shown)
+  # Condition regardless of open windows (never switch a TRV off; warning shown),
+  # set per season. Only cooling for now; heating still switches off on open.
+  ignore_cooling: true
+  ignore_heating: false
   open_debounce: 5            # seconds a window must stay open before switching off
   close_debounce: 5           # seconds closed before restoring
   disable_builtin: true       # on connect, turn off each TRV's own window detection

@@ -1231,6 +1231,13 @@ class Manager:
               f"ended {info['until']}{note}")],
             "The compressor resumed normal operation.")
 
+    def _ignore_windows(self, mode):
+        """True if open windows are to be ignored in season `mode`: the
+        `ignore_cooling` / `ignore_heating` switch (standby follows heating);
+        the legacy single `ignore` is the default for both."""
+        key = 'ignore_cooling' if mode == 'cooling' else 'ignore_heating'
+        return bool(self.window_cfg.get(key, self.window_cfg.get('ignore', False)))
+
     def _apply_window_control(self, room, client):
         """Fired after the debounce: switch the room's TRV off (window open) or
         restore its intended state (window closed), honouring manual override and
@@ -1248,8 +1255,8 @@ class Manager:
         any_open = self._room_window_open(room)
         # "ignore window state": condition the room regardless of open windows. Treat
         # every window as closed so we never switch a TRV off and restore any we did
-        # (a warning is surfaced in the status report / web / mail).
-        if self.window_cfg.get('ignore'):
+        # (a warning is surfaced in the status report / web / mail). Set per season.
+        if self._ignore_windows(self._desired_mode(self.heatpump_state())):
             any_open = False
 
         # Do we own this room's off? Either the device shows our off_signature, or
@@ -1566,7 +1573,7 @@ class Manager:
 
         # warning when window state is being ignored (conditioning regardless)
         warn_line = None
-        if self.window_cfg.get('enabled') and self.window_cfg.get('ignore'):
+        if self.window_cfg.get('enabled') and self._ignore_windows(mode):
             open_now = sorted(r for r in self.thermostats if self._room_window_open(r))
             # Keep it to the count: the room names are already in the table, and
             # the banner is read at a glance.
