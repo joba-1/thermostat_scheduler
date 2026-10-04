@@ -176,8 +176,11 @@ not visible or editable at the device — so the tag rides there.
   Minutes below 32 therefore mean "not written by us".
 - **Generation** increments on every write, which separates "our write was lost"
   (tag one behind) from "the user moved the valve" (tag current, actuation
-  disagrees). Saturday and Sunday carry the same value; a disagreement means the
-  schedule was rewritten by something that is not us.
+  disagrees). Saturday and Sunday carry the same value; a disagreement means one
+  day of a multi-day write was lost (a weak link drops single Tuya datapoints --
+  seen on Waschküche, 2026-10-04: Saturday landed, Sunday kept an older tag) or the
+  schedule was changed behind our back. The daemon re-sends just the two carrier
+  days (`_apply_cooling`, backoff key `('tag', room)`); it touches no control field.
 - **Off is tagged `idle`** — a closed valve is idle whatever the season wants.
   The tag rides in the schedule, so it forces nothing on, and the window latch
   still records *why* it is off. Without this nothing is ever tagged in standby,

@@ -41,7 +41,7 @@ import devices
 import sensors as sensors_mod
 from alerts import Alerter, make_issue
 
-__version__ = "3.3.5"
+__version__ = "3.3.6"
 
 DAY_MINUTES = 24 * 60
 
@@ -2437,6 +2437,25 @@ footer{color:#9ca3af;font-size:12px;text-align:center;margin-top:8px}
                     and not cooling.is_our_off(type_cfg, reported)
                     and self._reported_since_apply(name)):
                 settled = False
+            if (settled and verdict == 'disagree' and isinstance(reported, dict)
+                    and self._reported_since_apply(name)
+                    and self._retry_due(('tag', name))):
+                # The multi-day schedule write landed on one carrier day only (a
+                # weak link drops single Tuya datapoints). Actuation is untouched
+                # by the carrier minute, so re-send just those two days.
+                payload = self._stamp_tag({}, name, item, type_cfg, want, reported)
+                if payload:
+                    if published:
+                        time.sleep(self.mqtt_cfg.get('delay_between_messages', 1))
+                    client.publish(self._trv_set_topic(name), json.dumps(payload), qos=1)
+                    published += 1
+                    self.applied_at[name] = iso_now()
+                    self._retry_note(('tag', name))
+                    log.info("cooling: %s carrier days disagree, re-sent tag (%s)",
+                             name, payload)
+                continue
+            if verdict == 'ok':
+                self._retry_clear(('tag', name))
             if settled:
                 continue
             payload = (cooling.build_open_payload(type_cfg) if want == 'cooling'

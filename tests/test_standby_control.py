@@ -101,3 +101,23 @@ def test_standby_leaves_manual_alone():
     mgr._apply_cooling(c, 'standby', [])
     assert sent(c, ESS_SET) == []
     assert mgr.applied_mode.get('Esszimmer') != 'standby'
+
+
+def test_split_carrier_tag_is_re_sent_without_touching_the_valve():
+    """One day of a multi-day schedule write was lost (Saturday landed, Sunday did
+    not): re-send only the two carrier days, never the control fields."""
+    from test_tag_verdict import tagged
+    mgr, c = make_mgr(), FakeClient()
+    mgr.season_cfg = {'mode': 'heating'}
+    mgr.applied_mode['Esszimmer'] = 'heating'
+    mgr.last_state['Esszimmer'] = tagged({'preset': 'schedule', 'system_mode': 'heat'},
+                                         'heating', gen=1, sat_mode='idle')
+    mgr._apply_cooling(c, 'heating', [])
+    msgs = sent(c, ESS_SET)
+    assert len(msgs) == 1
+    assert set(msgs[0]) == {'schedule_saturday', 'schedule_sunday'}
+    assert msgs[0]['schedule_saturday'] == msgs[0]['schedule_sunday']
+    # backoff: the very next pass does not write again
+    c.published.clear()
+    mgr._apply_cooling(c, 'heating', [])
+    assert sent(c, ESS_SET) == []

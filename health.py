@@ -176,8 +176,9 @@ def classify_device(name, cfg_item, thermostat_types, mqtt_cfg,
     elif verdict['verdict'] == 'disagree':
         issues.append(make_issue(
             f"{name}:tagsplit", 'tag_mismatch', subject,
-            "the two schedule carrier days disagree — the weekly schedule was "
-            "rewritten by something that is not us",
+            "the two schedule carrier days disagree — one day of a write of "
+            "ours was lost, or the schedule was changed behind our back; "
+            "the tag is re-sent automatically",
             severity='info'))
 
     # manual override vs settings mismatch (heating mode only); our own
