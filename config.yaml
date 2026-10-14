@@ -50,8 +50,8 @@ device_state_file: ~/.local/state/thermostat_manager/devices.json
 # Read-only status web page (serves the latest cached overview; no auth).
 web:
   enabled: true
-  host: "0.0.0.0"      # bind address; 0.0.0.0 = reachable on the LAN
-  port: 8099
+  host: "127.0.0.1"      # bind address; 0.0.0.0 = reachable on the LAN
+  port: 8101
   refresh: 60          # client auto-refresh interval (seconds)
   z2m_url: "http://zigbee:8104"   # zigbee2mqtt frontend; device name cells link here
   history:             # per-room history charts (read on demand from HA InfluxDB)
@@ -108,8 +108,8 @@ heatpump:
     hum_topic: ems-esp/thermostat/hc1/remotehum
     interval: 60                # seconds between republishes of the selected value
     stale_after: 3600           # a candidate older than this (1 h) is "completely stale" -> excluded
-    temp_offset: -3             # K added to the fed temperature: sensors sit high, air at
-                                # radiator/pipe level is ~3K cooler. Lowers the pump's dew
+    temp_offset: -2             # K added to the fed temperature: sensors sit high, air at
+                                # radiator/pipe level is ~2K cooler. Lowers the pump's dew
                                 # floor -> colder flow (down to the hpminflowtemp=18 floor).
 
 
@@ -133,7 +133,7 @@ season:
   # standby in between. hysteresis widens the standby band by that many °C on the
   # side we're already in, so a reading hovering near a threshold doesn't flap.
   standby_below: 15           # °C outdoor: below this -> heating
-  standby_above: 24           # °C outdoor: above this -> cooling
+  standby_above: 22           # °C outdoor: above this -> cooling
   standby_hysteresis: 1       # °C band to avoid flapping at either threshold
   # source==heatpump: the pump idle (neither heating nor cooling) this long ->
   # standby; shorter gaps (summer-mode afternoons, the ~1 h heating<->cooling
@@ -190,9 +190,8 @@ window_control:
 fan_control:
   enabled: true    # re-enabled 2026-07-31 per request (was disabled 2026-07-29)
   act: true
-  # Fans run only while water circulates through the radiators: heating-circuit
-  # pump PC1 flow (`pc1flow`) above min_flow l/h and no hot-water charge. PC1 keeps
-  # running through the compressor's pauses, feeding the buffer's heat/cold.
+  # Fans run only while the pump circulates water through the radiators (circuit
+  # pump `heatingpump` on, not a hot-water charge), heating or cooling.
   # Roles per fan (2026-09-24): `cooling` is on unless a fan says `cooling: false`;
   # `heating` is off unless a fan says `heating: true` -- only where a radiator
   # cannot keep its room warm alone. These two keys are house-wide master switches.
@@ -435,8 +434,8 @@ thermostats:
     day_temperature: 22.5
     night_hour: "23:00"
     night_temperature: 20.5
-    type: VNTH-T2_v2
-    ieee: '0xa4c1388bb393c230'
+    type: TRVZB
+    ieee: '0xc09b9efffeaf4972'
     sensors:
       windows: [{ieee: '0xa4c1380eede748c6', name: "Balkon"}]   # added from HA area map
   Schlafzimmer:
