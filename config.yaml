@@ -423,7 +423,7 @@ thermostats:
       debounce: 2             # HA used a 2 s debounce for the shower window
   Esszimmer:
     day_hour: "05:00"
-    day_temperature: 21.0
+    day_temperature: 23.0
     night_hour: "23:00"
     night_temperature: 19.5
     type: TRV-ZBT
@@ -476,7 +476,7 @@ thermostats:
       windows: [{ieee: '0xa4c13853fd53d84d', name: "WC OG Fenster"}]
   Wohnzimmer:
     day_hour: "05:00"
-    day_temperature: 22.5
+    day_temperature: 23.0
     night_hour: "23:00"
     night_temperature: 20.5
     type: TRV-ZBT                  # since 2026-10-03; was TRVZB 0xc09b9efffeaf4972 (now "Wohnzimmer Thermostat alt 2"), before that VNTH-T2_v2 0xa4c1386e2bd2e3b9 ("Wohnzimmer Thermostat alt")
