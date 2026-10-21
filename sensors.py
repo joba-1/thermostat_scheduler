@@ -19,6 +19,15 @@ from alerts import make_issue
 from health import battery_issue
 
 
+def parse_duration(value):
+    """Silence limit from config: seconds as a number, or '30m' / '2h' / '90s'."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    s = str(value).strip().lower()
+    unit = {'s': 1, 'm': 60, 'h': 3600}.get(s[-1:])
+    return float(s[:-1]) * unit if unit else float(s)
+
+
 def window_open(contact_state):
     """zigbee2mqtt contact sensors report contact=true when CLOSED."""
     if not isinstance(contact_state, dict):

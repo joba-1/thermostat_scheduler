@@ -41,7 +41,7 @@ import devices
 import sensors as sensors_mod
 from alerts import Alerter, make_issue
 
-__version__ = "3.3.6"
+__version__ = "3.3.7"
 
 DAY_MINUTES = 24 * 60
 
@@ -92,6 +92,10 @@ class Manager:
         self.heatpump_cfg = cfg.get('heatpump', {})
         self.season_cfg = cfg.get('season', {})
         self.sensors_cfg = cfg.get('sensors', {})
+        # per-device silence limit (seconds): a device quiet longer than this is
+        # "unknown" -- for a window contact that means it no longer counts as open
+        self.silence_limits = {k: sensors_mod.parse_duration(v)
+                               for k, v in (cfg.get('silence_limits') or {}).items()}
         self.remote_feed_cfg = self.heatpump_cfg.get('remote_feed', {}) or {}
         self._remote_feed_selected = None     # sensor name currently feeding the pump
         self._remote_feed_last = None         # (temp, hum) last good value published
@@ -215,6 +219,7 @@ class Manager:
 
         self.window_off = {}
         self.window_rooms = defaultdict(list)   # window sensor name -> [rooms]
+        self._window_unknown = set()            # windows past their silence limit
         self._win_timers = {}                   # room -> threading.Timer (debounce)
         self._win_lock = threading.Lock()
 
@@ -714,8 +719,11 @@ class Manager:
         for name, item in self.thermostats.items():
             reported = self.last_state.get(name)
             seen_ts = self._effective_seen(self.last_seen.get(name))
+            item_health = item
+            if name in self.silence_limits:
+                item_health = dict(item, unseen_interval=self.silence_limits[name])
             issues += health.classify_device(
-                name, item, self.thermostat_types, self.mqtt_cfg,
+                name, item_health, self.thermostat_types, self.mqtt_cfg,
                 reported, seen_ts, now_ts, limits, mode=mode,
                 window_off=self._off_by_window(name))
 
@@ -781,8 +789,11 @@ class Manager:
         for name, kind in self.sensor_kind.items():
             seen_ts = self._effective_seen(self.sensor_seen.get(name))
             reported = self.sensor_state.get(name)
+            lim = sensor_limits
+            if name in self.silence_limits:
+                lim = dict(sensor_limits, unseen_interval=self.silence_limits[name])
             issues += sensors_mod.classify_sensor(
-                name, kind, reported, seen_ts, now_ts, sensor_limits)
+                name, kind, reported, seen_ts, now_ts, lim)
             # extraordinary temperature/humidity -> immediate (critical) mail
             issues += sensors_mod.extreme_issues(
                 name, f"{name} sensor", reported, sensor_limits)
@@ -939,9 +950,31 @@ class Manager:
         return st                              # last resort: stale value or None
 
     # ---- window -> TRV control ---------------------------------------
+    def _silence_secs(self, name, default):
+        """Silence limit for one device (config `silence_limits`), else `default`."""
+        return self.silence_limits.get(name, default)
+
+    def _window_open_now(self, sensor):
+        """Open per the contact AND reported recently enough to trust. A window
+        sensor quiet past its silence limit is unknown: a stale 'open' must not
+        keep the room's valve off (the close report may simply never have reached
+        us). Logged once per transition."""
+        if not sensors_mod.window_open(self.sensor_state.get(sensor)):
+            return False
+        limit = self._silence_secs(sensor, self.sensors_cfg.get('unseen_interval', 7200))
+        age = time.time() - self._effective_seen(self.sensor_seen.get(sensor))
+        if age > limit:
+            if sensor not in self._window_unknown:
+                self._window_unknown.add(sensor)
+                log.info("window %s: last report %d min ago, over its silence limit "
+                         "%d min -- treated as unknown, not open",
+                         sensor, age / 60, limit / 60)
+            return False
+        self._window_unknown.discard(sensor)
+        return True
+
     def _room_window_open(self, room):
-        return any(sensors_mod.window_open(self.sensor_state.get(w))
-                   for w in self.room_windows.get(room, []))
+        return any(self._window_open_now(w) for w in self.room_windows.get(room, []))
 
     def _window_debounce(self, room, opening):
         wc = self.thermostats.get(room, {}).get('window') or {}

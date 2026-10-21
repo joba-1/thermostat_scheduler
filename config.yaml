@@ -158,6 +158,33 @@ comfort_grace_minutes: 30
 comfort_minutes_per_degree: 60
 
 
+# Silence limit per device (how long it may stay quiet before it is "unknown").
+# Values = upper end of the measured silence (log 2026-10-07..21, see wiki
+# ZigbeeSilenceLimits). Keys are the monitor's names: room for thermostats,
+# config name for sensors. Unlisted devices use the defaults above.
+# A window whose contact is older than its limit is unknown, not open.
+silence_limits:
+  Schlafzimmer: 30m
+  Esszimmer: 30m
+  Dusche: 30m
+  Julians: 30m
+  Wohnzimmer: 2h
+  Caros: 1h
+  Waschküche: 1h
+  "WC OG": 1h
+  "Bad OG": 3h
+  Arbeitszimmer: 4h
+  "Schlafzimmer Fenster": 6h
+  "Arbeitszimmer Fenster": 6h
+  "Caro Fenster": 3h
+  "Dusche Fenster": 2h
+  "WC OG Fenster": 2h
+  "Esszimmer Terrasse": 2h
+  "Bad OG Luft": 2h
+  "Waschküche Luft": 2h
+  "Arbeitszimmer Bewegungsmelder": 30m
+
+
 sensors:
   battery_limit: 20
   unseen_interval: 21600      # contact/temp sensors report less often than TRVs;
