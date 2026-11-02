@@ -42,7 +42,7 @@ import devices
 import sensors as sensors_mod
 from alerts import Alerter, make_issue
 
-__version__ = "3.3.10"
+__version__ = "3.3.11"
 
 DAY_MINUTES = 24 * 60
 
@@ -59,8 +59,8 @@ def parse_iso(s):
 
 
 def report_time(payload):
-    """When a sensor really reported: z2m's own `last_seen`, in our iso format,
-    else now. Arrival is no proof: z2m and HA restarts republish a dead sensor's
+    """When a device really reported: z2m's own `last_seen`, in our iso format,
+    else now. Arrival is no proof: z2m and HA restarts republish a dead device's
     old state, and only its `last_seen` stays old."""
     try:
         return datetime.fromisoformat(payload['last_seen']).astimezone().strftime(
@@ -140,7 +140,7 @@ class Manager:
         self.registry = devices.Registry()
         self.bridge_devices_topic = f"{self.base}/bridge/devices"
 
-        self.last_seen = {}          # room -> iso ts  (thermostats: any message)
+        self.last_seen = {}          # room -> iso ts  (thermostats: see report_time)
         self.last_state = {}         # room -> payload (thermostats)
         # When a temperature *value* was last freshly reported (changed). Lets the
         # report show the age of the oldest displayed datum: a TRV that keeps pinging
@@ -453,7 +453,7 @@ class Manager:
             new = self._safe_json(payload)
             self._track_temp_change(self.trv_temp_seen, room,
                                     self.last_state.get(room), new, 'local_temperature')
-            self.last_seen[room] = iso_now()
+            self.last_seen[room] = report_time(new)
             self.last_state[room] = new
             return
         sensor = self.sensor_topic.get(t)

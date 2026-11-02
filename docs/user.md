@@ -158,8 +158,9 @@ What counts is silence. The sensors report by themselves every 1 to 4 hours, als
 with no window opening or closing, so one quiet past its limit (`silence_limits`,
 else `sensors.unseen_interval`, 6 h) gets a line in the daily report: replace the
 battery, or re-join it if that does not help. The time is z2m's `last_seen`, because
-z2m and Home Assistant restarts republish the old state of a dead sensor. An open
-alarm stays open over a service restart, with the true age.
+z2m and Home Assistant restarts republish the old state of a dead sensor; thermostats
+are timed the same way. An open sensor alarm stays open over a service restart, with
+the true age.
 
 ## Radiator fans (heating and cooling support)
 

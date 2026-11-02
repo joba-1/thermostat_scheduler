@@ -80,6 +80,17 @@ def test_sensor_seen_is_the_reports_own_time_not_its_arrival():
     assert time.time() - tm.parse_iso(mgr.sensor_seen['Bad OG Luft']) < 5
 
 
+def test_thermostat_seen_is_the_reports_own_time_not_its_arrival():
+    class Msg:
+        topic = next(t for t, r in make_mgr().thermo_topic.items() if r == 'Bad OG')
+        payload = b'{"local_temperature": 20, "last_seen": "2026-10-06T06:54:01+02:00"}'
+
+    mgr = make_mgr()
+    mgr.on_message(None, None, Msg)
+    assert mgr.last_seen['Bad OG'] == time.strftime(
+        '%Y-%m-%dT%H:%M:%S', time.localtime(1791262441))
+
+
 def test_manual_override_listed():
     mgr = make_mgr()
     mgr.last_state['Bad OG'] = {'preset': 'manual'}
