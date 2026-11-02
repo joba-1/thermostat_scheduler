@@ -41,7 +41,7 @@ import devices
 import sensors as sensors_mod
 from alerts import Alerter, make_issue
 
-__version__ = "3.3.8"
+__version__ = "3.3.9"
 
 DAY_MINUTES = 24 * 60
 
@@ -977,7 +977,10 @@ class Manager:
         if not sensors_mod.window_open(self.sensor_state.get(sensor)):
             return False
         limit = self._silence_secs(sensor, self.sensors_cfg.get('unseen_interval', 7200))
-        age = time.time() - self._effective_seen(self.sensor_seen.get(sensor))
+        # the real last report, not _effective_seen: its restart grace is for alerts
+        # and would make a long stale 'open' count as fresh after every restart
+        seen = parse_iso(self.sensor_seen.get(sensor))
+        age = time.time() - (seen if seen is not None else self.start_ts)
         if age > limit:
             if sensor not in self._window_unknown:
                 self._window_unknown.add(sensor)

@@ -325,3 +325,16 @@ def test_plug_with_unknown_state_is_still_left_alone():
     c = FakeClient()
     mgr._apply_fan_control(c, hp('off'), now=1000)
     assert c.pub == []
+
+
+def test_stale_open_window_does_not_stop_the_fan_after_a_restart():
+    """A sensor silent past its limit is unknown, also right after a restart."""
+    mgr = make_room_mgr()
+    mgr.room_windows['Schlafzimmer'] = ['SZ Fenster']
+    mgr.sensor_state['SZ Fenster'] = {'contact': False}
+    mgr.sensor_seen['SZ Fenster'] = '2020-01-01T00:00:00'
+    assert not mgr._room_window_open('Schlafzimmer')
+    mgr.sensor_seen['SZ Fenster'] = tm.iso_now()
+    assert mgr._room_window_open('Schlafzimmer')
+    mgr.sensor_seen['SZ Fenster'] = None          # no report yet: trusted from service start
+    assert mgr._room_window_open('Schlafzimmer')
