@@ -162,6 +162,13 @@ comfort_minutes_per_degree: 60
 # Values = upper end of the measured silence (log 2026-10-07..21, see wiki
 # ZigbeeSilenceLimits). Keys are the monitor's names: room for thermostats,
 # config name for sensors. Unlisted devices use the defaults above.
+# Sensors outside the rooms above: rooms with a hand valve or no radiator have no entry there,
+# so nothing else would watch them. Silence alarm and report only, they steer no valve or fan.
+extra_sensors:
+  - {ieee: '0xa4c138346a1ddcee', name: "Dach Ost Fenster", kind: window}
+  - {ieee: '0xa4c1387835520161', name: "Dach West Fenster", kind: window}
+  - {ieee: '0xa4c1380f2108b149', name: "WC UG Fenster", kind: window}
+
 # A window whose contact is older than its limit is unknown, not open.
 silence_limits:
   Schlafzimmer: 30m
