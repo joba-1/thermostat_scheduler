@@ -118,9 +118,14 @@ def classify_sensor(name, kind, reported, last_seen_ts, now_ts, limits):
                                  "no MQTT message since the manager started"))
         return issues
     if now_ts - last_seen_ts > unseen:
+        # Silence is the battery check: these sensors report by themselves every few
+        # hours, while their battery percent and voltage say nothing useful for months.
         mins = int((now_ts - last_seen_ts) / 60)
+        age = (f"{mins} min" if mins < 120
+               else f"{mins // 60} h" if mins < 2880 else f"{mins // 1440} days")
         issues.append(make_issue(f"{name}:life", 'no_life_sign', subject,
-                                 f"not seen for {mins} min"))
+                                 f"no report for {age}: replace the battery, "
+                                 "or re-join it if that does not help"))
 
     bat = battery_issue(reported, limits.get('battery_limit', 20))
     if bat:

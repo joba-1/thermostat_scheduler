@@ -144,3 +144,16 @@ def test_stale_temp_issue_disabled_with_zero():
 def test_stale_temp_issue_none_when_no_timestamp():
     assert health.stale_temp_issue('x', 'x', 'temperature',
                                    None, NOW, 4 * 3600) is None
+
+
+def test_silent_sensor_asks_for_a_battery_or_rejoin():
+    def detail(silent_min):
+        now = 1000000
+        issues = sensors_mod.classify_sensor('S', 'window', {}, now - silent_min * 60, now,
+                                         {'unseen_interval': 600})
+        return str(issues[0])
+    assert 'replace the battery' in detail(30) and 're-join' in detail(30)
+    assert '30 min' in detail(30)
+    assert '7 h' in detail(7 * 60)
+    assert '25 days' in detail(25 * 1440)
+

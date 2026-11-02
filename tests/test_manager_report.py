@@ -1,5 +1,6 @@
 """Manager status report + manual-override helpers (no MQTT connection)."""
 import tempfile
+import time
 
 import thermostat_monitor as tm
 
@@ -50,6 +51,33 @@ def test_restored_old_timestamp_gets_restart_grace():
     # last seen far in the past, but the device hasn't reported this session
     eff = mgr._effective_seen('2000-01-01T00:00:00')
     assert eff >= mgr.start_ts        # clamped up to startup -> full grace window
+
+
+def test_open_silence_alarm_survives_a_restart_with_its_true_age():
+    mgr = make_mgr()
+    old = '2000-01-01T00:00:00'
+    mgr.sensor_seen['Bad OG Luft'] = old
+    assert mgr._sensor_seen_ts('Bad OG Luft') >= mgr.start_ts      # no alarm yet: grace
+    mgr.alerter.state['issues']['Bad OG Luft:life'] = {}
+    assert mgr._sensor_seen_ts('Bad OG Luft') == tm.parse_iso(old)
+    mgr.sensor_seen['Bad OG Luft'] = None                          # nothing known
+    assert mgr._sensor_seen_ts('Bad OG Luft') == mgr.start_ts
+
+
+def test_sensor_seen_is_the_reports_own_time_not_its_arrival():
+    """z2m and HA restarts republish a dead sensor's old state."""
+    class Msg:
+        topic = next(t for t, n in make_mgr().sensor_topic.items() if n == 'Bad OG Luft')
+        payload = b'{"temperature": 20, "last_seen": "2026-10-06T06:54:01+02:00"}'
+
+    mgr = make_mgr()
+    mgr.on_message(None, None, Msg)
+    assert mgr.sensor_seen['Bad OG Luft'] == time.strftime(
+        '%Y-%m-%dT%H:%M:%S', time.localtime(1791262441))
+
+    Msg.payload = b'{"temperature": 20}'                           # no last_seen: now
+    mgr.on_message(None, None, Msg)
+    assert time.time() - tm.parse_iso(mgr.sensor_seen['Bad OG Luft']) < 5
 
 
 def test_manual_override_listed():

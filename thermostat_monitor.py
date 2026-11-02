@@ -25,6 +25,7 @@ import json
 import argparse
 import threading
 import urllib.parse
+from datetime import datetime
 from collections import deque, defaultdict
 
 import paho.mqtt.client as mqtt
@@ -41,7 +42,7 @@ import devices
 import sensors as sensors_mod
 from alerts import Alerter, make_issue
 
-__version__ = "3.3.9"
+__version__ = "3.3.10"
 
 DAY_MINUTES = 24 * 60
 
@@ -55,6 +56,17 @@ def parse_iso(s):
         return time.mktime(time.strptime(s, '%Y-%m-%dT%H:%M:%S'))
     except Exception:
         return None
+
+
+def report_time(payload):
+    """When a sensor really reported: z2m's own `last_seen`, in our iso format,
+    else now. Arrival is no proof: z2m and HA restarts republish a dead sensor's
+    old state, and only its `last_seen` stays old."""
+    try:
+        return datetime.fromisoformat(payload['last_seen']).astimezone().strftime(
+            '%Y-%m-%dT%H:%M:%S')
+    except (KeyError, TypeError, ValueError):
+        return iso_now()
 
 
 def current_setpoint(cfg_item, now_lt, mode, season_cfg):
@@ -450,7 +462,7 @@ class Manager:
             if self.sensor_kind.get(sensor) != 'window':
                 self._track_temp_change(self.sensor_temp_seen, sensor,
                                         self.sensor_state.get(sensor), new, 'temperature')
-            self.sensor_seen[sensor] = iso_now()
+            self.sensor_seen[sensor] = report_time(new)
             self.sensor_state[sensor] = new
             if self.sensor_kind.get(sensor) == 'window':
                 self._on_window_event(sensor, client)
@@ -802,7 +814,7 @@ class Manager:
 
         # standalone sensors (battery / life sign / leak)
         for name, kind in self.sensor_kind.items():
-            seen_ts = self._effective_seen(self.sensor_seen.get(name))
+            seen_ts = self._sensor_seen_ts(name)
             reported = self.sensor_state.get(name)
             lim = sensor_limits
             if name in self.silence_limits:
@@ -1094,6 +1106,15 @@ class Manager:
             log.info("fan-control: would publish %s = %s", topic, payload)
             return
         client.publish(topic, payload, qos=1)
+
+    def _sensor_seen_ts(self, name):
+        """Last-seen timestamp for a standalone sensor's silence alarm: with the
+        restart grace, except that an alarm already open stays open with the true
+        age. A restart is no proof of life, and must not report it as cleared."""
+        raw = self.sensor_seen.get(name)
+        if f"{name}:life" in self.alerter.state.get('issues', {}):
+            return parse_iso(raw) or self._effective_seen(raw)
+        return self._effective_seen(raw)
 
     @staticmethod
     def _fan_key(fan):

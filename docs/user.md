@@ -150,6 +150,17 @@ old Home Assistant "lüften/heizen" automations — control now lives here.
 - Kill switch: `window_control.act: false` keeps detecting/logging/status without
   touching any valve; `enabled: false` turns the feature off.
 
+### Silent sensors
+
+Battery percent and voltage are no use as a warning: the Waschküche window sensor
+showed 87 % / 2.5 V for 16 months and then stopped, while its device reported 1 %.
+What counts is silence. The sensors report by themselves every 1 to 4 hours, also
+with no window opening or closing, so one quiet past its limit (`silence_limits`,
+else `sensors.unseen_interval`, 6 h) gets a line in the daily report: replace the
+battery, or re-join it if that does not help. The time is z2m's `last_seen`, because
+z2m and Home Assistant restarts republish the old state of a dead sensor. An open
+alarm stays open over a service restart, with the true age.
+
 ## Radiator fans (heating and cooling support)
 
 Radiators are weak emitters, especially for cooling, so the manager switches **fan
