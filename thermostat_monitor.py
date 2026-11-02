@@ -42,7 +42,7 @@ import devices
 import sensors as sensors_mod
 from alerts import Alerter, make_issue
 
-__version__ = "3.3.11"
+__version__ = "3.3.12"
 
 DAY_MINUTES = 24 * 60
 
@@ -745,7 +745,7 @@ class Manager:
         # thermostats
         for name, item in self.thermostats.items():
             reported = self.last_state.get(name)
-            seen_ts = self._effective_seen(self.last_seen.get(name))
+            seen_ts = self._alarm_seen_ts(name, self.last_seen.get(name))
             item_health = item
             if name in self.silence_limits:
                 item_health = dict(item, unseen_interval=self.silence_limits[name])
@@ -814,7 +814,7 @@ class Manager:
 
         # standalone sensors (battery / life sign / leak)
         for name, kind in self.sensor_kind.items():
-            seen_ts = self._sensor_seen_ts(name)
+            seen_ts = self._alarm_seen_ts(name, self.sensor_seen.get(name))
             reported = self.sensor_state.get(name)
             lim = sensor_limits
             if name in self.silence_limits:
@@ -1107,11 +1107,10 @@ class Manager:
             return
         client.publish(topic, payload, qos=1)
 
-    def _sensor_seen_ts(self, name):
-        """Last-seen timestamp for a standalone sensor's silence alarm: with the
-        restart grace, except that an alarm already open stays open with the true
-        age. A restart is no proof of life, and must not report it as cleared."""
-        raw = self.sensor_seen.get(name)
+    def _alarm_seen_ts(self, name, raw):
+        """Last-seen timestamp for a device's silence alarm: with the restart grace,
+        except that an alarm already open stays open with the true age. A restart
+        is no proof of life, and must not report it as cleared."""
         if f"{name}:life" in self.alerter.state.get('issues', {}):
             return parse_iso(raw) or self._effective_seen(raw)
         return self._effective_seen(raw)

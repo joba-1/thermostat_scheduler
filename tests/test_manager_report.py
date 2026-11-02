@@ -56,12 +56,23 @@ def test_restored_old_timestamp_gets_restart_grace():
 def test_open_silence_alarm_survives_a_restart_with_its_true_age():
     mgr = make_mgr()
     old = '2000-01-01T00:00:00'
-    mgr.sensor_seen['Bad OG Luft'] = old
-    assert mgr._sensor_seen_ts('Bad OG Luft') >= mgr.start_ts      # no alarm yet: grace
-    mgr.alerter.state['issues']['Bad OG Luft:life'] = {}
-    assert mgr._sensor_seen_ts('Bad OG Luft') == tm.parse_iso(old)
-    mgr.sensor_seen['Bad OG Luft'] = None                          # nothing known
-    assert mgr._sensor_seen_ts('Bad OG Luft') == mgr.start_ts
+    for name in ('Bad OG Luft', 'Bad OG'):                         # sensor, thermostat
+        assert mgr._alarm_seen_ts(name, old) >= mgr.start_ts       # no alarm yet: grace
+        mgr.alerter.state['issues'][f'{name}:life'] = {}
+        assert mgr._alarm_seen_ts(name, old) == tm.parse_iso(old)
+        assert mgr._alarm_seen_ts(name, None) == mgr.start_ts      # nothing known
+
+
+def test_open_thermostat_alarm_is_not_cleared_by_a_restart():
+    def life_keys(mgr):
+        issues = mgr.collect_issues('heating', time.time(), time.localtime(), None)
+        return [i.key for i in issues if i.key.endswith(':life') and i.key.startswith('Bad OG:')]
+
+    mgr = make_mgr()
+    mgr.last_seen['Bad OG'] = '2000-01-01T00:00:00'
+    assert life_keys(mgr) == []                                    # restart grace
+    mgr.alerter.state['issues']['Bad OG:life'] = {}
+    assert life_keys(mgr) == ['Bad OG:life']
 
 
 def test_sensor_seen_is_the_reports_own_time_not_its_arrival():
