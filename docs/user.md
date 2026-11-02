@@ -153,7 +153,7 @@ old Home Assistant "lüften/heizen" automations — control now lives here.
 ## Radiator fans (heating and cooling support)
 
 Radiators are weak emitters, especially for cooling, so the manager switches **fan
-plugs** that blow air across them (`fan_control`). A fan only helps while heated or
+plugs** and **fan-remote boards** that blow air across them (`fan_control`). A fan only helps while heated or
 cooled water actually flows through the radiator, so the fans run **only while the
 heating-circuit pump PC1 pumps** (`pc1flow` above `min_flow`, default 50 l/h) and
 no hot-water charge is running. PC1 (buffer → radiators) keeps running through the
@@ -166,6 +166,11 @@ here 120): the radiators still hold some heat or cold for a while.
 
 - Plugs are **zigbee2mqtt** (`{type: zigbee, name: ...}` → `zigbee2mqtt/<name>/set`)
   or **Tasmota** (`{type: tasmota, topic: ..., power: POWER}` → `cmnd/<topic>/<power>`).
+- **fan-remote boards** (`{type: fan_remote, name: ..., device: fan-control-N, channel: 1,
+  speed: 40}`) get one line per channel. On means that fixed `speed`, off means 0, both
+  on `fan-control/<device>/<channel>/speed/set`. A board keeps its speed over a reboot,
+  so it is told its state again at service start and whenever it comes back online.
+  A speed set by hand (web page, Home Assistant) holds until the next such command.
 - `on_debounce` (default 30 s) avoids reacting to a momentary blip; `off_delay`
   (default 0) can hold the fans on after circulation stops.
 - **Two roles per fan** (since 2026-09-24): every fan **cools** unless it says

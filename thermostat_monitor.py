@@ -41,7 +41,7 @@ import devices
 import sensors as sensors_mod
 from alerts import Alerter, make_issue
 
-__version__ = "3.3.7"
+__version__ = "3.3.8"
 
 DAY_MINUTES = 24 * 60
 
@@ -173,8 +173,8 @@ class Manager:
         # and only restores rooms we closed (never a user's manual off).
         self.window_cfg = cfg.get('window_control', {}) or {}
 
-        # Radiator fans (smart plugs) switched on while the heat pump actively cools,
-        # to boost radiator heat transfer. See _apply_fan_control.
+        # Radiator fans (smart plugs, fan-remote boards) switched on while water
+        # circulates, to boost radiator heat transfer. See _apply_fan_control.
         self.fan_cfg = cfg.get('fan_control', {}) or {}
         self.fans = self.fan_cfg.get('fans') or []
         self._fans_on = None        # house-level fan signal (None until first apply)
@@ -182,6 +182,9 @@ class Manager:
         # (False once the fan's room has cooled to near its target).
         self._fan_on = {}
         self._fan_gate = {}
+        # Status topic of each fan-remote board -> its device id (see on_message).
+        self.fan_status_topics = {f"fan-control/{f['device']}/status": f['device']
+                                  for f in self.fans if f.get('device')}
         self._circ_dir = None       # direction of the current/last circulation
         self._circ = None           # radiators' circulation: 'heating'|'cooling'|None
         self._circ_edge_ts = 0.0    # when _circ last changed
@@ -367,6 +370,9 @@ class Manager:
                       self.heatpump_cfg.get('thermostat_topic')):
                 if t:
                     client.subscribe(t)
+        if self.fan_cfg.get('enabled'):
+            for t in self.fan_status_topics:
+                client.subscribe(t)
         log.info("Subscribed to %d thermostats + %d sensors + heat pump",
                  len(self.thermo_topic), len(self.sensor_topic))
         # Re-assert the remote thermostat type on every (re)connect. Idempotent.
@@ -419,6 +425,15 @@ class Manager:
             return
         if t == self.heatpump_cfg.get('thermostat_topic'):
             self.hp_thermostat = self._safe_json(payload)
+            return
+        if t in self.fan_status_topics:
+            if payload.strip() == 'online':
+                # The board may have missed a command while it was away: forget
+                # what it was told, so the apply below sends it again.
+                for fan in self.fans:
+                    if fan.get('device') == self.fan_status_topics[t]:
+                        self._fan_on.pop(self._fan_key(fan), None)
+                self._apply_fan_control(client)
             return
 
         room = self.thermo_topic.get(t)
@@ -1048,7 +1063,8 @@ class Manager:
         return direction if direction in ('heating', 'cooling') else None
 
     def _set_fan(self, client, fan, on, dry=False):
-        """Switch one fan plug. Supports zigbee2mqtt and Tasmota plugs."""
+        """Switch one fan. Supports zigbee2mqtt and Tasmota plugs, and fan-remote
+        boards (one channel at a fixed speed)."""
         ftype = (fan.get('type') or '').lower()
         state = "ON" if on else "OFF"
         if ftype == 'zigbee':
@@ -1062,6 +1078,12 @@ class Manager:
                 return
             topic = f"{fan.get('cmnd_prefix', 'cmnd')}/{dev}/{fan.get('power', 'POWER')}"
             payload = state
+        elif ftype == 'fan_remote':
+            dev = fan.get('device')
+            if not dev:
+                return
+            topic = f"fan-control/{dev}/{fan.get('channel', 1)}/speed/set"
+            payload = str(fan.get('speed', 40) if on else 0)
         else:
             log.warning("fan-control: unknown fan type %r", fan.get('type'))
             return
@@ -1130,12 +1152,12 @@ class Manager:
         return False
 
     def _apply_fan_control(self, client, hp=None, now=None):
-        """Drive the radiator-fan plugs: ON only while water circulates
+        """Drive the radiator fans: ON only while water circulates
         through the radiators (PC1 flow, see
         _circulation; after `on_debounce`, held `off_delay` after it stops —
         default 0), and per fan only while its room is still more than
         `room_margin` from its target (see _fan_room_gate). Idempotent —
-        publishes a plug only when its state changes."""
+        publishes a fan only when its state changes."""
         if client is None or not (self.fan_cfg.get('enabled') and self.fans):
             return
         now = now if now is not None else time.time()
@@ -1164,7 +1186,11 @@ class Manager:
             key = self._fan_key(fan)
             on = (want and self._fan_serves(fan, direction)
                   and self._fan_room_gate(fan, direction, now_lt))
-            if on == bool(self._fan_on.get(key)):   # None treated as off
+            last = self._fan_on.get(key)
+            # None treated as off for a plug; a fan-remote board keeps its speed
+            # over a reboot, so it is told even then.
+            if on == bool(last) and (last is not None
+                                     or (fan.get('type') or '').lower() != 'fan_remote'):
                 self._fan_on[key] = on
                 continue
             try:

@@ -192,9 +192,11 @@ fan_control:
   room_hysteresis: 0.5
   on_debounce: 30              # s circulation must run before switching fans on
   off_delay: 0                 # s to keep fans ON after circulation stops (0: off at once)
-  fans:                        # zigbee (zigbee2mqtt) and/or tasmota plugs
+  fans:                        # zigbee (zigbee2mqtt), tasmota plugs and/or fan-remote boards
     - { type: zigbee, name: "Schlafzimmer Ventilator", room: "Schlafzimmer" }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
     - { type: tasmota, topic: "ventilator_wz", power: POWER }  # -> cmnd/<topic>/<power> ON|OFF
+    # one line per connected fan -> fan-control/<device>/<channel>/speed/set <speed>|0
+    - { type: fan_remote, name: "Waschküche Lüfter 1", device: "fan-control-3", channel: 1, speed: 40, room: "Waschküche", heating: true, cooling: false }
 
 
 # --- Free-cooling reminder ---

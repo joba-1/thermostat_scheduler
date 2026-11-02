@@ -243,11 +243,12 @@ fan_control:
     - { type: zigbee, name: "NZ2 Julians Lüfter", room: "Julians" }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
     - { type: zigbee, name: "NZ3 Dusche", room: "Dusche" }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
     - { type: zigbee, name: "Z2 Arbeitszimmer Fan Plug", room: "Arbeitszimmer" }   # -> zigbee2mqtt/<name>/set {"state":ON|OFF}
-    # Heating fans (planned 2026-09-24; add once the plugs exist):
-    #   Waschkueche -- Waschkueche + Flur are one long room through the house with one radiator
+    # Heating fans (more planned 2026-09-24; add once they exist):
     #   WC UG       -- UG struggles to stay warm (hand valve, no thermostat: no room gate)
     #   Caros       -- maybe later
-    # - { type: zigbee, name: "<plug>", room: "Waschküche", heating: true, cooling: false }
+    # Waschküche + Flur are one long room through the house with one radiator. Above speed 40
+    # the fan is clearly audible. One line per connected fan -> fan-control/<device>/<channel>/speed/set
+    - { type: fan_remote, name: "Waschküche Lüfter 1", device: "fan-control-3", channel: 1, speed: 40, room: "Waschküche", heating: true, cooling: false }
 
 # --- Free-cooling reminder: mail "open windows" when outside air < warmest room ---
 free_cooling:

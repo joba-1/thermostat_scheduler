@@ -262,3 +262,66 @@ def test_fan_with_unknown_room_temperature_follows_circulation():
     mgr._apply_fan_control(c, hp('cooling'), now=1031)
     assert ('cmnd/vent_wz/POWER', 'ON') in c.pub
     assert SZ_ON in c.pub
+
+
+def make_board_mgr():
+    cfg = {k: (dict(v) if isinstance(v, dict) else v) for k, v in CFG.items()}
+    cfg['fan_control'] = dict(cfg['fan_control'], off_delay=120, fans=[
+        {'type': 'fan_remote', 'name': 'WK Fan', 'device': 'fan-control-3', 'channel': 1,
+         'speed': 40, 'heating': True, 'cooling': False}])
+    cfg['device_state_file'] = tempfile.mkdtemp() + '/devices.json'
+    return tm.Manager(cfg)
+
+
+BOARD_TOPIC = 'fan-control/fan-control-3/1/speed/set'
+
+
+def test_fan_remote_runs_at_its_speed_with_the_same_delays_as_a_plug():
+    mgr = make_board_mgr()
+    c = FakeClient()
+    mgr._apply_fan_control(c, hp('heating'), now=1000)
+    assert c.pub == [(BOARD_TOPIC, '0')]               # state unknown: told it is off
+    c.pub.clear()
+    mgr._apply_fan_control(c, hp('heating'), now=1031)  # past on_debounce
+    assert c.pub == [(BOARD_TOPIC, '40')]
+    c.pub.clear()
+    mgr._apply_fan_control(c, hp('heating'), now=1100)  # no change, no publish
+    mgr._apply_fan_control(c, hp('off'), now=1110)      # held during off_delay
+    assert c.pub == []
+    mgr._apply_fan_control(c, hp('off'), now=1231)
+    assert c.pub == [(BOARD_TOPIC, '0')]
+
+
+def test_fan_remote_heating_only_stays_off_while_cooling():
+    mgr = make_board_mgr()
+    c = FakeClient()
+    mgr._apply_fan_control(c, hp('cooling'), now=1000)
+    mgr._apply_fan_control(c, hp('cooling'), now=1031)
+    assert c.pub == [(BOARD_TOPIC, '0')]
+
+
+def test_fan_remote_board_back_online_is_told_again(monkeypatch):
+    class Msg:
+        topic = 'fan-control/fan-control-3/status'
+        payload = b'online'
+
+    mgr = make_board_mgr()
+    c = FakeClient()
+    mgr._apply_fan_control(c, hp('heating'), now=1000)
+    mgr._apply_fan_control(c, hp('heating'), now=1031)
+    c.pub.clear()
+    monkeypatch.setattr(mgr, 'heatpump_state', lambda: hp('heating'))
+    mgr.on_message(c, None, Msg)
+    assert c.pub == [(BOARD_TOPIC, '40')]
+
+    c.pub.clear()
+    Msg.payload = b'offline'
+    mgr.on_message(c, None, Msg)
+    assert c.pub == []
+
+
+def test_plug_with_unknown_state_is_still_left_alone():
+    mgr = make_mgr()
+    c = FakeClient()
+    mgr._apply_fan_control(c, hp('off'), now=1000)
+    assert c.pub == []
