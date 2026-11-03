@@ -452,7 +452,7 @@ thermostats:
     day_hour: "05:00"
     day_temperature: 23.0
     night_hour: "23:00"
-    night_temperature: 19.5
+    night_temperature: 21.0
     type: TRV-ZBT
     ieee: '0xa4c138a799798166'
     sensors:
@@ -470,7 +470,7 @@ thermostats:
     day_hour: "05:00"
     day_temperature: 19.5
     night_hour: "23:00"
-    night_temperature: 19.5
+    night_temperature: 21.0
     type: TRV-ZBT                  # since 2026-09-24; was TRVZB 0xc09b9efffeaf4972 (now "Schlafzimmer Thermostat alt 2")
     ieee: '0xa4c138e3f78edbb5'
     sensors:
@@ -505,7 +505,7 @@ thermostats:
     day_hour: "05:00"
     day_temperature: 23.0
     night_hour: "23:00"
-    night_temperature: 20.5
+    night_temperature: 21.0
     type: TRV-ZBT                  # since 2026-10-03; was TRVZB 0xc09b9efffeaf4972 (now "Wohnzimmer Thermostat alt 2"), before that VNTH-T2_v2 0xa4c1386e2bd2e3b9 ("Wohnzimmer Thermostat alt")
     ieee: '0xa4c138257b9d344e'
     sensors:
