@@ -247,3 +247,21 @@ def test_render_room_svg_empty_temp_is_graceful():
             'window': [], 'conditioned': []}
     svg = history.render_room_svg('Leer', data)
     assert '<svg' in svg and 'no history' in svg
+
+
+def test_fan_levels_and_row():
+    """Fan speed/switch history folds into running spans and renders a Fan row."""
+    class C(history.InfluxClient):
+        def _fetch(self, q):
+            if 'time<now()' in q:
+                return []
+            return [[100, 0], [200, 40], [300, 0], [400, 100]]
+    lv = C().fan_levels(['x'], 1, 0, 500)
+    assert lv == [(200, 300, 40.0), (400, 500, 100.0)]
+    assert [l[2] for l in C().fan_levels(['x'], 1, 0, 500, scale=0.5)] == [20.0, 50.0]
+    data = {'now': 500, 't_start': 0, 'hours': 6, 'temp': [(0, 20), (500, 21)],
+            'outdoor': [], 'hp_cooling': [], 'hp_heating': [], 'window': [],
+            'conditioned': [], 'fan': lv, 'fan_known': True}
+    assert '>Fan<' in history.render_room_svg('Waschküche', data)
+    data['fan'], data['fan_known'] = [], False
+    assert '>Fan<' not in history.render_room_svg('Waschküche', data)

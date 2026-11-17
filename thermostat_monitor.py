@@ -42,7 +42,7 @@ import devices
 import sensors as sensors_mod
 from alerts import Alerter, make_issue
 
-__version__ = "3.3.12"
+__version__ = "3.3.13"
 
 DAY_MINUTES = 24 * 60
 
@@ -2103,9 +2103,31 @@ class Manager:
         # The damped outdoor ref is only meaningful while damping is on; off, it
         # just tracks the real outdoor, so drop it from the chart (see overview).
         ref = history.HP_OUTDOOR_TEMP if self._hp_damping_on() else None
-        return {'temp': temp_groups, 'outdoor': history.HP_OUTDOOR_RAW,
+        spec = {'temp': temp_groups, 'outdoor': history.HP_OUTDOOR_RAW,
                 'outdoor_ref': ref,
                 'activity': history.HP_ACTIVITY, 'windows': windows}
+        fan = self._room_fan_chart(room)
+        if fan:
+            spec['fan'] = fan
+        return spec
+
+    def _room_fan_chart(self, room):
+        """History entities of the room's radiator fans (all fans of the room are
+        merged into one row): a plug's switch entity (0/1 -> OFF/100 %) or a
+        fan-remote channel's speed entity (already 0-100 %). None without a fan."""
+        ents, scale = [], 1.0
+        for fan in self.fans:
+            if fan.get('room') != room:
+                continue
+            ftype = (fan.get('type') or '').lower()
+            if ftype == 'fan_remote':
+                dev = devices.slugify(fan.get('device') or '')
+                ents.append(f"{dev}_fan_{fan.get('channel', 1)}_speed")
+            else:
+                ents.append(devices.slugify(fan.get('name') or fan.get('topic') or ''))
+                scale = 100.0
+        ents = [e for e in ents if e]
+        return {'entities': ents, 'scale': scale} if ents else None
 
     def _sensor_chart_spec(self, label):
         """Chart spec for a standalone temperature sensor: its own temperature line

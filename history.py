@@ -251,6 +251,36 @@ class InfluxClient:
         rows.sort(key=lambda r: r[0])
         return fold_intervals(rows, t_start, t_end, truthy)
 
+    def fan_levels(self, candidates, hours, t_start, t_end, scale=1.0):
+        """Radiator-fan level over the window as [(start, end, pct), ...] with only
+        the running spans (pct > 0), each sample held until the next one. `scale`
+        turns the entity value into percent: 100 for a plug's 0/1 switch state, 1 for
+        a fan-remote speed entity that already reports 0-100 %. Seeded like the other
+        step series; candidate entity ids are merged (see series_merged)."""
+        rows, seeds = [], []
+        for ent in candidates or []:
+            e = self._esc(ent)
+            rows += [(int(t), v) for t, v in self._fetch(
+                f"SELECT value FROM /.*/ WHERE entity_id='{e}' "
+                f'AND time>now()-{int(hours)}h') if v is not None]
+            sd = self._fetch(f"SELECT value FROM /.*/ WHERE entity_id='{e}' "
+                             f'AND time<now()-{int(hours)}h ORDER BY time DESC LIMIT 1')
+            if sd and sd[0][1] is not None:
+                seeds.append((int(sd[0][0]), sd[0][1]))
+        if seeds:
+            seeds.sort()
+            if t_start - seeds[-1][0] <= SEED_MAX_AGE:
+                rows.append((t_start, seeds[-1][1]))
+        rows.sort(key=lambda r: r[0])
+        out = []
+        for i, (ts, v) in enumerate(rows):
+            a = max(ts, t_start)
+            b = rows[i + 1][0] if i + 1 < len(rows) else t_end
+            pct = max(0.0, min(100.0, float(v) * scale))
+            if pct > 0 and b > a:
+                out.append((a, b, pct))
+        return out
+
     @staticmethod
     def _step(hours):
         return ('5m' if hours <= 6 else '15m' if hours <= 24 else '1h'
@@ -284,6 +314,13 @@ def collect_room_history(client, spec, hours, now=None):
                                                {'heating', 'warm water heating'})
     hp_active = union_intervals(hp_cooling, hp_heating)
 
+    fan = spec.get('fan') or {}
+    fan_levels = client.fan_levels(fan.get('entities'), hours, t_start, now,
+                                   fan.get('scale', 1.0)) if fan else []
+    # Show the Fan row whenever the room has a fan with any logged history (an
+    # all-OFF window then reads as an honest empty row, not a missing one).
+    fan_known = bool(fan) and bool(client.series_merged(fan.get('entities'), hours))
+
     window = union_intervals(*[
         client.state_intervals_merged(cands, hours, t_start, now)
         for cands in spec.get('windows', [])
@@ -304,6 +341,7 @@ def collect_room_history(client, spec, hours, now=None):
         'outdoor': outdoor, 'outdoor_ref': outdoor_ref,
         'hp_cooling': hp_cooling, 'hp_heating': hp_heating,
         'window': window, 'conditioned': conditioned,
+        'fan': fan_levels, 'fan_known': fan_known,
     }
 
 
@@ -338,7 +376,7 @@ _FS_EMPTY = 22
 _COL = {
     'temp': '#b42318', 'outdoor': '#6b7280', 'outdoor_ref': '#b8bcc4',
     'cooling': '#1f6feb', 'heating': '#bf6b00',
-    'window': '#d4a017', 'conditioned': '#1a7f37', 'grid': '#e5e7eb',
+    'window': '#d4a017', 'fan': '#7c3aed', 'conditioned': '#1a7f37', 'grid': '#e5e7eb',
     'label': '#6b7280', 'humidity': '#0e7490',
 }
 
@@ -411,6 +449,24 @@ def _stripe(segments, t0, t1, x0, x1, y, label):
             f'{html.escape(label)}</text>'
             f'<rect x="{x0}" y="{y}" width="{x1 - x0}" height="{_STRIPE_H}" '
             f'fill="none" stroke="{_COL["grid"]}"/>{rects}')
+
+
+def _fan_stripe(levels, t0, t1, x0, x1, y, label):
+    """Fan row: one bar per running span, bar height and opacity follow the level
+    (0-100 %), so a 40 % fan reads lower and paler than a full-speed one."""
+    rects = []
+    for a, b, pct in levels:
+        h = max(_STRIPE_H * pct / 100.0, 3)
+        xa, xb = _x(a, t0, t1, x0, x1), _x(b, t0, t1, x0, x1)
+        rects.append(f'<rect x="{xa:.1f}" y="{y + _STRIPE_H - h:.1f}" '
+                     f'width="{max(xb - xa, 0.6):.1f}" height="{h:.1f}" '
+                     f'fill="{_COL["fan"]}" opacity="{0.45 + 0.55 * pct / 100:.2f}">'
+                     f'<title>{pct:.0f} %</title></rect>')
+    return (f'<text x="{x0 - 7}" y="{y + _STRIPE_H * 0.5 + _FS * 0.35:.1f}" '
+            f'text-anchor="end" font-size="{_FS}" fill="{_COL["label"]}">'
+            f'{html.escape(label)}</text>'
+            f'<rect x="{x0}" y="{y}" width="{x1 - x0}" height="{_STRIPE_H}" '
+            f'fill="none" stroke="{_COL["grid"]}"/>{"".join(rects)}')
 
 
 def _legend(items, x0, x1, y, font, cols=3):
@@ -515,6 +571,10 @@ def render_room_svg(room, data):
     for label, segments in rows:
         body.append(_stripe(segments, t0, t1, x0, x1, y, label))
         y += _STRIPE_H + _STRIPE_GAP
+    show_fan = bool(data.get('fan') or data.get('fan_known'))
+    if show_fan:
+        body.append(_fan_stripe(data.get('fan') or [], t0, t1, x0, x1, y, 'Fan'))
+        y += _STRIPE_H + _STRIPE_GAP
 
     legend_items = [
         ('line', _COL['temp'], None, 'room temp'),
@@ -529,6 +589,7 @@ def render_room_svg(room, data):
         ('box', _COL['cooling'], None, 'HP cooling'),
         ('box', _COL['heating'], None, 'HP heating'),
         ('box', _COL['window'], None, 'Open = window open'),
+        *([('box', _COL['fan'], None, 'Fan (height = 0-100 %)')] if show_fan else []),
     ]
     legend_svg, y = _legend(legend_items, x0, x1, y + _FS_LEG, _FS_LEG)
     body.append(legend_svg)
